@@ -28,6 +28,10 @@ vpnsci = ["pycryptodome>=3.20"]
 cloakbrowser = ["cloakbrowser>=0.5.9"]
 camoufox = ["camoufox[geoip]>=0.4.11"]
 patchright = ["patchright>=1.61"]
+cdp = ["playwright>=1.63,<2"]
+
+[tool.uv]
+conflicts = [[{ extra = "cdp" }, { extra = "camoufox" }]]
 
 [project.scripts]
 academic-source = "academic_source.interfaces.cli:main"

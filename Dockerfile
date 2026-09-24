@@ -3,7 +3,7 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md LICENSE ./
 COPY src ./src
-RUN uv sync --frozen --no-dev --no-editable --extra fast --extra vpnsci
+RUN uv sync --frozen --no-dev --no-editable --extra fast --extra vpnsci --extra cdp
 
 FROM python:3.12-slim-bookworm
 WORKDIR /app

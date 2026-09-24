@@ -1,0 +1,270 @@
+"""CDP lifecycle and page-origin byte transport; no real browser is launched."""
+
+import sys
+from types import ModuleType, SimpleNamespace
+
+import pymupdf
+import pytest
+
+from scansci_pdf import browser_backend, browser_engine
+
+
+class FakePage:
+    def __init__(self, url="https://www.science.org/doi/10.1126/adh2586"):
+        self.url = url
+        self.closed = False
+        self.requests = []
+        self.payload = b""
+        self.status = 200
+        self.content_type = "application/pdf"
+        self.result_url = "https://www.science.org/doi/pdf/10.1126/adh2586"
+        self.broken = False
+        self.on_close = lambda page: None
+
+    def on(self, event, callback):
+        assert event == "close"
+        self.on_close = callback
+
+    def close(self):
+        self.closed = True
+        self.on_close(self)
+
+    def evaluate_handle(self, script, argument):
+        self.requests.append(argument)
+        return FakeResponse(self)
+
+
+class FakeResponse:
+    def __init__(self, page):
+        self.page = page
+        self.disposed = False
+
+    def evaluate(self, script):
+        return {
+            "ok": self.page.status == 200,
+            "status": self.page.status,
+            "type": self.page.content_type,
+            "url": self.page.result_url,
+        }
+
+    def evaluate_handle(self, script):
+        return FakeReader(self.page)
+
+    def dispose(self):
+        self.disposed = True
+
+
+class FakeReader:
+    def __init__(self, page):
+        self.page = page
+        self.position = 0
+        self.disposed = False
+
+    def evaluate(self, script):
+        if self.page.broken and self.position:
+            raise OSError("stream interrupted")
+        data = self.page.payload[self.position : self.position + 32768]
+        self.position += len(data)
+        return {"done": not data, "bytes": list(data)}
+
+    def dispose(self):
+        self.disposed = True
+
+
+def test_borrowed_context_and_reconnect(monkeypatch):
+    config = {"browser_backend": "cdp", "browser_cdp_url": "http://127.0.0.1:9222"}
+    records = []
+
+    def start():
+        existing = FakePage()
+        context = SimpleNamespace(pages=[existing])
+        context.new_page = lambda: context.pages.append(FakePage()) or context.pages[-1]
+        context.close = lambda: pytest.fail("borrowed context must never close")
+        browser = SimpleNamespace(contexts=[context], connected=True)
+        browser.is_connected = lambda: browser.connected
+        browser.close = lambda: records.append("disconnect")
+        browser.new_context = lambda: pytest.fail("must reuse default context")
+        driver = SimpleNamespace(stop=lambda: records.append("stop"))
+        records.append((browser, context, existing))
+        return browser_backend.BorrowedCDPSession(browser, context, driver)
+
+    monkeypatch.setattr(browser_engine, "connect_cdp", lambda cfg: start())
+    monkeypatch.setattr(browser_engine, "_check_browser_backend", lambda cfg: True)
+    try:
+        _, context = browser_engine._get_shared_browser(config)
+        own = browser_engine._new_page(context)
+        browser_engine.close_shared_browser()
+        assert own.closed
+        assert not records[0][2].closed
+        assert records[1:3] == ["disconnect", "stop"]
+        browser, _ = browser_engine._get_shared_browser(config)
+        browser.connected = False
+        browser_engine._get_shared_browser(config)
+        assert len([entry for entry in records if isinstance(entry, tuple)]) == 3
+    finally:
+        browser_engine.close_shared_browser()
+
+
+def test_cdp_missing_url_and_default_context_never_launch(monkeypatch):
+    with pytest.raises(RuntimeError, match="browser_cdp_url"):
+        browser_backend.connect_cdp({"browser_backend": "cdp"})
+    monkeypatch.setattr(browser_backend, "is_available", lambda name: True)
+    assert browser_backend.resolve_backend({"browser_backend": "cdp"}) == "cdp"
+    with pytest.raises(RuntimeError, match="use connect_cdp"):
+        browser_backend.launch(config={"browser_backend": "cdp"})
+
+    browser = SimpleNamespace(contexts=[], close=lambda: None)
+    driver = SimpleNamespace(
+        chromium=SimpleNamespace(connect_over_cdp=lambda url, **kw: browser),
+        stop=lambda: None,
+    )
+    playwright = ModuleType("playwright")
+    sync_api = ModuleType("playwright.sync_api")
+    sync_api.sync_playwright = lambda: SimpleNamespace(start=lambda: driver)
+    monkeypatch.setitem(sys.modules, "playwright", playwright)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", sync_api)
+    with pytest.raises(RuntimeError, match="no existing default context"):
+        browser_backend.connect_cdp({"browser_cdp_url": "http://localhost:9222"})
+
+
+def test_cdp_connection_failure_is_not_local_fallback(monkeypatch):
+    config = {"browser_backend": "cdp", "browser_cdp_url": "http://127.0.0.1:9222"}
+    monkeypatch.setattr(browser_engine, "_check_browser_backend", lambda cfg: True)
+    monkeypatch.setattr(
+        browser_engine,
+        "connect_cdp",
+        lambda cfg: (_ for _ in ()).throw(ConnectionRefusedError("offline")),
+    )
+    monkeypatch.setattr(
+        browser_engine, "launch", lambda **kw: pytest.fail("local launch is forbidden")
+    )
+    browser_engine.close_shared_browser()
+    with pytest.raises(RuntimeError, match="CDP browser tab unavailable: offline"):
+        browser_engine.create_tab("about:blank", config)
+
+
+def test_science_existing_dom_path_uses_borrowed_tab(monkeypatch, tmp_path):
+    from scansci_pdf import _publisher_strategies_core as strategy
+
+    html = '<html><a href="/doi/pdf/10.1126/adh2586">View PDF</a></html>'
+    actions = []
+    monkeypatch.setattr(browser_engine, "is_available", lambda config: True)
+    monkeypatch.setattr(browser_engine, "create_tab", lambda *a, **kw: "own-tab")
+    monkeypatch.setattr(browser_engine, "navigate_tab", lambda *a, **kw: True)
+    monkeypatch.setattr(
+        browser_engine, "close_tab", lambda *a: actions.append("close-tab")
+    )
+    monkeypatch.setattr(
+        browser_engine,
+        "evaluate_js",
+        lambda tab, js, config, **kw: (
+            html if "outerHTML" in js else "https://www.science.org/doi/10.1126/adh2586"
+        ),
+    )
+    monkeypatch.setattr(strategy.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        strategy, "_inject_cookies_to_tab", lambda *a: actions.append("inject")
+    )
+
+    def fetch(tab, url, path, config):
+        actions.append((tab, url))
+        document = pymupdf.open()
+        for _ in range(7):
+            document.new_page()
+        document.save(path)
+        document.close()
+        return True
+
+    monkeypatch.setattr(browser_engine, "fetch_pdf_in_tab", fetch)
+    output = tmp_path / "science.pdf"
+    result = strategy._browser_download(
+        "10.1126/adh2586",
+        "https://www.science.org/doi/10.1126/adh2586",
+        output,
+        {"browser_backend": "cdp", "interactive": False},
+        "Science",
+    )
+    assert result
+    assert ("own-tab", "https://www.science.org/doi/pdf/10.1126/adh2586") in actions
+    assert actions[-1] == "close-tab"
+
+
+def test_challenge_stays_distinct_from_paywall(monkeypatch, tmp_path):
+    from scansci_pdf import _publisher_strategies_core as strategy
+
+    challenge = '<html><title>Just a moment...</title><div id="challenge-platform">Checking your browser</div></html>'
+    calls = []
+    monkeypatch.setattr(browser_engine, "is_available", lambda config: True)
+    monkeypatch.setattr(browser_engine, "create_tab", lambda *a, **kw: "own-tab")
+    monkeypatch.setattr(browser_engine, "navigate_tab", lambda *a, **kw: True)
+    monkeypatch.setattr(browser_engine, "close_tab", lambda *a: calls.append("closed"))
+    monkeypatch.setattr(
+        browser_engine,
+        "evaluate_js",
+        lambda tab, js, config, **kw: (
+            challenge
+            if "outerHTML" in js
+            else "https://www.science.org/doi/10.1126/adh2586"
+        ),
+    )
+    monkeypatch.setattr(strategy.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(strategy, "_inject_cookies_to_tab", lambda *a: None)
+    monkeypatch.setattr(
+        browser_engine, "fetch_pdf_in_tab", lambda *a: calls.append("fetch")
+    )
+    assert not strategy._browser_download(
+        "10.1126/adh2586",
+        "https://www.science.org/doi/10.1126/adh2586",
+        tmp_path / "blocked.pdf",
+        {"browser_backend": "cdp", "interactive": False},
+        "Science",
+    )
+    assert strategy.get_last_error()[0] == "cloudflare_blocked"
+    assert calls == ["closed"]
+
+
+def test_stream_pdf_and_reject_errors(monkeypatch, tmp_path):
+    document = pymupdf.open()
+    document.new_page().insert_text((72, 72), "Sample browser PDF")
+    payload = document.tobytes()
+    document.close()
+    page = FakePage()
+    page.payload = payload
+    monkeypatch.setattr(browser_engine, "_resolve_tab", lambda tab: page)
+    output = tmp_path / "article.pdf"
+    config = {"browser_backend": "cdp"}
+    assert browser_engine.fetch_pdf_in_tab(
+        "tab", "/doi/pdf/10.1126/adh2586", output, config
+    )
+    assert output.read_bytes() == payload
+    assert page.requests == [page.result_url]
+    assert not (tmp_path / "article.pdf.part").exists()
+
+    output.unlink()
+    page.requests.clear()
+    assert not browser_engine.fetch_pdf_in_tab(
+        "tab", "https://other.example/pdf", output, config
+    )
+    assert page.requests == []
+    page.status = 403
+    assert not browser_engine.fetch_pdf_in_tab(
+        "tab", "/doi/pdf/10.1126/adh2586", output, config
+    )
+    assert not output.exists()
+    page.status = 200
+    page.content_type = "text/html"
+    assert not browser_engine.fetch_pdf_in_tab(
+        "tab", "/doi/pdf/10.1126/adh2586", output, config
+    )
+    page.content_type = "application/pdf"
+    page.result_url = "https://other.example/pdf"
+    assert not browser_engine.fetch_pdf_in_tab(
+        "tab", "/doi/pdf/10.1126/adh2586", output, config
+    )
+    page.result_url = "https://www.science.org/doi/pdf/10.1126/adh2586"
+    page.broken = True
+    assert not browser_engine.fetch_pdf_in_tab(
+        "tab", "/doi/pdf/10.1126/adh2586", output, config
+    )
+    assert not output.exists()
+    assert not (tmp_path / "article.pdf.part").exists()

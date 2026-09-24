@@ -41,7 +41,9 @@ logger = logging.getLogger(__name__)
 
 from .browser_backend import (  # noqa: E402
     BACKEND_CLOAKBROWSER,
+    BACKEND_CDP,
     BACKEND_PATCHRIGHT,
+    connect_cdp,
     find_local_browser,  # noqa: F401  (re-exported for CLI diagnostics)
     launch,
     launch_persistent_context,
@@ -68,6 +70,8 @@ def _check_browser_backend(config: dict[str, Any] | None = None) -> bool:
     )
 
     backend = resolve_backend(config)
+    if backend == BACKEND_CDP:
+        return is_available(BACKEND_CDP)
     if backend == BACKEND_CLOAKBROWSER:
         return is_available(BACKEND_CLOAKBROWSER)
     if backend == BACKEND_CAMOUFOX:
@@ -175,6 +179,20 @@ def close_shared_browser(config: dict[str, Any] | None = None) -> None:
     browser = getattr(_tls, "browser", None)
     if browser is None:
         return
+    borrowed = getattr(_tls, "borrowed", None)
+    if borrowed is not None:
+        for tab_id, page in tuple(_tabs.items()):
+            if page in borrowed.pages:
+                _tabs.pop(tab_id, None)
+                _captured.pop(tab_id, None)
+        try:
+            borrowed.close()
+        except Exception:
+            pass
+        _tls.borrowed = None
+        _tls.browser = None
+        _tls.context = None
+        return
     try:
         browser.close()
     except Exception:
@@ -189,6 +207,10 @@ def close_shared_browser(config: dict[str, Any] | None = None) -> None:
 
 def _get_shared_browser(config: dict[str, Any] | None = None):
     """Get or create a browser for the current thread. Returns (browser, context)."""
+    backend = resolve_backend(config)
+    existing = getattr(_tls, "backend", None)
+    if existing is not None and existing != backend:
+        close_shared_browser()
     browser = getattr(_tls, "browser", None)
     context = getattr(_tls, "context", None)
     if browser is not None:
@@ -203,13 +225,7 @@ def _get_shared_browser(config: dict[str, Any] | None = None):
         # Full teardown: browser.close() also stops the Playwright driver and
         # its asyncio loop. A half-alive driver would otherwise break the
         # fresh launch below ("Sync API inside an asyncio event loop").
-        try:
-            browser.close()
-        except Exception:
-            pass
-        _unregister_browser(browser)
-        _tls.browser = None
-        _tls.context = None
+        close_shared_browser()
 
     # Playwright's Sync API cannot serve a *user* asyncio loop, but the loop
     # the sync API itself leaves running in our worker threads is fine — see
@@ -231,7 +247,18 @@ def _get_shared_browser(config: dict[str, Any] | None = None):
             "no browser backend available. Run: pip install patchright (or pip install cloakbrowser)"
         )
 
-    backend = resolve_backend(config)
+    if backend == BACKEND_CDP:
+        session = connect_cdp(config)
+        _tls.borrowed = session
+        _tls.browser = session.browser
+        _tls.context = session.context
+        _tls.backend = backend
+        try:
+            import asyncio
+            _tls.owned_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            _tls.owned_loop = None
+        return session.browser, session.context
 
     # Platform compat shim + kernel override only apply to CloakBrowser
     if backend == BACKEND_CLOAKBROWSER:
@@ -277,6 +304,7 @@ def _get_shared_browser(config: dict[str, Any] | None = None):
         _tls.owned_loop = None
     _tls.browser = browser
     _tls.context = context
+    _tls.backend = backend
     logger.info(f"browser_engine: browser ready for thread {_threading.current_thread().name}")
     return browser, context
 
@@ -295,6 +323,8 @@ def get_persistent_context(
     This is the recommended approach for publisher sessions that need
     stable identity across multiple download runs.
     """
+    if resolve_backend(config) == BACKEND_CDP:
+        raise RuntimeError("CDP borrows an existing context; persistent context launch is unavailable")
     if not _check_browser_backend(config):
         raise RuntimeError(
             "no browser backend available. Run: pip install patchright (or pip install cloakbrowser)"
@@ -333,6 +363,19 @@ def get_persistent_context(
     return ctx
 
 
+def _new_page(context: Any) -> Any:
+    borrowed = getattr(_tls, "borrowed", None)
+    return borrowed.new_page() if borrowed is not None else context.new_page()
+
+
+def _close_page(page: Any) -> None:
+    borrowed = getattr(_tls, "borrowed", None)
+    if borrowed is not None and page in borrowed.pages:
+        borrowed.close_page(page)
+    else:
+        page.close()
+
+
 def get_browser_page(config: dict[str, Any] | None = None):
     """Get a new page from the shared browser (for custom browser interactions).
     
@@ -343,8 +386,10 @@ def get_browser_page(config: dict[str, Any] | None = None):
         return None
     try:
         _browser, context = _get_shared_browser(config)
-        return context.new_page()
+        return _new_page(context)
     except Exception:
+        if resolve_backend(config) == BACKEND_CDP:
+            raise
         return None
 
 
@@ -359,17 +404,9 @@ def is_playwright_owned_loop(loop: Any) -> bool:
 
 
 def shutdown_shared_browser():
-    """Shut down the current thread's browser. Call on thread exit or process exit."""
-    browser = getattr(_tls, "browser", None)
-    if browser is not None:
-        try:
-            browser.close()
-        except Exception:
-            pass
-        _unregister_browser(browser)
-        _tls.browser = None
-        _tls.context = None
-        logger.info("browser_engine: browser shut down")
+    """Shut down only this thread's owned browser or borrowed CDP connection."""
+    close_shared_browser()
+    logger.info("browser_engine: browser shut down")
 
 
 def _ensure_compat():
@@ -408,6 +445,10 @@ def _register_tab(browser, context, page) -> str:
     tab_id = uuid.uuid4().hex[:12]
     _tabs[tab_id] = page
     _captured[tab_id] = []
+
+    # Borrowed CDP pages use chunked in-page fetch; never buffer PDF events.
+    if getattr(_tls, "borrowed", None) is not None:
+        return tab_id
 
     # Listen for PDF responses
     def _on_response(response):
@@ -452,7 +493,7 @@ def solve_url(
     page = None
     try:
         _, context = _get_shared_browser(config)
-        page = context.new_page()
+        page = _new_page(context)
         page.goto(url, wait_until="domcontentloaded", timeout=int(max_timeout))
 
         raw_cookies = context.cookies()
@@ -481,7 +522,7 @@ def solve_url(
     finally:
         if page:
             try:
-                page.close()
+                _close_page(page)
             except Exception:
                 pass
 
@@ -518,6 +559,8 @@ def get_html(
 
 def import_cookies(cookie_file: str | Path, config: dict[str, Any], *, domain_suffix: str | None = None) -> int:
     """Import Netscape-format cookies into the shared browser context. Returns count imported."""
+    if resolve_backend(config) == BACKEND_CDP:
+        return 0  # The remote profile and its cookie jar belong to Chrome.
     try:
         text = Path(cookie_file).read_text(encoding="utf-8")
     except Exception as e:
@@ -561,12 +604,18 @@ def create_tab(url: str, config: dict[str, Any], *, timeout: float = 30.0) -> st
     """Create a new tab (page) in the shared browser and navigate to URL. Returns tab_id or None."""
     try:
         browser, context = _get_shared_browser(config)
-        page = context.new_page()
-        page.goto(url, wait_until="domcontentloaded", timeout=int(timeout * 1000))
+        page = _new_page(context)
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=int(timeout * 1000))
+        except Exception:
+            _close_page(page)
+            raise
         tab_id = _register_tab(browser, context, page)
         return tab_id
     except Exception as e:
         logger.info(f"browser_engine: create_tab failed - {e}")
+        if resolve_backend(config) == BACKEND_CDP:
+            raise RuntimeError(f"CDP browser tab unavailable: {e}") from e
         return None
 
 
@@ -575,7 +624,7 @@ def close_tab(tab_id: str, config: dict[str, Any]) -> None:
     page = _resolve_tab(tab_id)
     if page:
         try:
-            page.close()
+            _close_page(page)
         except Exception:
             pass
     _tabs.pop(tab_id, None)
@@ -609,6 +658,76 @@ def get_snapshot(tab_id: str, config: dict[str, Any], *, timeout: float = 15.0) 
         return {"url": "", "snapshot": "", "error": str(e)}
 
 
+def fetch_pdf_in_tab(
+    tab_id: str, pdf_url: str, output_path: Path, config: dict[str, Any]
+) -> bool:
+    """Stream a same-origin browser fetch from an article tab to a temporary file.
+
+    The request runs in the page's own authenticated origin, not in the API
+    process HTTP client. No viewer, download event, or shared filesystem needed.
+    """
+    from urllib.parse import urljoin
+
+    page = _resolve_tab(tab_id)
+    if page is None:
+        return False
+    origin = urlparse(page.url)
+    target = urlparse(urljoin(page.url, pdf_url))
+    if (origin.scheme, origin.netloc) != (target.scheme, target.netloc) or origin.scheme not in ("http", "https"):
+        logger.info("browser_engine: refusing cross-origin PDF fetch")
+        return False
+    response = reader = None
+    partial = output_path.with_name(output_path.name + ".part")
+    try:
+        response = page.evaluate_handle(
+            """async url => fetch(url, {credentials: 'include', headers: {Accept: 'application/pdf'}})""",
+            target.geturl(),
+        )
+        meta = response.evaluate(
+            """r => ({ok: r.ok, status: r.status, type: r.headers.get('content-type') || '', url: r.url})"""
+        )
+        landed = urlparse(meta["url"])
+        media_type = meta["type"].lower()
+        if (not meta["ok"] or not any(t in media_type for t in ("pdf", "octet-stream"))
+                or (landed.scheme, landed.netloc) != (origin.scheme, origin.netloc)):
+            logger.info("browser_engine: PDF fetch rejected: status=%s content-type=%s", meta["status"], meta["type"])
+            return False
+        reader = response.evaluate_handle("r => r.body.getReader()")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with partial.open("wb") as stream:
+            while True:
+                chunk = reader.evaluate(
+                    """async r => {const {done, value} = await r.read(); return {done, bytes: done ? [] : Array.from(value)}}"""
+                )
+                if chunk["done"]:
+                    break
+                stream.write(bytes(chunk["bytes"]))
+        import pymupdf
+
+        with partial.open("rb") as stream:
+            header = stream.read(5)
+        if header != b"%PDF-":
+            logger.info("browser_engine: PDF fetch yielded invalid header")
+            return False
+        with pymupdf.open(partial) as document:
+            if not document.is_pdf or document.page_count < 1 or document.needs_pass:
+                logger.info("browser_engine: PDF fetch yielded unreadable document")
+                return False
+        partial.replace(output_path)
+        return True
+    except Exception as exc:
+        logger.info("browser_engine: PDF stream failed: %s", exc)
+        return False
+    finally:
+        partial.unlink(missing_ok=True)
+        for handle in (reader, response):
+            if handle is not None:
+                try:
+                    handle.dispose()
+                except Exception:
+                    pass  # Disconnect during cleanup must not hide a completed PDF.
+
+
 def download_pdf_via_browser(
     pdf_url: str,
     output_path: Path,
@@ -630,7 +749,7 @@ def download_pdf_via_browser(
         # .pdf suffix checks and _is_pdf_url — strip before anything else.
         pdf_url = str(pdf_url).split("#", 1)[0]
         _, context = _get_shared_browser(config)
-        page = context.new_page()
+        page = _new_page(context)
 
         # Set up response listener for PDF captures
         captured_responses: list[dict] = []
@@ -845,7 +964,7 @@ def download_pdf_via_browser(
     finally:
         if page:
             try:
-                page.close()
+                _close_page(page)
             except Exception:
                 pass
 

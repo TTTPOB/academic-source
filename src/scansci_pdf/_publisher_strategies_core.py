@@ -234,6 +234,9 @@ def _has_publisher_cookies(config: dict[str, Any]) -> bool:
 def _inject_cookies_to_tab(tab_id: str, config: dict[str, Any], publisher: str) -> None:
     """Inject saved publisher + CARSI cookies into browser-engine session."""
     from .browser_engine import import_cookies
+    from .browser_backend import BACKEND_CDP, resolve_backend
+    if resolve_backend(config) == BACKEND_CDP:
+        return  # Borrowed profile owns its cookies; never import stale local jars.
     from .config import DATA_DIR
     cache_dir = Path(config.get("cache_dir", str(DATA_DIR / "cache")))
     total = 0
@@ -1646,15 +1649,16 @@ def _browser_download(
     from .browser_engine import (
         is_available, create_tab, close_tab, evaluate_js,
         navigate_tab, download_pdf_via_browser, _is_pdf_url,
-        fetch_url, get_captured_responses,
+        fetch_url, get_captured_responses, fetch_pdf_in_tab,
     )
-    from .pdf_utils import is_pdf_file
+    from .pdf_utils import is_pdf_file, success
+    from .browser_backend import BACKEND_CDP, resolve_backend
 
     _clear_error()
 
     # Campus network fast-path: skip HTTP, go directly to CloakBrowser
     # Campus networks use IP authentication, so CloakBrowser can access directly
-    if _is_campus_network(config) and is_available(config):
+    if resolve_backend(config) != BACKEND_CDP and _is_campus_network(config) and is_available(config):
         log.info(f"   [{publisher}] campus network detected, using CloakBrowser directly")
         if download_pdf_via_browser(article_url, output_path, config):
             from .pdf_utils import is_pdf_file, success
@@ -1758,6 +1762,9 @@ def _browser_download(
 
         # Check for paywall AFTER challenge resolution
         if _detect_paywall(html):
+            if resolve_backend(config) == BACKEND_CDP:
+                _set_error("paywall", "login_required")
+                return False
             log.info(f"   [{publisher}] paywall detected — trying institutional login...")
             if _try_institutional_login(tab_id, config, publisher):
                 # Login succeeded, re-fetch page content
@@ -1816,6 +1823,22 @@ def _browser_download(
 
         # Try to extract PDF link from page
         pdf_url = _extract_pdf_from_page(html, str(current_url), publisher)
+
+        if resolve_backend(config) == BACKEND_CDP:
+            candidates = [pdf_url] if pdf_url else []
+            if pdf_url and "/doi/pdf/" in pdf_url:
+                candidates.append(pdf_url.replace("/doi/pdf/", "/doi/pdfdirect/"))
+            elif pdf_url and "/doi/epdf/" in pdf_url:
+                candidates.append(pdf_url.replace("/doi/epdf/", "/doi/pdfdirect/"))
+            # Existing publisher URL knowledge also works when the site hides
+            # the PDF anchor until JavaScript renders it (notably Science).
+            profile = _PUBLISHER_SSO_CONFIG.get(publisher, _PUBLISHER_SSO_CONFIG["_default"])
+            candidates.extend(profile["pdf_paths"](doi))
+            for candidate in dict.fromkeys(candidates):
+                if fetch_pdf_in_tab(tab_id, candidate, output_path, config):
+                    return success(doi, output_path, f"{publisher}(Browser)")
+            _set_error("no_pdf_found", "try_other_source")
+            return False
 
         if pdf_url:
             log.info(f"   [{publisher}] found PDF link: {pdf_url[:80]}")
@@ -2045,7 +2068,8 @@ def _browser_download_with_fallback(
         return True
 
     err_type, err_action = get_last_error()
-    if config.get("interactive", True) is False:
+    from .browser_backend import BACKEND_CDP, resolve_backend
+    if config.get("interactive", True) is False or resolve_backend(config) == BACKEND_CDP:
         return False
 
     # browser service offline + CloakBrowser available → launch visible browser directly
@@ -2660,9 +2684,10 @@ def try_elsevier_browser(
     from .pdf_utils import is_pdf_file
     from .pdf_utils import success
     from .browser_engine import is_available as browser_available, download_pdf_via_browser
+    from .browser_backend import BACKEND_CDP, resolve_backend
 
     # Campus network fast-path: skip HTTP, go directly to CloakBrowser
-    if _is_campus_network(config) and browser_available(config):
+    if resolve_backend(config) != BACKEND_CDP and _is_campus_network(config) and browser_available(config):
         cell_url = _build_cell_press_url(doi)
         if cell_url:
             log.info(f"   [Elsevier] campus network detected, trying CloakBrowser directly: {cell_url[:80]}")
@@ -2691,7 +2716,10 @@ def try_elsevier_browser(
         pii = cell_url.split("/abstract/")[-1]
         show_pdf_url = f"https://www.cell.com/action/showPdf?pii={pii}"
         log.info(f"   [CellPress] trying showPdf via network capture: {show_pdf_url[:80]}")
-        result = _cell_press_showpdf_download(show_pdf_url, output_path, config)
+        result = (
+            _cell_press_showpdf_download(show_pdf_url, output_path, config)
+            if resolve_backend(config) != BACKEND_CDP else None
+        )
         if result and is_pdf_file(output_path):
             return result
 

@@ -1,18 +1,8 @@
-"""Unified browser backend: patchright (default), CloakBrowser, or Camoufox.
+"""Local browser launchers and a borrowed external Chrome CDP session.
 
-patchright is the Apache-2.0 open-source Playwright fork that patches the
-detectable automation fingerprints (``--enable-automation`` removal,
-``Runtime.enable`` leak, ``navigator.webdriver``, ...). Its documented best
-practice is ``channel="chrome"`` + ``headless=False`` — i.e. driving the local
-Google Chrome, whose kernel auto-updates. CloakBrowser's free tier is pinned
-to Chromium 146 (newer 148/150 kernels are Pro-only), so it is kept as an
-opt-in fallback. Camoufox is the last-resort fallback: an open-source
-anti-detect Firefox (kernel Firefox 152), with a clean headless UA — no
-``HeadlessChrome``/``HeadlessFirefox`` leak, verified at runtime.
-
-All backends expose the same Playwright sync API surface (``launch``,
-``launch_persistent_context``); the CloakBrowser-only ``humanize`` flag is
-accepted everywhere and ignored on patchright.
+Local Patchright, CloakBrowser and Camoufox own their browser/context lifecycle.
+CDP instead attaches to the existing default context and owns only its
+connection and tabs. A CDP connection does not provide fingerprint guarantees.
 """
 
 from __future__ import annotations
@@ -30,7 +20,63 @@ logger = logging.getLogger(__name__)
 BACKEND_PATCHRIGHT = "patchright"
 BACKEND_CLOAKBROWSER = "cloakbrowser"
 BACKEND_CAMOUFOX = "camoufox"
+BACKEND_CDP = "cdp"
 DEFAULT_BACKEND = BACKEND_PATCHRIGHT
+
+
+class BorrowedCDPSession:
+    """Only the connection and tabs are ours; the default context/profile are not."""
+
+    def __init__(self, browser: Any, context: Any, driver: Any):
+        self.browser = browser
+        self.context = context
+        self.driver = driver
+        self.pages: set[Any] = set()
+
+    def new_page(self) -> Any:
+        page = self.context.new_page()
+        self.pages.add(page)
+        page.on("close", lambda _: self.pages.discard(page))
+        return page
+
+    def close_page(self, page: Any) -> None:
+        try:
+            page.close()
+        finally:
+            self.pages.discard(page)
+
+    def close(self) -> None:
+        for page in tuple(self.pages):
+            try:
+                self.close_page(page)
+            except Exception:
+                pass
+        try:
+            self.browser.close()  # CDP connection disconnects; Chrome stays running.
+        finally:
+            self.driver.stop()
+
+
+def connect_cdp(config: dict[str, Any] | None) -> BorrowedCDPSession:
+    """Attach lazily to an existing Chrome default context, never launch one."""
+    url = str((config or {}).get("browser_cdp_url") or "").strip()
+    if not url:
+        raise RuntimeError("browser_backend=cdp requires source_config.browser_cdp_url")
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise RuntimeError("browser_backend=cdp requires playwright>=1.63") from exc
+
+    driver = sync_playwright().start()
+    try:
+        browser = driver.chromium.connect_over_cdp(url, no_defaults=True)
+        if not browser.contexts:
+            browser.close()
+            raise RuntimeError("CDP browser has no existing default context")
+        return BorrowedCDPSession(browser, browser.contexts[0], driver)
+    except Exception:
+        driver.stop()
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +97,9 @@ def is_available(name: str | None = None) -> bool:
         if name == BACKEND_CAMOUFOX:
             import camoufox  # noqa: F401
             return True
+        if name == BACKEND_CDP:
+            import playwright  # noqa: F401
+            return True
     except ImportError:
         return False
     return False
@@ -67,6 +116,8 @@ def resolve_backend(config: dict[str, Any] | None = None) -> str:
     """
     cfg = config or {}
     requested = str(cfg.get("browser_backend", DEFAULT_BACKEND) or DEFAULT_BACKEND).strip().lower()
+    if requested == BACKEND_CDP:
+        return BACKEND_CDP  # Explicit remote selection must never launch a local browser.
     if requested not in (BACKEND_PATCHRIGHT, BACKEND_CLOAKBROWSER, BACKEND_CAMOUFOX):
         logger.warning("browser_backend: unknown backend '%s', using %s", requested, DEFAULT_BACKEND)
         requested = DEFAULT_BACKEND
@@ -601,6 +652,8 @@ def launch(
     ``playwright.chromium.launch()`` / ``cloakbrowser.launch()``.
     """
     backend = resolve_backend(config)
+    if backend == BACKEND_CDP:
+        raise RuntimeError("CDP borrows an existing browser; use connect_cdp instead of launch")
     if backend == BACKEND_CAMOUFOX and proxy is None:
         proxy = _proxy_from_config(config)
     if backend == BACKEND_PATCHRIGHT:
@@ -627,6 +680,8 @@ def launch_persistent_context(
     Same contract as ``playwright.chromium.launch_persistent_context()``.
     """
     backend = resolve_backend(config)
+    if backend == BACKEND_CDP:
+        raise RuntimeError("CDP borrows an existing browser; use connect_cdp instead of launch")
     if backend == BACKEND_CAMOUFOX and proxy is None:
         proxy = _proxy_from_config(config)
     if backend == BACKEND_PATCHRIGHT:
@@ -652,6 +707,9 @@ def browser_info(config: dict[str, Any] | None = None) -> dict[str, Any]:
     cfg = config or {}
     backend = resolve_backend(cfg)
     info: dict[str, Any] = {"backend": backend, "binary": "", "version": ""}
+    if backend == BACKEND_CDP:
+        info["binary"] = "external Chrome (CDP)"
+        return info
     if backend == BACKEND_PATCHRIGHT:
         binary = ""
         explicit = str(cfg.get("browser_executable", "") or "").strip()
