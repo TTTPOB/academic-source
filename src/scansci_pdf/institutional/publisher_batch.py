@@ -443,6 +443,7 @@ class PublisherBatchDownloader:
         return launch_persistent_context(
             user_data_dir=str(profile_path),
             headless=self.config.get("interactive", True) is False,
+            config=self.config,
             humanize=True,
             args=["--disable-features=CrossOriginOpenerPolicy"],
         )

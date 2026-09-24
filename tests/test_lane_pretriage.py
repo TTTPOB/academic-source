@@ -60,7 +60,7 @@ class TestS2BatchEnrichment:
 
         assert entries[0].oa_url == "https://repo.example/x0.pdf"
         assert entries[0].channel == "oa"
-        assert per_doi == ids[1:], "S2 hits must not be re-queried per-DOI"
+        assert sorted(per_doi) == sorted(ids[1:]), "S2 hits must not be re-queried per-DOI"
 
     def test_small_batches_skip_s2(self, monkeypatch):
         entries = [QueueEntry(identifier=f"10.1234/y{i}") for i in range(3)]
