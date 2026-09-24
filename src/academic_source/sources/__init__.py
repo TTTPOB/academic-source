@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -84,6 +85,14 @@ def _plan(
     from scansci_pdf.sources.vpnsci import try_vpnsci
 
     publisher = [(label, fn) for fn, label in get_publisher_fast_sources(doi)]
+    if (
+        doi.startswith("10.1016/")
+        and request.policy in ("fastest", "legal_only")
+        and (config.get("elsevier_api_key") or os.environ.get("ELSEVIER_API_KEY"))
+    ):
+        publisher = [entry for entry in publisher if entry[0] == "ElsevierAPI"] + [
+            entry for entry in publisher if entry[0] != "ElsevierAPI"
+        ]
     oa: list[Handler] = [
         ("Unpaywall", try_unpaywall),
         ("OpenAlexOA", try_openalex_oa),

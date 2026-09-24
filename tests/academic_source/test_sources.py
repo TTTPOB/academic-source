@@ -5,6 +5,7 @@ from __future__ import annotations
 from importlib import import_module
 
 import pymupdf
+import pytest
 
 from academic_source.domain import AcquisitionRequest
 from academic_source.sources import LegacySources
@@ -150,6 +151,83 @@ def test_configured_institution_channels_reachable_after_failed_legal(
     assert result["source"] == "SessionBroker"
     assert visited[-4:] == ["CARSI", "WebVPN", "EZProxy", "SessionBroker"]
     assert "InstitutionalBrowser" not in visited
+
+
+@pytest.mark.parametrize(
+    "policy,key_source", [("fastest", "config"), ("legal_only", "env")]
+)
+def test_elsevier_api_short_circuits_other_sources(
+    monkeypatch, tmp_path, policy, key_source
+):
+    from scansci_pdf.sources import publishers
+
+    visited = []
+    handler = _patch_handlers(monkeypatch, visited, win="ElsevierAPI")
+    monkeypatch.setattr(
+        publishers,
+        "get_publisher_fast_sources",
+        lambda doi: [
+            (handler("Crossref"), "Crossref"),
+            (handler("UnpaywallPublisher"), "Unpaywall"),
+            (handler("ElsevierAPI"), "ElsevierAPI"),
+            (handler("ElsevierBrowser"), "ElsevierBrowser"),
+        ],
+    )
+    monkeypatch.delenv("ELSEVIER_API_KEY", raising=False)
+    config = {"scihub_enabled": False}
+    if key_source == "config":
+        config["elsevier_api_key"] = "example-only"
+    else:
+        monkeypatch.setenv("ELSEVIER_API_KEY", "example-only")
+    result = LegacySources().acquire(
+        "10.1016/example",
+        AcquisitionRequest(identifiers=["10.1016/example"], policy=policy),
+        tmp_path,
+        config,
+    )
+    assert result["source"] == "ElsevierAPI"
+    assert visited == ["ElsevierAPI"]
+    assert [attempt["source"] for attempt in result["attempts"]] == ["ElsevierAPI"]
+
+
+@pytest.mark.parametrize(
+    "doi,policy,has_key,first",
+    [
+        ("10.1016/example", "fastest", False, "Crossref"),
+        ("10.1016/example", "legal_only", False, "Crossref"),
+        ("10.1016/example", "oa_first", True, "Unpaywall"),
+        ("10.1016/example", "scihub_first", True, "SciBban"),
+        ("10.1016/example", "grey_only", True, "SciBban"),
+        ("10.1016/example", "scihub_only", True, "Sci-Hub"),
+        ("10.1038/example", "legal_only", True, "Crossref"),
+    ],
+)
+def test_elsevier_shortcut_respects_key_policy_and_doi(
+    monkeypatch, tmp_path, doi, policy, has_key, first
+):
+    from scansci_pdf.sources import publishers
+
+    visited = []
+    handler = _patch_handlers(monkeypatch, visited, win=first)
+    monkeypatch.setattr(
+        publishers,
+        "get_publisher_fast_sources",
+        lambda doi: [
+            (handler("Crossref"), "Crossref"),
+            (handler("UnpaywallPublisher"), "Unpaywall"),
+            (handler("ElsevierAPI"), "ElsevierAPI"),
+            (handler("ElsevierBrowser"), "ElsevierBrowser"),
+        ],
+    )
+    monkeypatch.delenv("ELSEVIER_API_KEY", raising=False)
+    result = LegacySources().acquire(
+        doi,
+        AcquisitionRequest(identifiers=[doi], policy=policy),
+        tmp_path,
+        {"scihub_enabled": True, "elsevier_api_key": "example-only" if has_key else ""},
+    )
+    assert result["source"] == first
+    assert visited == [first]
 
 
 def test_fastest_parallelizes_http_and_keeps_publisher_on_owner_thread(
