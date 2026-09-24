@@ -109,7 +109,10 @@ def test_mcp_and_http_share_one_real_job_and_artifact_store(tmp_path):
             },
         )
         assert initialized.status_code == 200, initialized.text
-        headers["mcp-session-id"] = initialized.headers["mcp-session-id"]
+        # Stateless transport: no session is issued, so a client keeps working
+        # after a server restart rather than re-initializing.
+        assert "mcp-session-id" not in initialized.headers
+        headers["mcp-session-id"] = "session-issued-before-a-restart"
         client.post(
             "/mcp",
             headers=headers,
@@ -212,3 +215,29 @@ def test_remote_cli_uploads_and_exports_over_real_http(tmp_path, monkeypatch):
     assert len(files) == 1
     assert files[0].read_bytes() == source.content
     assert listing.read_text(encoding="utf-8").startswith("doi,title")
+
+
+def test_mcp_transport_is_stateless_across_restarts(tmp_path):
+    """A stale session id from a previous process must not lock a client out."""
+    service, source = service_at(tmp_path)
+    with TestClient(create_app(application=service)) as client:
+        headers = {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "mcp-session-id": "session-issued-before-the-restart",
+        }
+        response = client.post(
+            "/mcp",
+            headers=headers,
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+        )
+        assert response.status_code == 200, response.text
+        assert "mcp-session-id" not in response.headers
+        assert {tool["name"] for tool in response.json()["result"]["tools"]} == {
+            "search",
+            "resolve",
+            "parse_list",
+            "acquire",
+            "job_status",
+        }
+        assert source.calls == []

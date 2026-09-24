@@ -41,6 +41,11 @@ def create_mcp(application: Application, *, stdio: bool = False) -> FastMCP:
         host="0.0.0.0",
         streamable_http_path="/mcp",
         json_response=True,
+        # No tool keeps per-connection state: every argument is explicit and
+        # jobs live in the shared store by id. A stateless transport therefore
+        # costs nothing, and a client survives a server restart instead of
+        # failing with "Session not found" until it re-initializes.
+        stateless_http=True,
         lifespan=lifespan,
     )
 
