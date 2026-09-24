@@ -3109,11 +3109,18 @@ def try_science_browser(
     doi: str, output_path: Path, config: dict[str, Any],
 ) -> dict[str, Any] | None:
     """Science/AAAS browser strategy."""
+    from .browser_backend import BACKEND_CDP, resolve_backend
     from .pdf_utils import is_pdf_file
     from .pdf_utils import success
 
-    article_url = f"https://doi.org/{doi}"
-    if _browser_download_with_fallback(doi, article_url, output_path, config, "Science"):
+    # CDP's authorized Chrome profile reaches the official PDF entry directly;
+    # the shared browser flow still checks that page for an actual challenge.
+    entry_url = (
+        f"https://www.science.org/doi/pdf/{doi}"
+        if resolve_backend(config) == BACKEND_CDP
+        else f"https://doi.org/{doi}"
+    )
+    if _browser_download_with_fallback(doi, entry_url, output_path, config, "Science"):
         if is_pdf_file(output_path):
             return success(doi, output_path, "Science(Browser)")
     return None

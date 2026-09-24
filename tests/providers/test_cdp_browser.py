@@ -199,6 +199,88 @@ def test_science_existing_dom_path_uses_borrowed_tab(monkeypatch, tmp_path):
     assert actions[-1] == "close-tab"
 
 
+@pytest.mark.parametrize(
+    "backend,scenario",
+    [
+        ("cdp", "success"),
+        ("cdp", "challenge"),
+        ("cdp", "disconnected"),
+        ("patchright", "navigate_failed"),
+    ],
+)
+def test_public_science_handler_uses_verified_pdf_entry(
+    monkeypatch, tmp_path, backend, scenario
+):
+    from scansci_pdf import _publisher_strategies_core as strategy
+    from scansci_pdf.sources.publishers import get_publisher_fast_sources
+
+    doi = "10.1126/adh2586"
+    handlers = {label: fn for fn, label in get_publisher_fast_sources(doi)}
+    assert "ScienceBrowser" in handlers
+    navigated = []
+    fetched = []
+    monkeypatch.setattr(strategy, "_has_publisher_cookies", lambda config: False)
+    monkeypatch.setattr(strategy, "_inject_cookies_to_tab", lambda *args: None)
+    monkeypatch.setattr(strategy.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(browser_engine, "is_available", lambda config: True)
+    monkeypatch.setattr(browser_engine, "close_tab", lambda *args: None)
+
+    def create(url, config, **kwargs):
+        if scenario == "disconnected":
+            raise RuntimeError("CDP connection refused")
+        assert url == "about:blank"
+        return "our-tab"
+
+    def navigate(tab, url, config, **kwargs):
+        navigated.append(url)
+        return scenario != "navigate_failed"
+
+    def evaluate(tab, js, config, **kwargs):
+        if "outerHTML" in js:
+            return (
+                '<title>Just a moment...</title><div id="challenge-platform">Checking</div>'
+                if scenario == "challenge"
+                else "<html><body>PDF viewer</body></html>"
+            )
+        return navigated[-1]
+
+    def fetch(tab, url, path, config):
+        fetched.append(url)
+        document = pymupdf.open()
+        for _ in range(7):
+            document.new_page()
+        document.save(path)
+        document.close()
+        return True
+
+    monkeypatch.setattr(browser_engine, "create_tab", create)
+    monkeypatch.setattr(browser_engine, "navigate_tab", navigate)
+    monkeypatch.setattr(browser_engine, "evaluate_js", evaluate)
+    monkeypatch.setattr(browser_engine, "fetch_pdf_in_tab", fetch)
+    output = tmp_path / "paper.pdf"
+    config = {"browser_backend": backend, "interactive": False}
+    if scenario == "disconnected":
+        with pytest.raises(RuntimeError, match="CDP connection refused"):
+            handlers["ScienceBrowser"](doi, output, config)
+    else:
+        result = handlers["ScienceBrowser"](doi, output, config)
+        if scenario == "success":
+            assert result and result["success"]
+            assert output.exists()
+            assert fetched == [f"/doi/pdf/{doi}"]
+        else:
+            assert not result and not output.exists() and not fetched
+            if scenario == "challenge":
+                assert strategy.get_last_error()[0] == "cloudflare_blocked"
+    expected = (
+        f"https://www.science.org/doi/pdf/{doi}"
+        if backend == "cdp"
+        else f"https://doi.org/{doi}"
+    )
+    if scenario != "disconnected":
+        assert navigated == [expected]
+
+
 def test_challenge_stays_distinct_from_paywall(monkeypatch, tmp_path):
     from scansci_pdf import _publisher_strategies_core as strategy
 
