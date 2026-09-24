@@ -57,6 +57,7 @@ _HAS_BROWSER_BACKEND: bool | None = None
 
 def _check_browser_backend(config: dict[str, Any] | None = None) -> bool:
     """Check whether the resolved backend is importable (cached per backend)."""
+    global _HAS_BROWSER_BACKEND
     from .browser_backend import (
         BACKEND_CAMOUFOX,
         BACKEND_CLOAKBROWSER,

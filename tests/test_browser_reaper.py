@@ -33,7 +33,9 @@ class TreeKillTests(unittest.TestCase):
         proc = Mock()
         proc.poll.return_value = None
         proc.pid = 4242
-        with patch("scansci_pdf.browser_engine.subprocess.run") as run:
+        with patch("scansci_pdf.browser_engine.os") as mock_os, \
+             patch("scansci_pdf.browser_engine.subprocess.run") as run:
+            mock_os.name = "nt"
             be._tree_kill(proc)
         args = run.call_args[0][0]
         self.assertEqual(args[:3], ["taskkill", "/F", "/T"])

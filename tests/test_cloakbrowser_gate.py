@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import sys
+from types import ModuleType
+
 import pytest
 
 from scansci_pdf import browser_backend as bb
@@ -32,10 +35,9 @@ def test_gate_skips_when_distribution_missing(monkeypatch):
 def test_launch_refuses_old_version(monkeypatch):
     calls = []
     monkeypatch.setattr(bb, "_cloakbrowser_dist_version", lambda: (0, 4, 11))
-    import cloakbrowser
-
-    orig = cloakbrowser.launch
-    monkeypatch.setattr(cloakbrowser, "launch", lambda **kw: calls.append(kw))
+    cloakbrowser = ModuleType("cloakbrowser")
+    cloakbrowser.launch = lambda **kw: calls.append(kw)
+    monkeypatch.setitem(sys.modules, "cloakbrowser", cloakbrowser)
     with pytest.raises(RuntimeError):
         bb._launch_cloakbrowser(headless=True, proxy=None, args=None, humanize=True)
     assert calls == []  # never reached the real launcher

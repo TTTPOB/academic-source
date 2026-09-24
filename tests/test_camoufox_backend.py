@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import sys
+from types import ModuleType
+
 import pytest
 
 import scansci_pdf.browser_backend as bb
@@ -54,14 +57,13 @@ def test_camoufox_launch_drops_chromium_args(monkeypatch):
         captured["proxy"] = kwargs.get("proxy")
         return _FakeBrowser()
 
-    monkeypatch.setattr(
-        "playwright.sync_api.sync_playwright",
-        lambda: type("SP", (), {"start": staticmethod(lambda: fake_pw)})())
-    monkeypatch.setattr(
-        "camoufox.NewBrowser", lambda pw, **kw: fake_new_browser(pw, **kw))
-    monkeypatch.setattr(
-        "camoufox.DefaultAddons",
-        type("DA", (), {"UBO": "ubo"}))
+    sync_api = ModuleType("playwright.sync_api")
+    sync_api.sync_playwright = lambda: type("SP", (), {"start": staticmethod(lambda: fake_pw)})()
+    camoufox = ModuleType("camoufox")
+    camoufox.NewBrowser = fake_new_browser
+    camoufox.DefaultAddons = type("DA", (), {"UBO": "ubo"})
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", sync_api)
+    monkeypatch.setitem(sys.modules, "camoufox", camoufox)
 
     bb._launch_camoufox(
         headless=True, proxy=None,
