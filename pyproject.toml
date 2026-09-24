@@ -1,7 +1,7 @@
 [project]
-name = "scansci-pdf"
-version = "1.17.0"
-description = "MCP server for academic paper downloading with Sci-Hub, OA sources, multi-university WebVPN, and Tor support"
+name = "academic-source"
+version = "0.1.0"
+description = "Academic resource acquisition through a unified HTTP, MCP, and CLI application"
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.11"
@@ -10,7 +10,10 @@ dependencies = [
     "requests[socks]>=2.31",
     "urllib3>=2.7.0",
     "beautifulsoup4>=4.12",
-    "mcp[cli]>=1.12,<3.0",
+    "mcp[cli]>=1.27,<2",
+    "pydantic>=2.11",
+    "httpx>=0.28",
+    "python-multipart>=0.0.20",
     "typer>=0.15",
     "uvicorn>=0.34",
     "fastapi>=0.115",
@@ -34,6 +37,7 @@ dev = ["pytest>=8.0"]
 compile = ["cython>=3.0"]
 
 [project.scripts]
+academic-source = "academic_source.interfaces.cli:main"
 scansci-pdf = "scansci_pdf.main:main"
 
 [build-system]
@@ -45,6 +49,17 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 scansci_pdf = ["data/*.json", "data/*.dat", "_core/*.pyd", "_core/*.so", "templates/*.html"]
+
+[dependency-groups]
+dev = ["pytest>=8.0", "ruff>=0.15", "pyrefly>=0.50", "pre-commit>=4.0"]
+
+[tool.ruff]
+target-version = "py311"
+extend-exclude = ["src/scansci_pdf", "scripts", "build_core.py", "setup.py"]
+
+[tool.pyrefly]
+preset = "basic"
+project-includes = ["src/academic_source/**/*.py"]
 
 [tool.pytest.ini_options]
 # Manual network/browser scripts in the repo root (e.g. test_download_pnas.py)

@@ -1,8 +1,6 @@
 name: Publisher canaries
 
 on:
-  schedule:
-    - cron: "0 4 * * 1,4" # Mondays & Thursdays 04:00 UTC
   workflow_dispatch:
 
 jobs:

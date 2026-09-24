@@ -5,7 +5,6 @@ Usage:
     python setup.py bdist_wheel            # Build wheel with compiled extensions
 """
 
-import os
 from pathlib import Path
 from setuptools import Extension, setup
 from setuptools.command.build_py import build_py
@@ -71,7 +70,7 @@ try:
 
     setup(
         ext_modules=cythonize(
-            extensions,
+            [extension for extension in extensions if all(Path(source).exists() for source in extension.sources)],
             compiler_directives={
                 "language_level": "3",
                 "boundscheck": False,

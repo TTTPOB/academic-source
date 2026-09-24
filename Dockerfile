@@ -1,24 +1,11 @@
-FROM python:3.12-slim AS builder
-
-WORKDIR /app
-
-COPY pyproject.toml .
-COPY src ./src
-
-RUN pip install --no-cache-dir ".[tor,vpnsci]"
-
 FROM python:3.12-slim
 
 WORKDIR /app
-
-COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
+COPY pyproject.toml uv.lock setup.py README.md LICENSE ./
 COPY src ./src
-COPY pyproject.toml .
+RUN pip install --no-cache-dir uv && uv sync --frozen --no-dev --extra vpnsci --extra fast
 
+ENV PATH="/app/.venv/bin:$PATH"
+ENV ACADEMIC_SOURCE_DATA_DIR=/data/academic-source
 EXPOSE 8000
-
-ENV SCANSCI_PDF_DATA_DIR=/data/paper-fetch
-ENV MCP_MODE=streamable_http
-
-CMD ["python", "-m", "scansci_pdf", "run", "--mode", "streamable_http"]
+CMD ["academic-source", "serve", "--host", "0.0.0.0", "--port", "8000"]
