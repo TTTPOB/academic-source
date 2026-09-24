@@ -12,6 +12,10 @@ build/
 Thumbs.db
 .env
 .venv/
+.worktrees/
+.ruff_cache/
+.pyrefly_cache/
+.academic-source/
 .scansci-pdf/
 piao_top30.json
 piao_top30_dois.txt
