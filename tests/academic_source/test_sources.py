@@ -357,24 +357,21 @@ def test_institutional_browser_login_gate_respects_saved_session(monkeypatch, tm
     assert downloader._complete_login_from_current_page(None, None) is False
 
 
-def test_science_challenge_after_large_header_is_not_a_paywall(monkeypatch, tmp_path):
+def test_science_challenge_is_not_a_paywall(monkeypatch, tmp_path):
     from scansci_pdf import _publisher_strategies_core as publisher
     from scansci_pdf import browser_engine
 
     html = (
-        "<html><head><title>Science page loading</title></head><body>"
-        + "x" * 5100
-        + '<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>'
-        + "get access through your institution</body></html>"
+        "<html><head><title>Just a moment...</title></head><body>"
+        '<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>'
+        "Cloudflare: get access through your institution</body></html>"
     )
     assert publisher._is_challenge_page(html)
     assert not publisher._detect_paywall(html, status_code=403)
-    short_challenge = "<title>Just a moment...</title>Cloudflare: get access"
-    assert publisher._is_challenge_page(short_challenge)
-    assert not publisher._detect_paywall(short_challenge, status_code=403)
     article = (
         "<html><head><title>Science article</title></head><body>"
-        '<script src="/cdn-cgi/rum"></script>Article content</body></html>'
+        '<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>'
+        "Article content</body></html>"
     )
     assert not publisher._is_challenge_page(article)
     assert not publisher._detect_paywall(article)
@@ -394,10 +391,11 @@ def test_science_challenge_after_large_header_is_not_a_paywall(monkeypatch, tmp_
         ),
     )
     monkeypatch.setattr(publisher, "_inject_cookies_to_tab", lambda *args: None)
+    login_calls = []
     monkeypatch.setattr(
         publisher,
         "_try_institutional_login",
-        lambda *args: (_ for _ in ()).throw(AssertionError("challenge is not a login")),
+        lambda *args: login_calls.append(args) or False,
     )
     monkeypatch.setattr(publisher.time, "sleep", lambda seconds: None)
     assert not publisher._browser_download(
@@ -408,6 +406,7 @@ def test_science_challenge_after_large_header_is_not_a_paywall(monkeypatch, tmp_
         "Science",
     )
     assert publisher.get_last_error()[0] == "cloudflare_blocked"
+    assert login_calls == []
 
 
 def test_challenge_reason_survives_later_source_failures(monkeypatch, tmp_path):

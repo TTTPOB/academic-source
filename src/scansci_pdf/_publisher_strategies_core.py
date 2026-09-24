@@ -1203,7 +1203,6 @@ _PUBLISHER_SSO_CONFIG: dict[str, dict[str, Any]] = {
 
 _CHALLENGE_SIGNATURES = [
     "cf-browser-verification",
-    "challenge-platform",
     "just a moment",
     "attention required",
     "security check",
@@ -1220,11 +1219,9 @@ _CHALLENGE_SIGNATURES = [
 
 
 def _is_challenge_page(html: str) -> bool:
-    """Detect explicit challenge markup even beyond a large page header."""
-    lower = html.lower()
-    if "cf-browser-verification" in lower or "/cdn-cgi/challenge-platform/" in lower:
-        return True
-    return any(sig in lower[:5000] for sig in _CHALLENGE_SIGNATURES)
+    """Detect challenge pages without mistaking Cloudflare JS detection for one."""
+    lower = html[:5000].lower()
+    return any(sig in lower for sig in _CHALLENGE_SIGNATURES)
 
 
 # ============================================================

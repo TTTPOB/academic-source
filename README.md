@@ -102,7 +102,7 @@ Unpaywall 需要真实联系邮箱。机构凭据、代理等放在 `source_conf
 
 若有 Elsevier API key（配置 `source_config.elsevier_api_key` 或服务进程的 `ELSEVIER_API_KEY` 环境变量），`10.1016/` 的 Cell/Elsevier DOI 在 `fastest`、`legal_only` 策略下先尝试 ElsevierAPI；取得可读 PDF 即停止，不再探测其他来源/浏览器，失败则照常回退。能否取得非 OA 正文取决于 key 的实际订阅权益及请求的网络路径；校园网不保证 API 授权。Nature、Science DOI 和显式的其他来源策略不受此捷径影响。
 
-Elsevier 当前默认请求 XML 后寻找 PDF 附件，不表示 `view=FULL` 在 API 中普遍无效：曾有请求路径返回 400，另一请求路径对默认 XML 与 `FULL` 均返回 200。XML 元数据 200 或 PDF 200 也不等于正文授权（后者可能只是单页图文摘要）；只有经 PDF 内容校验的结果才会被接受。
+ElsevierAPI 先试直接 PDF，失败时 XML 回退使用默认表示寻找 PDF 附件；这不表示 `view=FULL` 在 API 中普遍无效：曾有请求路径返回 400，另一请求路径对默认 XML 与 `FULL` 均返回 200。XML 元数据 200 或 PDF 200 也不等于正文授权（后者可能只是单页图文摘要）；只有经 PDF 内容校验的结果才会被接受。
 
 浏览器渠道为可选能力。若需要 Patchright 后端，工具安装时选择额外依赖 `academic-source[fast,vpnsci,patchright]`（仍使用上述 Git URL）；还需在运行环境中安装 Chromium。开发版示例：
 
