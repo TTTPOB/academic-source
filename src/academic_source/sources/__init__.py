@@ -139,15 +139,19 @@ class LegacySources:
                     "message": message,
                 }
             )
-        return {
-            "success": False,
-            "attempts": attempts,
-            "reason": next(
-                (
-                    item["reason"]
-                    for item in reversed(attempts)
-                    if item["reason"] not in ("not_found", "")
-                ),
-                "not_found",
+        reason = next(
+            (
+                item["reason"]
+                for item in reversed(attempts)
+                if item["reason"] not in ("not_found", "")
             ),
-        }
+            "not_found",
+        )
+        reason = {
+            "paywall": "auth_required",
+            "login_required": "auth_required",
+            "cloudflare_blocked": "network_error",
+            "browser_unavailable": "unsupported",
+            "config_needed": "unsupported",
+        }.get(reason, reason)
+        return {"success": False, "attempts": attempts, "reason": reason}

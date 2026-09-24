@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from academic_source.services.application import Application
-
 from academic_source.domain import AcquisitionRequest
+from academic_source.services.application import Application
 from academic_source.settings import Settings
 
 
@@ -159,11 +158,10 @@ def test_optional_exports_fail_without_downgrading_pdf(monkeypatch, tmp_path):
         app.close()
 
 
-def test_source_adapter_preserves_failed_attempts_and_skips_grey_policy(
+def test_source_adapter_preserves_failed_attempts_and_publisher_order(
     monkeypatch, tmp_path
 ):
     from academic_source.sources import LegacySources
-
     from scansci_pdf.sources import publishers
 
     def rejected(identifier, path, config):
@@ -187,6 +185,49 @@ def test_source_adapter_preserves_failed_attempts_and_skips_grey_policy(
     assert outcome["source"] == "publisher"
     assert [item["reason"] for item in outcome["attempts"][:1]] == ["auth_required"]
     assert [item["source"] for item in outcome["attempts"]] == ["Direct", "Publisher"]
+
+
+def test_legal_only_never_calls_grey_sources(monkeypatch, tmp_path):
+    from academic_source.sources import LegacySources
+    from scansci_pdf.sources import (
+        europepmc,
+        libgen,
+        oa_discovery,
+        openalex,
+        publishers,
+        scihub,
+        unpaywall,
+    )
+
+    monkeypatch.setattr(publishers, "get_publisher_fast_sources", lambda doi: [])
+    for module, names in (
+        (europepmc, ("try_pmc", "try_europepmc")),
+        (oa_discovery, ("try_doaj",)),
+        (openalex, ("try_openalex_oa",)),
+        (unpaywall, ("try_unpaywall",)),
+    ):
+        for name in names:
+            monkeypatch.setattr(module, name, lambda *args: None)
+
+    def forbidden(*args):
+        raise AssertionError("grey source called under legal_only")
+
+    monkeypatch.setattr(scihub, "try_scihub", forbidden)
+    monkeypatch.setattr(libgen, "try_libgen", forbidden)
+    outcome = LegacySources().acquire(
+        "10.1234/test",
+        AcquisitionRequest(identifiers=["10.1234/test"], policy="legal_only"),
+        tmp_path,
+        {"vpnsci_enabled": False},
+    )
+    assert outcome["reason"] == "not_found"
+    assert {item["source"] for item in outcome["attempts"]} == {
+        "Unpaywall",
+        "OpenAlexOA",
+        "PMC",
+        "EuropePMC",
+        "DOAJ",
+    }
 
 
 def test_noninteractive_legacy_login_fallback_does_not_open_windows(
