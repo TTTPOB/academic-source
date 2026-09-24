@@ -663,6 +663,11 @@ def last_pdf_fetch_error() -> str:
     return getattr(_tls, "pdf_fetch_error", "")
 
 
+def last_pdf_fetch_reason() -> str:
+    """Distinguish transport/timeout failures from a missing PDF."""
+    return getattr(_tls, "pdf_fetch_reason", "no_pdf_found")
+
+
 def fetch_pdf_in_tab(
     tab_id: str, pdf_url: str, output_path: Path, config: dict[str, Any]
 ) -> bool:
@@ -674,13 +679,15 @@ def fetch_pdf_in_tab(
     from urllib.parse import urljoin
 
     _tls.pdf_fetch_error = ""
+    _tls.pdf_fetch_reason = "no_pdf_found"
     started = time.monotonic()
     phase = "headers"
     written = 0
     status = None
     mime = None
 
-    def fail(reason: str) -> bool:
+    def fail(reason: str, *, category: str = "no_pdf_found") -> bool:
+        _tls.pdf_fetch_reason = category
         details = f"{phase}: {reason}; bytes={written}; elapsed={time.monotonic() - started:.1f}s"
         if status is not None:
             details += f"; status={status}; mime={mime}"
@@ -760,8 +767,12 @@ def fetch_pdf_in_tab(
         return True
     except Exception as exc:
         # Playwright errors may embed the JS call or URL; report only the class.
-        reason = "AbortError" if "AbortError" in str(exc) else type(exc).__name__
-        return fail(reason)
+        reason = (
+            "AbortError" if "AbortError" in str(exc)
+            else "TimeoutError" if "PDF timeout" in str(exc)
+            else type(exc).__name__
+        )
+        return fail(reason, category="network_error")
     finally:
         partial.unlink(missing_ok=True)
         if session is not None:

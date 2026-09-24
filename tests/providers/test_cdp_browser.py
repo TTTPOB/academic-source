@@ -203,12 +203,18 @@ def test_science_existing_dom_path_uses_borrowed_tab(monkeypatch, tmp_path):
     assert ("own-tab", "https://www.science.org/doi/pdf/10.1126/adh2586") in actions
     assert actions[-1] == "close-tab"
 
-    # Keep the first useful failure if another known publisher URL also fails.
+    # A later invalid candidate must not replace the first transport timeout.
+    failures = []
+
     def failed_fetch(tab, url, path, config):
+        failures.append(url)
+        browser_engine._tls.pdf_fetch_reason = (
+            "network_error" if len(failures) == 1 else "no_pdf_found"
+        )
         browser_engine._tls.pdf_fetch_error = (
             "headers: AbortError; bytes=0; elapsed=120.0s"
-            if "/doi/pdf/" in url
-            else "body: TimeoutError; bytes=1024; elapsed=120.0s"
+            if len(failures) == 1
+            else "headers: response rejected; bytes=0; elapsed=0.2s; status=403; mime=text/html"
         )
         return False
 
@@ -220,9 +226,11 @@ def test_science_existing_dom_path_uses_borrowed_tab(monkeypatch, tmp_path):
         {"browser_backend": "cdp", "interactive": False},
         "Science",
     )
-    assert (
-        strategy.get_last_error()[1] == "headers: AbortError; bytes=0; elapsed=120.0s"
+    assert strategy.get_last_error() == (
+        "network_error",
+        "headers: AbortError; bytes=0; elapsed=120.0s",
     )
+    assert len(failures) > 1
 
 
 @pytest.mark.parametrize(
@@ -368,6 +376,7 @@ def test_stream_pdf_and_reject_errors(monkeypatch, tmp_path):
     assert "headers: TimeoutError; bytes=0; elapsed=" in header_error
     assert "status=" not in header_error and "mime=" not in header_error
     assert "secret-url-query" not in header_error
+    assert browser_engine.last_pdf_fetch_reason() == "network_error"
     assert not output.exists()
     page.headers_timeout = False
     page.requests.clear()
@@ -385,6 +394,7 @@ def test_stream_pdf_and_reject_errors(monkeypatch, tmp_path):
         in browser_engine.last_pdf_fetch_error()
     )
     assert "status=403; mime=application/pdf" in browser_engine.last_pdf_fetch_error()
+    assert browser_engine.last_pdf_fetch_reason() == "no_pdf_found"
     page.status = 200
     page.content_type = "text/html"
     assert not browser_engine.fetch_pdf_in_tab(
@@ -418,6 +428,7 @@ def test_stream_pdf_and_reject_errors(monkeypatch, tmp_path):
     )
     assert page.aborted and page.cancelled
     assert "body: TimeoutError; bytes=" in browser_engine.last_pdf_fetch_error()
+    assert browser_engine.last_pdf_fetch_reason() == "network_error"
     assert "elapsed=" in browser_engine.last_pdf_fetch_error()
     assert not output.exists() and not (tmp_path / "article.pdf.part").exists()
 

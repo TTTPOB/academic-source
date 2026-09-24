@@ -1649,7 +1649,8 @@ def _browser_download(
     from .browser_engine import (
         is_available, create_tab, close_tab, evaluate_js,
         navigate_tab, download_pdf_via_browser, _is_pdf_url,
-        fetch_url, get_captured_responses, fetch_pdf_in_tab, last_pdf_fetch_error,
+        fetch_url, get_captured_responses, fetch_pdf_in_tab,
+        last_pdf_fetch_error, last_pdf_fetch_reason,
     )
     from .pdf_utils import is_pdf_file, success
     from .browser_backend import BACKEND_CDP, resolve_backend
@@ -1834,12 +1835,17 @@ def _browser_download(
             profile = _PUBLISHER_SSO_CONFIG.get(publisher, _PUBLISHER_SSO_CONFIG["_default"])
             candidates.extend(profile["pdf_paths"](doi))
             first_failure = ""
+            first_network_failure = ""
             for candidate in dict.fromkeys(candidates):
                 if fetch_pdf_in_tab(tab_id, candidate, output_path, config):
                     return success(doi, output_path, f"{publisher}(Browser)")
                 first_failure = first_failure or last_pdf_fetch_error()
-            _set_error("paywall" if _detect_paywall(html) else "no_pdf_found",
-                       first_failure or "try_other_source")
+                if last_pdf_fetch_reason() == "network_error":
+                    first_network_failure = first_network_failure or last_pdf_fetch_error()
+            reason = "network_error" if first_network_failure else (
+                "paywall" if _detect_paywall(html) else "no_pdf_found"
+            )
+            _set_error(reason, first_network_failure or first_failure or "try_other_source")
             return False
 
         if pdf_url:
