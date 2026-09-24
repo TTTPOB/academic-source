@@ -16,7 +16,6 @@ from scansci_pdf.sources.sage_cn import (
     try_sage_cn_authorized,
 )
 
-
 DOI = "10.1177/00472875261441572"
 ARTICLE_ID = "E9B3AA9AE4384B20910A5AE61E17A89F"
 RELATED_ID = "536880EE98A242A7934CC56B3E680C42"
@@ -26,15 +25,17 @@ def _save_cookie(cache_dir: Path, *, expires: float = 0) -> None:
     cookie_dir = cache_dir / "carsi_cookies"
     cookie_dir.mkdir(parents=True, exist_ok=True)
     (cookie_dir / "sage.json").write_text(
-        json.dumps([
-            {
-                "name": "token",
-                "value": "saved-session",
-                "domain": "sage.cnpereading.com",
-                "path": "/",
-                "expires": expires,
-            }
-        ]),
+        json.dumps(
+            [
+                {
+                    "name": "token",
+                    "value": "saved-session",
+                    "domain": "sage.cnpereading.com",
+                    "path": "/",
+                    "expires": expires,
+                }
+            ]
+        ),
         encoding="utf-8",
     )
 
@@ -57,7 +58,9 @@ def test_carsi_detects_cn_frontend_before_global_sage():
 def test_sage_strategy_does_not_guess_cn_pdf_url():
     strategy = StrategyRegistry.get_by_name("SAGE")
     assert strategy is not None
-    assert all("sage.cnpereading.com/doi/pdf/" not in url for url in strategy.pdf_urls(DOI))
+    assert all(
+        "sage.cnpereading.com/doi/pdf/" not in url for url in strategy.pdf_urls(DOI)
+    )
 
 
 def test_saved_sage_cn_session_requires_live_domain_cookie(tmp_path):
@@ -72,7 +75,9 @@ def test_saved_sage_cn_session_requires_live_domain_cookie(tmp_path):
 
 
 class _FakeResponse:
-    def __init__(self, *, text: str = "", body: bytes = b"", content_type: str = "text/html"):
+    def __init__(
+        self, *, text: str = "", body: bytes = b"", content_type: str = "text/html"
+    ):
         self.status_code = 200
         self.text = text
         self._body = body
@@ -121,7 +126,9 @@ def test_authorized_download_uses_real_article_id_endpoint(tmp_path):
 def test_authorized_download_does_not_make_request_without_saved_session(tmp_path):
     config = {"cache_dir": str(tmp_path)}
     session = _FakeSession("", b"")
-    assert not try_sage_cn_authorized(DOI, tmp_path / "paper.pdf", config, session=session)
+    assert not try_sage_cn_authorized(
+        DOI, tmp_path / "paper.pdf", config, session=session
+    )
     assert session.calls == []
 
 
@@ -170,7 +177,9 @@ def test_visible_browser_forwards_selected_backend_config(monkeypatch, tmp_path)
 
     monkeypatch.setattr(browser_engine, "is_available", lambda cfg: True)
     monkeypatch.setattr(browser_engine, "close_shared_browser", lambda cfg: None)
-    monkeypatch.setattr(core, "launch_persistent_context", fake_launch_persistent_context)
+    monkeypatch.setattr(
+        core, "launch_persistent_context", fake_launch_persistent_context
+    )
 
     with core._visible_browser(config, "sage"):
         pass

@@ -3,7 +3,8 @@ name = "academic-source"
 version = "0.1.0"
 description = "Academic resource acquisition through a unified HTTP, MCP, and CLI application"
 readme = "README.md"
-license = {text = "Apache-2.0"}
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "requests>=2.31",
@@ -34,21 +35,22 @@ camoufox = ["camoufox[geoip]>=0.4.11"]
 web = ["fastapi>=0.115", "jinja2>=3.1"]
 patchright = ["patchright>=1.61"]
 dev = ["pytest>=8.0"]
-compile = ["cython>=3.0"]
 
 [project.scripts]
 academic-source = "academic_source.interfaces.cli:main"
-scansci-pdf = "scansci_pdf.main:main"
 
 [build-system]
-requires = ["setuptools>=68.0", "pycryptodome>=3.20"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = false
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-scansci_pdf = ["data/*.json", "data/*.dat", "_core/*.pyd", "_core/*.so", "templates/*.html"]
+scansci_pdf = ["data/*.json", "templates/*.html"]
 
 [dependency-groups]
 dev = ["pytest>=8.0", "ruff>=0.15", "pyrefly>=0.50", "pre-commit>=4.0"]
@@ -64,4 +66,4 @@ project-includes = ["src/academic_source/**/*.py"]
 [tool.pytest.ini_options]
 # Manual network/browser scripts in the repo root (e.g. test_download_pnas.py)
 # must not be collected as tests.
-testpaths = ["tests"]
+testpaths = ["tests/academic_source", "tests/providers"]

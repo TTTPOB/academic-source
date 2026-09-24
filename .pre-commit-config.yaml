@@ -8,21 +8,21 @@ repos:
         args: [--fix]
         language: system
         types_or: [python, pyi]
-        files: ^(src/academic_source/|tests/academic_source/)
+        files: ^(src/academic_source/|tests/academic_source/|tests/providers/)
         require_serial: true
       - id: ruff-format
         name: ruff format
         entry: uv run --frozen ruff format --force-exclude
         language: system
         types_or: [python, pyi]
-        files: ^(src/academic_source/|tests/academic_source/)
+        files: ^(src/academic_source/|tests/academic_source/|tests/providers/)
         require_serial: true
       - id: pyrefly-check
         name: pyrefly check
         entry: uv run --frozen pyrefly check
         language: system
         types_or: [python, pyi]
-        files: ^(src/academic_source/|tests/academic_source/)
+        files: ^(src/academic_source/|tests/academic_source/|tests/providers/)
         pass_filenames: false
         require_serial: true
         stages: [pre-commit, pre-merge-commit, pre-push, manual]

@@ -22,7 +22,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --frozen --extra vpnsci --extra fast
-      - run: uv run --frozen ruff check src/academic_source tests/academic_source
-      - run: uv run --frozen ruff format --check src/academic_source tests/academic_source
+      - run: uv run --frozen ruff check src/academic_source tests/academic_source tests/providers
+      - run: uv run --frozen ruff format --check src/academic_source tests/academic_source tests/providers
       - run: uv run --frozen pyrefly check
-      - run: uv run --frozen pytest tests -q --tb=short
+      - run: uv run --frozen pytest -q --tb=short
