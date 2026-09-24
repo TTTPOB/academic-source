@@ -4,6 +4,8 @@ from scansci_pdf.publisher_strategies import StrategyRegistry
 
 
 def test_registry_routes_every_declared_prefix():
-    for strategy in StrategyRegistry.list_all():
+    strategies = StrategyRegistry.list_all()
+    assert strategies, "Publisher registry must not silently become empty"
+    for strategy in strategies:
         for prefix in strategy.doi_prefixes:
             assert StrategyRegistry.get_for_doi(f"{prefix}test.0001") is strategy
