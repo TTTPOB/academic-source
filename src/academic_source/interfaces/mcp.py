@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+from contextlib import asynccontextmanager, nullcontext, redirect_stdout
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -15,7 +17,18 @@ if TYPE_CHECKING:
     from academic_source.services.application import Application
 
 
-def create_mcp(application: Application) -> FastMCP:
+def create_mcp(application: Application, *, stdio: bool = False) -> FastMCP:
+    @asynccontextmanager
+    async def lifespan(_server: FastMCP):
+        # The SDK binds its protocol output before starting this lifespan.
+        # Provider/converter print calls must not become JSON-RPC stdout.
+        with redirect_stdout(sys.stderr) if stdio else nullcontext():
+            try:
+                yield {}
+            finally:
+                if stdio:
+                    await to_thread.run_sync(application.close)
+
     # The SDK route stays /mcp; mounting its ASGI app at / avoids /mcp/mcp.
     mcp = FastMCP(
         "academic-source",
@@ -28,6 +41,7 @@ def create_mcp(application: Application) -> FastMCP:
         host="0.0.0.0",
         streamable_http_path="/mcp",
         json_response=True,
+        lifespan=lifespan,
     )
 
     @mcp.tool()

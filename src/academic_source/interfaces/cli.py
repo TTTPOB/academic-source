@@ -124,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
 
         application = Application(Settings.load())
         try:
-            create_mcp(application).run(transport="stdio")
+            create_mcp(application, stdio=True).run(transport="stdio")
         finally:
             application.close()
         return 0
