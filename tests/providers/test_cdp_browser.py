@@ -307,7 +307,7 @@ def test_public_science_handler_uses_verified_pdf_entry(
             if scenario == "challenge":
                 assert strategy.get_last_error()[0] == "cloudflare_blocked"
     expected = (
-        f"https://www.science.org/doi/pdf/{doi}"
+        f"https://www.science.org/doi/epdf/{doi}"
         if backend == "cdp"
         else f"https://doi.org/{doi}"
     )

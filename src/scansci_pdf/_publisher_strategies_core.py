@@ -1751,15 +1751,39 @@ def _browser_download(
         # Get page HTML
         html = evaluate_js(tab_id, "document.documentElement.outerHTML", config) or ""
 
+        # The Science ePDF reader embeds a per-request signed pdfdirect URL. A
+        # Cloudflare challenge replaces the document before the reader starts,
+        # so poll for that URL rather than sampling the HTML once.
+        science_signed: str | None = None
+        if publisher == "Science" and doi.startswith(_SCIENCE_DOI_PREFIX):
+            challenged = _is_challenge_page(html)
+            science_signed = _wait_for_science_reader(
+                tab_id,
+                config,
+                timeout=(
+                    float(config.get("science_reader_timeout", 60))
+                    if challenged
+                    else 5.0
+                ),
+            )
+            if science_signed:
+                html = (
+                    evaluate_js(tab_id, "document.documentElement.outerHTML", config)
+                    or html
+                )
+
         # Check for anti-bot challenges
         if _is_challenge_page(html):
-            log.info(f"   [{publisher}] challenge detected, waiting for auto-resolve...")
-            time.sleep(8)
-            html = evaluate_js(tab_id, "document.documentElement.outerHTML", config) or ""
-            if _is_challenge_page(html):
-                log.info(f"   [{publisher}] challenge did not resolve")
-                _set_error("cloudflare_blocked", "use_proxy_or_browser")
-                return False
+            if science_signed:
+                log.info(f"   [{publisher}] reader page resolved after challenge")
+            else:
+                log.info(f"   [{publisher}] challenge detected, waiting for auto-resolve...")
+                time.sleep(8)
+                html = evaluate_js(tab_id, "document.documentElement.outerHTML", config) or ""
+                if _is_challenge_page(html):
+                    log.info(f"   [{publisher}] challenge did not resolve")
+                    _set_error("cloudflare_blocked", "use_proxy_or_browser")
+                    return False
 
         # CDP uses an already-authorized profile. Generic access navigation
         # text is not proof of a paywall; try the existing PDF URLs first.
@@ -1826,6 +1850,10 @@ def _browser_download(
 
         if resolve_backend(config) == BACKEND_CDP:
             candidates = [pdf_url] if pdf_url else []
+            if science_signed:
+                # Server-signed ePDF transport: the publisher's own clean PDF,
+                # preferred over the watermarked /doi/pdf/ rendering.
+                candidates.insert(0, science_signed)
             if pdf_url and "/doi/pdf/" in pdf_url:
                 candidates.append(pdf_url.replace("/doi/pdf/", "/doi/pdfdirect/"))
             elif pdf_url and "/doi/epdf/" in pdf_url:
@@ -3113,6 +3141,53 @@ def try_nature_browser(
     return None
 
 
+_SCIENCE_DOI_PREFIX = "10.1126/"
+_SCIENCE_EPDF_URL = "https://www.science.org/doi/epdf/{doi}"
+
+
+def _science_reader_signed_url(tab_id: str, config: dict[str, Any]) -> str | None:
+    """Read the server-signed pdfdirect URL from a loaded Science ePDF page.
+
+    Science renders readerConfig.epubConfig.epubUrl into the ePDF HTML with a
+    per-request hmac signature. The value is a short-lived credential: it is
+    consumed in place and never logged or persisted.
+    """
+    from .browser_engine import evaluate_js
+
+    value = evaluate_js(
+        tab_id,
+        "(() => { const c = window.readerConfig;"
+        " return (c && c.epubConfig && c.epubConfig.epubUrl) || null; })()",
+        config,
+    )
+    if not isinstance(value, str) or not value.startswith("/doi/pdfdirect/"):
+        return None
+    candidate = value.replace("\\u003d", "=").replace("\\/", "/")
+    if "hmac=" not in candidate:
+        return None
+    return candidate
+
+
+def _wait_for_science_reader(
+    tab_id: str, config: dict[str, Any], *, timeout: float
+) -> str | None:
+    """Poll until the Science reader replaces a Cloudflare challenge document.
+
+    A challenge page and the reader page are different documents, so a single
+    HTML sample can still be the challenge. Polling the reader config is the
+    reliable completion signal.
+    """
+    interval = 2.0
+    attempts = max(1, int(timeout / interval))
+    for attempt in range(attempts):
+        signed = _science_reader_signed_url(tab_id, config)
+        if signed:
+            return signed
+        if attempt + 1 < attempts:
+            time.sleep(interval)
+    return None
+
+
 def try_science_browser(
     doi: str, output_path: Path, config: dict[str, Any],
 ) -> dict[str, Any] | None:
@@ -3121,10 +3196,11 @@ def try_science_browser(
     from .pdf_utils import is_pdf_file
     from .pdf_utils import success
 
-    # CDP's authorized Chrome profile reaches the official PDF entry directly;
-    # the shared browser flow still checks that page for an actual challenge.
+    # CDP's authorized profile opens the ePDF reader, whose HTML carries a
+    # per-request signed pdfdirect URL. The reader page also absorbs the
+    # Cloudflare challenge that blocks a direct /doi/pdf/ navigation.
     entry_url = (
-        f"https://www.science.org/doi/pdf/{doi}"
+        _SCIENCE_EPDF_URL.format(doi=doi)
         if resolve_backend(config) == BACKEND_CDP
         else f"https://doi.org/{doi}"
     )
