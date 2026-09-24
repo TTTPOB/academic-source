@@ -1649,7 +1649,7 @@ def _browser_download(
     from .browser_engine import (
         is_available, create_tab, close_tab, evaluate_js,
         navigate_tab, download_pdf_via_browser, _is_pdf_url,
-        fetch_url, get_captured_responses, fetch_pdf_in_tab,
+        fetch_url, get_captured_responses, fetch_pdf_in_tab, last_pdf_fetch_error,
     )
     from .pdf_utils import is_pdf_file, success
     from .browser_backend import BACKEND_CDP, resolve_backend
@@ -1837,7 +1837,7 @@ def _browser_download(
                 if fetch_pdf_in_tab(tab_id, candidate, output_path, config):
                     return success(doi, output_path, f"{publisher}(Browser)")
             _set_error("paywall" if _detect_paywall(html) else "no_pdf_found",
-                       "login_required" if _detect_paywall(html) else "try_other_source")
+                       last_pdf_fetch_error() or "try_other_source")
             return False
 
         if pdf_url:

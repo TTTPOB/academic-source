@@ -252,11 +252,13 @@ def test_stream_pdf_and_reject_errors(monkeypatch, tmp_path):
         "tab", "/doi/pdf/10.1126/adh2586", output, config
     )
     assert not output.exists()
+    assert "HTTP 403" in browser_engine.last_pdf_fetch_error()
     page.status = 200
     page.content_type = "text/html"
     assert not browser_engine.fetch_pdf_in_tab(
         "tab", "/doi/pdf/10.1126/adh2586", output, config
     )
+    assert "content-type text/html" in browser_engine.last_pdf_fetch_error()
     page.content_type = "application/pdf"
     page.result_url = "https://other.example/pdf"
     assert not browser_engine.fetch_pdf_in_tab(

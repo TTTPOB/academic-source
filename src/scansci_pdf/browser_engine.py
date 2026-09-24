@@ -658,6 +658,11 @@ def get_snapshot(tab_id: str, config: dict[str, Any], *, timeout: float = 15.0) 
         return {"url": "", "snapshot": "", "error": str(e)}
 
 
+def last_pdf_fetch_error() -> str:
+    """Return the last browser fetch failure on this browser-owning thread."""
+    return getattr(_tls, "pdf_fetch_error", "")
+
+
 def fetch_pdf_in_tab(
     tab_id: str, pdf_url: str, output_path: Path, config: dict[str, Any]
 ) -> bool:
@@ -668,12 +673,15 @@ def fetch_pdf_in_tab(
     """
     from urllib.parse import urljoin
 
+    _tls.pdf_fetch_error = ""
     page = _resolve_tab(tab_id)
     if page is None:
+        _tls.pdf_fetch_error = "tab not found"
         return False
     origin = urlparse(page.url)
     target = urlparse(urljoin(page.url, pdf_url))
     if (origin.scheme, origin.netloc) != (target.scheme, target.netloc) or origin.scheme not in ("http", "https"):
+        _tls.pdf_fetch_error = "cross-origin PDF URL"
         logger.info("browser_engine: refusing cross-origin PDF fetch")
         return False
     # Browser-side abort covers both waiting for headers and a stalled stream.
@@ -706,7 +714,8 @@ def fetch_pdf_in_tab(
         media_type = meta["type"].lower()
         if (not meta["ok"] or not any(t in media_type for t in ("pdf", "octet-stream"))
                 or (landed.scheme, landed.netloc) != (origin.scheme, origin.netloc)):
-            logger.info("browser_engine: PDF fetch rejected: status=%s content-type=%s", meta["status"], meta["type"])
+            _tls.pdf_fetch_error = f"HTTP {meta['status']}, content-type {meta['type']}, redirect {landed.netloc}"
+            logger.info("browser_engine: PDF fetch rejected: %s", _tls.pdf_fetch_error)
             return False
         session.evaluate("s => {s.reader = s.response.body.getReader()}")
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -725,6 +734,7 @@ def fetch_pdf_in_tab(
                 data = bytes(chunk["bytes"])
                 size += len(data)
                 if size > max_bytes:
+                    _tls.pdf_fetch_error = "PDF exceeds configured byte limit"
                     logger.info("browser_engine: PDF exceeds configured byte limit")
                     return False
                 stream.write(data)
@@ -742,6 +752,7 @@ def fetch_pdf_in_tab(
         partial.replace(output_path)
         return True
     except Exception as exc:
+        _tls.pdf_fetch_error = str(exc)[:160]
         logger.info("browser_engine: PDF stream failed: %s", exc)
         return False
     finally:
