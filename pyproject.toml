@@ -11,14 +11,12 @@ dependencies = [
     "requests[socks]>=2.31",
     "urllib3>=2.7.0",
     "beautifulsoup4>=4.12",
-    "mcp[cli]>=1.27,<2",
+    "mcp>=1.27,<2",
     "pydantic>=2.11",
     "httpx>=0.28",
     "python-multipart>=0.0.20",
-    "typer>=0.15",
     "uvicorn>=0.34",
     "fastapi>=0.115",
-    "jinja2>=3.1",
     "pymupdf>=1.24",
     "openpyxl>=3.1",
     "pymupdf4llm>=0.0.17",
@@ -45,14 +43,14 @@ include-package-data = false
 where = ["src"]
 
 [tool.setuptools.package-data]
-scansci_pdf = ["data/*.json", "templates/*.html"]
+scansci_pdf = ["data/*.json"]
 
 [dependency-groups]
 dev = ["pytest>=8.0", "ruff>=0.15", "pyrefly>=0.50", "pre-commit>=4.0"]
 
 [tool.ruff]
 target-version = "py311"
-extend-exclude = ["src/scansci_pdf", "scripts", "build_core.py", "setup.py"]
+extend-exclude = ["src/scansci_pdf", "scripts"]
 
 [tool.pyrefly]
 preset = "basic"

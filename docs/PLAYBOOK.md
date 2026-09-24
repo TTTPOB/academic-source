@@ -8,12 +8,10 @@
 
 1. **造轮子前先 grep 家底。** 镜像健康存储先后被造过三代（探测系统 → domain_db → 内存 dict），三代平行存在的维护成本远高于合并。
 2. **修复必须变成测试。** 没有测试的修复在下一个会话里等于不存在。
-3. **修复必须发布。** 不发 PyPI，用户手里的永远是旧版（"我这里好好的，用户那里不行"的根源之一）。
-4. **双 checkout 必须同步。** 编辑在 `D:\scansci-pdf`，运行在 `C:\Users\Liang\plugins\scansci-pdf`。`tests/test_checkout_sync.py` 会拦——它已抓出 268 文件漂移和多次单文件遗漏。
-5. **多文件 cp 必须用显式目标路径。** `cp a b dest/` 曾三次把 `sources/` 下的文件错误复制到平面层（同步测试抓的）。
+3. **修复必须交付。** 新项目不再沿用原 PyPI/插件发布路径；将修复合入本项目并通过测试后，再按新发布流程交付。
 8. **用户数据永不进仓库树。** 用户的文献清单、DOI 集合、state JSON、下载产物只存在于 Downloads/数据目录——仓库是公开的，`git add -A` 前先想一遍今天动了什么。发布后跑一遍清单特征 grep（2026-08-31 审计模式：4 渠道全查）。
-6. **Playwright sync 对象线程亲和。**（2026-08-31：退出收割时跨线程 close 失败 + Windows 杀父不杀子，4 个 chrome 残留）
-7. **每个验证过的单元立即提交。**（2026-08-31：一条手滑的 cp 覆盖了未提交的 progress_reporter.py，靠 git 恢复——攒着就是风险） 退出收割时跨线程 close() 必然失败，Windows 上杀父进程不杀子进程——收割必须 tree-kill（taskkill /F /T）。
+4. **Playwright sync 对象线程亲和。**（2026-08-31：退出收割时跨线程 close 失败 + Windows 杀父不杀子，4 个 chrome 残留）
+5. **每个验证过的单元立即提交。**（2026-08-31：一条手滑的 cp 覆盖了未提交的 progress_reporter.py，靠 git 恢复——攒着就是风险） 退出收割时跨线程 close() 必然失败，Windows 上杀父进程不杀子进程——收割必须 tree-kill（taskkill /F /T）。
 
 ## 镜像健康：唯一权威存储
 
