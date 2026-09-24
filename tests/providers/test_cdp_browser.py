@@ -1,5 +1,6 @@
 """CDP lifecycle and page-origin byte transport; no real browser is launched."""
 
+import logging
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -456,3 +457,139 @@ def test_stream_pdf_and_reject_errors(monkeypatch, tmp_path):
         in browser_engine.last_pdf_fetch_error()
     )
     assert "status=200; mime=application/pdf" in browser_engine.last_pdf_fetch_error()
+
+
+# ============================================================
+# Science server-signed ePDF transport
+# ============================================================
+
+SIGNED_PDFDIRECT = "/doi/pdfdirect/10.1126/adh2586?hmac=1790266406-QUJDREVGR0g%3D"
+
+
+def test_science_reader_signed_url_accepts_only_site_signed_pdfdirect(monkeypatch):
+    from scansci_pdf import _publisher_strategies_core as strategy
+
+    accepted = (
+        SIGNED_PDFDIRECT,
+        "/doi/pdfdirect/10.1126/x?hmac=1-abc",
+    )
+    rejected = (
+        None,
+        "/doi/pdf/10.1126/adh2586",
+        "/doi/pdfdirect/10.1126/adh2586",
+        "https://evil.example/doi/pdfdirect/10.1126/x?hmac=1-abc",
+        "https://www.science.org.evil.example/doi/pdfdirect/10.1126/x?hmac=1-abc",
+    )
+    for value in accepted:
+        monkeypatch.setattr(
+            browser_engine, "evaluate_js", lambda *a, _v=value, **kw: _v
+        )
+        assert strategy._science_reader_signed_url("tab", {}) == value
+    for value in rejected:
+        monkeypatch.setattr(
+            browser_engine, "evaluate_js", lambda *a, _v=value, **kw: _v
+        )
+        assert strategy._science_reader_signed_url("tab", {}) is None
+
+
+def test_wait_for_science_reader_polls_until_reader_replaces_challenge(monkeypatch):
+    from scansci_pdf import _publisher_strategies_core as strategy
+
+    answers = [None, None, SIGNED_PDFDIRECT]
+    sleeps = []
+    monkeypatch.setattr(
+        browser_engine,
+        "evaluate_js",
+        lambda *a, **kw: answers.pop(0) if answers else None,
+    )
+    monkeypatch.setattr(strategy.time, "sleep", lambda seconds: sleeps.append(seconds))
+    assert strategy._wait_for_science_reader("tab", {}, timeout=60) == SIGNED_PDFDIRECT
+    assert sleeps == [2.0, 2.0]
+
+    monkeypatch.setattr(browser_engine, "evaluate_js", lambda *a, **kw: None)
+    sleeps.clear()
+    assert strategy._wait_for_science_reader("tab", {}, timeout=6) is None
+    assert sleeps == [2.0, 2.0]  # bounded attempts, never an unbounded busy loop
+
+
+def _science_browser_stubs(monkeypatch, evaluate):
+    from scansci_pdf import _publisher_strategies_core as strategy
+
+    monkeypatch.setattr(browser_engine, "is_available", lambda config: True)
+    monkeypatch.setattr(browser_engine, "create_tab", lambda *a, **kw: "own-tab")
+    monkeypatch.setattr(browser_engine, "navigate_tab", lambda *a, **kw: True)
+    monkeypatch.setattr(browser_engine, "close_tab", lambda *a: None)
+    monkeypatch.setattr(browser_engine, "evaluate_js", evaluate)
+    monkeypatch.setattr(strategy, "_inject_cookies_to_tab", lambda *a: None)
+    monkeypatch.setattr(strategy.time, "sleep", lambda seconds: None)
+    return strategy
+
+
+def test_science_signed_pdfdirect_preferred_over_watermarked_pdf(
+    monkeypatch, tmp_path, caplog
+):
+    fetched = []
+    strategy = _science_browser_stubs(
+        monkeypatch,
+        lambda tab, js, config, **kw: (
+            SIGNED_PDFDIRECT
+            if "readerConfig" in js
+            else "<html><body>Science reader</body></html>"
+        ),
+    )
+
+    def fetch(tab, url, path, config):
+        fetched.append(url)
+        document = pymupdf.open()
+        document.new_page()
+        document.save(path)
+        document.close()
+        return True
+
+    monkeypatch.setattr(browser_engine, "fetch_pdf_in_tab", fetch)
+    with caplog.at_level(logging.INFO):
+        result = strategy._browser_download(
+            "10.1126/adh2586",
+            "https://www.science.org/doi/epdf/10.1126/adh2586",
+            tmp_path / "signed.pdf",
+            {"browser_backend": "cdp", "interactive": False},
+            "Science",
+        )
+    assert result and result["success"]
+    assert fetched == [SIGNED_PDFDIRECT]
+    # The short-lived signed URL must never reach logs.
+    assert "hmac=" not in caplog.text
+    assert "QUJDREVGR0g" not in caplog.text
+
+
+def test_science_missing_reader_config_falls_back_to_watermarked_pdf(
+    monkeypatch, tmp_path
+):
+    fetched = []
+    strategy = _science_browser_stubs(
+        monkeypatch,
+        lambda tab, js, config, **kw: (
+            None if "readerConfig" in js else "<html><body>Science reader</body></html>"
+        ),
+    )
+
+    def fetch(tab, url, path, config):
+        fetched.append(url)
+        if url != "/doi/pdf/10.1126/adh2586":
+            browser_engine._tls.pdf_fetch_reason = "no_pdf_found"
+            return False
+        document = pymupdf.open()
+        document.new_page()
+        document.save(path)
+        document.close()
+        return True
+
+    monkeypatch.setattr(browser_engine, "fetch_pdf_in_tab", fetch)
+    assert strategy._browser_download(
+        "10.1126/adh2586",
+        "https://www.science.org/doi/epdf/10.1126/adh2586",
+        tmp_path / "fallback.pdf",
+        {"browser_backend": "cdp", "interactive": False},
+        "Science",
+    )
+    assert fetched == ["/doi/pdf/10.1126/adh2586"]
