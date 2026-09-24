@@ -19,6 +19,9 @@ class FakePage:
         self.content_type = "application/pdf"
         self.result_url = "https://www.science.org/doi/pdf/10.1126/adh2586"
         self.broken = False
+        self.timeout_after_chunk = False
+        self.aborted = False
+        self.cancelled = False
         self.on_close = lambda page: None
 
     def on(self, event, callback):
@@ -30,37 +33,34 @@ class FakePage:
         self.on_close(self)
 
     def evaluate_handle(self, script, argument):
-        self.requests.append(argument)
-        return FakeResponse(self)
+        assert "AbortController" in script and "setTimeout" in script
+        assert argument["timeout"] > 0
+        self.requests.append(argument["url"])
+        return FakeSession(self)
 
 
-class FakeResponse:
-    def __init__(self, page):
-        self.page = page
-        self.disposed = False
-
-    def evaluate(self, script):
-        return {
-            "ok": self.page.status == 200,
-            "status": self.page.status,
-            "type": self.page.content_type,
-            "url": self.page.result_url,
-        }
-
-    def evaluate_handle(self, script):
-        return FakeReader(self.page)
-
-    def dispose(self):
-        self.disposed = True
-
-
-class FakeReader:
+class FakeSession:
     def __init__(self, page):
         self.page = page
         self.position = 0
         self.disposed = False
 
     def evaluate(self, script):
+        if "s.response.ok" in script:
+            return {
+                "ok": self.page.status == 200,
+                "status": self.page.status,
+                "type": self.page.content_type,
+                "url": self.page.result_url,
+            }
+        if "s.reader =" in script:
+            return None
+        if "clearTimeout" in script:
+            self.page.aborted = self.page.cancelled = True
+            return None
+        assert "s.reader.read()" in script and "Date.now() >= s.deadline" in script
+        if self.page.timeout_after_chunk and self.position:
+            raise TimeoutError("browser AbortController reached deadline")
         if self.page.broken and self.position:
             raise OSError("stream interrupted")
         data = self.page.payload[self.position : self.position + 32768]
@@ -146,7 +146,8 @@ def test_cdp_connection_failure_is_not_local_fallback(monkeypatch):
 def test_science_existing_dom_path_uses_borrowed_tab(monkeypatch, tmp_path):
     from scansci_pdf import _publisher_strategies_core as strategy
 
-    html = '<html><a href="/doi/pdf/10.1126/adh2586">View PDF</a></html>'
+    html = '<html><nav>Get access | Institutional access | Subscribe</nav><a href="/doi/pdf/10.1126/adh2586">View PDF</a></html>'
+    assert strategy._detect_paywall(html)
     actions = []
     monkeypatch.setattr(browser_engine, "is_available", lambda config: True)
     monkeypatch.setattr(browser_engine, "create_tab", lambda *a, **kw: "own-tab")
@@ -268,3 +269,27 @@ def test_stream_pdf_and_reject_errors(monkeypatch, tmp_path):
     )
     assert not output.exists()
     assert not (tmp_path / "article.pdf.part").exists()
+    assert page.aborted and page.cancelled
+
+    page.broken = False
+    page.aborted = page.cancelled = False
+    page.timeout_after_chunk = True
+    assert not browser_engine.fetch_pdf_in_tab(
+        "tab",
+        "/doi/pdf/10.1126/adh2586",
+        output,
+        {"browser_pdf_timeout": 0.01},
+    )
+    assert page.aborted and page.cancelled
+    assert not output.exists() and not (tmp_path / "article.pdf.part").exists()
+
+    page.timeout_after_chunk = False
+    page.aborted = page.cancelled = False
+    assert not browser_engine.fetch_pdf_in_tab(
+        "tab",
+        "/doi/pdf/10.1126/adh2586",
+        output,
+        {"browser_pdf_max_bytes": 10},
+    )
+    assert page.aborted and page.cancelled
+    assert not output.exists() and not (tmp_path / "article.pdf.part").exists()

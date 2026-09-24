@@ -1,4 +1,4 @@
-# Modified by academic-source for unified acquisition and noninteractive operation.
+# Modified by academic-source for unified acquisition, CDP access, and noninteractive operation.
 """Publisher-specific browser download strategies.
 
 Implements tailored download paths for major academic publishers,
@@ -1760,11 +1760,9 @@ def _browser_download(
                 _set_error("cloudflare_blocked", "use_proxy_or_browser")
                 return False
 
-        # Check for paywall AFTER challenge resolution
-        if _detect_paywall(html):
-            if resolve_backend(config) == BACKEND_CDP:
-                _set_error("paywall", "login_required")
-                return False
+        # CDP uses an already-authorized profile. Generic access navigation
+        # text is not proof of a paywall; try the existing PDF URLs first.
+        if _detect_paywall(html) and resolve_backend(config) != BACKEND_CDP:
             log.info(f"   [{publisher}] paywall detected — trying institutional login...")
             if _try_institutional_login(tab_id, config, publisher):
                 # Login succeeded, re-fetch page content
@@ -1780,7 +1778,8 @@ def _browser_download(
                 return False
 
         # Also detect paywall by absence of PDF links (Cell Press pattern)
-        if publisher == "Elsevier" and "cell.com" in str(evaluate_js(tab_id, "window.location.href", config) or ""):
+        if (resolve_backend(config) != BACKEND_CDP and publisher == "Elsevier"
+                and "cell.com" in str(evaluate_js(tab_id, "window.location.href", config) or "")):
             has_showpdf = evaluate_js(tab_id, """
                 (() => {
                     return document.querySelectorAll('a[href*="showPdf"], a[href*="pdfExtended"]').length;
@@ -1837,7 +1836,8 @@ def _browser_download(
             for candidate in dict.fromkeys(candidates):
                 if fetch_pdf_in_tab(tab_id, candidate, output_path, config):
                     return success(doi, output_path, f"{publisher}(Browser)")
-            _set_error("no_pdf_found", "try_other_source")
+            _set_error("paywall" if _detect_paywall(html) else "no_pdf_found",
+                       "login_required" if _detect_paywall(html) else "try_other_source")
             return False
 
         if pdf_url:

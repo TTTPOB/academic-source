@@ -1,4 +1,4 @@
-# Modified by academic-source for unified acquisition and noninteractive operation.
+# Modified by academic-source for unified acquisition, bounded CDP download, and noninteractive operation.
 """Browser engine: CloakBrowser-based replacement for camofox daemon API.
 
 Provides the same public API as the old camofox.py (is_available, solve_url,
@@ -676,15 +676,31 @@ def fetch_pdf_in_tab(
     if (origin.scheme, origin.netloc) != (target.scheme, target.netloc) or origin.scheme not in ("http", "https"):
         logger.info("browser_engine: refusing cross-origin PDF fetch")
         return False
-    response = reader = None
+    # Browser-side abort covers both waiting for headers and a stalled stream.
+    # The deadline starts before fetch; byte cap bounds memory/disk use per job.
+    timeout_ms = max(1, int(float(config.get("browser_pdf_timeout", 120)) * 1000))
+    max_bytes = max(1, int(config.get("browser_pdf_max_bytes", 100 * 1024 * 1024)))
+    session = None
     partial = output_path.with_name(output_path.name + ".part")
     try:
-        response = page.evaluate_handle(
-            """async url => fetch(url, {credentials: 'include', headers: {Accept: 'application/pdf'}})""",
-            target.geturl(),
+        session = page.evaluate_handle(
+            """async ({url, timeout}) => {
+                const controller = new AbortController();
+                const deadline = Date.now() + timeout;
+                const timer = setTimeout(() => controller.abort(), timeout);
+                try {
+                    const response = await fetch(url, {
+                        credentials: 'include', mode: 'same-origin',
+                        headers: {Accept: 'application/pdf'}, signal: controller.signal
+                    });
+                    return {controller, response, timer, deadline};
+                } catch (error) { clearTimeout(timer); throw error; }
+            }""",
+            {"url": target.geturl(), "timeout": timeout_ms},
         )
-        meta = response.evaluate(
-            """r => ({ok: r.ok, status: r.status, type: r.headers.get('content-type') || '', url: r.url})"""
+        meta = session.evaluate(
+            """s => ({ok: s.response.ok, status: s.response.status,
+                     type: s.response.headers.get('content-type') || '', url: s.response.url})"""
         )
         landed = urlparse(meta["url"])
         media_type = meta["type"].lower()
@@ -692,16 +708,26 @@ def fetch_pdf_in_tab(
                 or (landed.scheme, landed.netloc) != (origin.scheme, origin.netloc)):
             logger.info("browser_engine: PDF fetch rejected: status=%s content-type=%s", meta["status"], meta["type"])
             return False
-        reader = response.evaluate_handle("r => r.body.getReader()")
+        session.evaluate("s => {s.reader = s.response.body.getReader()}")
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        size = 0
         with partial.open("wb") as stream:
             while True:
-                chunk = reader.evaluate(
-                    """async r => {const {done, value} = await r.read(); return {done, bytes: done ? [] : Array.from(value)}}"""
+                chunk = session.evaluate(
+                    """async s => {
+                        if (Date.now() >= s.deadline) { s.controller.abort(); throw Error('PDF timeout'); }
+                        const {done, value} = await s.reader.read();
+                        return {done, bytes: done ? [] : Array.from(value)};
+                    }"""
                 )
                 if chunk["done"]:
                     break
-                stream.write(bytes(chunk["bytes"]))
+                data = bytes(chunk["bytes"])
+                size += len(data)
+                if size > max_bytes:
+                    logger.info("browser_engine: PDF exceeds configured byte limit")
+                    return False
+                stream.write(data)
         import pymupdf
 
         with partial.open("rb") as stream:
@@ -720,12 +746,12 @@ def fetch_pdf_in_tab(
         return False
     finally:
         partial.unlink(missing_ok=True)
-        for handle in (reader, response):
-            if handle is not None:
-                try:
-                    handle.dispose()
-                except Exception:
-                    pass  # Disconnect during cleanup must not hide a completed PDF.
+        if session is not None:
+            try:
+                session.evaluate("s => {clearTimeout(s.timer); s.controller.abort(); s.reader?.cancel().catch(() => {})}")
+                session.dispose()
+            except Exception:
+                pass  # A disconnected browser must not hide the original result.
 
 
 def download_pdf_via_browser(

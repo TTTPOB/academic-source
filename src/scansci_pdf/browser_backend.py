@@ -1,3 +1,4 @@
+# Modified by academic-source for borrowed Chrome CDP session ownership.
 """Local browser launchers and a borrowed external Chrome CDP session.
 
 Local Patchright, CloakBrowser and Camoufox own their browser/context lifecycle.
