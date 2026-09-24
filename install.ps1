@@ -1,64 +1,14 @@
-# ScanSci PDF - Quick Install Script (Windows)
+# Install this checkout, never an upstream package release.
 $ErrorActionPreference = "Stop"
-
-Write-Host "=== ScanSci PDF Installer ===" -ForegroundColor Cyan
-Write-Host ""
-
-# Check Python
-$python = $null
-if (Get-Command python3 -ErrorAction SilentlyContinue) {
-    $python = "python3"
-} elseif (Get-Command python -ErrorAction SilentlyContinue) {
-    $python = "python"
-} else {
-    Write-Host "ERROR: Python not found. Install Python 3.11+ first." -ForegroundColor Red
-    Write-Host "  Download: https://www.python.org/downloads/"
-    Write-Host "  Or: winget install Python.Python.3.12"
-    exit 1
+if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+    throw "Install uv first: https://docs.astral.sh/uv/"
 }
-
-$pyVersion = & $python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
-Write-Host "Found Python $pyVersion"
-
-# Check version
-$pyMajor = & $python -c "import sys; print(sys.version_info.major)"
-$pyMinor = & $python -c "import sys; print(sys.version_info.minor)"
-if ([int]$pyMajor -lt 3 -or ([int]$pyMajor -eq 3 -and [int]$pyMinor -lt 11)) {
-    Write-Host "ERROR: Python 3.11+ required, found $pyVersion" -ForegroundColor Red
-    exit 1
+Push-Location $PSScriptRoot
+try {
+    & uv sync --frozen --extra vpnsci --extra fast
+    if ($LASTEXITCODE -ne 0) { throw "uv sync failed" }
+    Write-Host "Ready: uv run academic-source serve --host 127.0.0.1 --port 8000"
+    Write-Host "MCP stdio: uv run academic-source mcp"
+} finally {
+    Pop-Location
 }
-
-# Create virtual environment
-$venvDir = if ($env:SCANSCI_PDF_VENV) { $env:SCANSCI_PDF_VENV } else { "$env:USERPROFILE\.scansci-pdf\venv" }
-Write-Host "Creating virtual environment at $venvDir ..."
-New-Item -ItemType Directory -Force -Path (Split-Path $venvDir) | Out-Null
-& $python -m venv $venvDir
-
-# Activate and install
-& "$venvDir\Scripts\Activate.ps1"
-Write-Host "Installing scansci-pdf with recommended optional dependencies (fast + vpnsci) ..."
-pip install --upgrade pip -q
-pip install ".[fast,vpnsci]" -q
-
-Write-Host ""
-Write-Host "=== Installation Complete ===" -ForegroundColor Green
-Write-Host ""
-Write-Host "Usage:"
-Write-Host "  # Activate virtual environment"
-Write-Host "  & `"$venvDir\Scripts\Activate.ps1`""
-Write-Host ""
-Write-Host "  # Run as stdio MCP server (for Claude Code)"
-Write-Host "  scansci-pdf run --mode stdio"
-Write-Host ""
-Write-Host "  # Run as HTTP server"
-Write-Host "  scansci-pdf run --mode streamable_http"
-Write-Host ""
-Write-Host "  # Check dependencies"
-Write-Host "  scansci-pdf check"
-Write-Host ""
-Write-Host "  # Or use Docker (recommended)"
-Write-Host "  docker compose up -d"
-Write-Host ""
-
-# Check dependencies
-scansci-pdf check

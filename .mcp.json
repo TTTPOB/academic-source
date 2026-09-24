@@ -1,10 +1,8 @@
 {
   "mcpServers": {
-    "scansci-pdf": {
-      "command": "scansci-pdf",
-      "args": [
-        "run"
-      ]
+    "academic-source": {
+      "command": "uv",
+      "args": ["run", "--frozen", "academic-source", "mcp"]
     }
   }
 }
