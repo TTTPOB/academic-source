@@ -32,5 +32,7 @@ services:
           chrome.pipe(client);
           client.on('error', () => chrome.destroy());
           chrome.on('error', () => client.destroy());
+          client.on('close', () => chrome.destroy());
+          chrome.on('close', () => client.destroy());
         }).listen(9222, '0.0.0.0');
     restart: unless-stopped

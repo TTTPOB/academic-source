@@ -4,5 +4,7 @@ set -eu
 profile=/config/academic-profile
 mkdir -p "$profile"
 for name in SingletonLock SingletonCookie SingletonSocket; do
-    rm -f "$profile/$name"
+    if [ -L "$profile/$name" ]; then
+        rm -- "$profile/$name"
+    fi
 done
