@@ -275,6 +275,10 @@ def _try_institutional_login(tab_id: str, config: dict[str, Any], publisher: str
     """
     from .browser_engine import evaluate_js, navigate_tab
 
+    if config.get("interactive", True) is False:
+        _set_error("auth_required", "login_required")
+        return False
+
     idp_name = config.get("carsi_idp_name", "")
     if not idp_name:
         log.info(f"   [{publisher}] no carsi_idp_name configured, skipping institutional login")
@@ -2039,6 +2043,8 @@ def _browser_download_with_fallback(
         return True
 
     err_type, err_action = get_last_error()
+    if config.get("interactive", True) is False:
+        return False
 
     # browser service offline + CloakBrowser available → launch visible browser directly
     global _visible_browser_active

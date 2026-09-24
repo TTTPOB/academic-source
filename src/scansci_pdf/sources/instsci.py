@@ -1021,9 +1021,10 @@ def try_instsci(doi: str, output_path: Path, config: dict[str, Any]) -> dict[str
             return result
 
     # Step 1: Try stealth browser download (handles CAS auth + Cloudflare)
-    result = _try_instsci_browser(doi, output_path, config)
-    if result:
-        return result
+    if config.get("interactive", True):
+        result = _try_instsci_browser(doi, output_path, config)
+        if result:
+            return result
 
     # Step 2: Try WebVPN HTTP approach (use any saved cookies, even if
     # _validate_session fails — the stealth browser may have just logged in
