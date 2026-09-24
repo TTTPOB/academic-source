@@ -27,7 +27,7 @@ def add_exports(
             text, warnings = pdf_to_markdown_detailed(pdf, write=False)
             result.warnings.extend(warnings)
             path = work / "document.md"
-            path.write_text(str(text), encoding="utf-8")
+            path.write_text(str(text), encoding="utf-8", newline="\n")
             result.artifacts.append(
                 store.import_artifact(
                     path,
@@ -50,7 +50,7 @@ def add_exports(
                 text = fetch_bibtex(identifier, config)
                 if text:
                     path = work / "citation.bib"
-                    path.write_text(text, encoding="utf-8")
+                    path.write_text(text, encoding="utf-8", newline="\n")
                     result.artifacts.append(
                         store.import_artifact(
                             path,
