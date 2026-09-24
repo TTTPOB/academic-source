@@ -593,3 +593,150 @@ def test_science_missing_reader_config_falls_back_to_watermarked_pdf(
         "Science",
     )
     assert fetched == ["/doi/pdf/10.1126/adh2586"]
+
+
+class FakeScienceResponse:
+    def __init__(self, payload, content_type, status=200, extra_headers=None):
+        self.status_code = status
+        self.headers = {"content-type": content_type, **(extra_headers or {})}
+        self.text = payload.decode("utf-8", "replace")
+        self._payload = payload
+
+    def iter_content(self, chunk_size):
+        yield self._payload
+
+
+class FakeScienceSession:
+    """requests.Session stand-in for the plain-HTTP Science transport."""
+
+    def __init__(self, html, pdf_bytes=b"", html_headers=None):
+        self.html = html
+        self.pdf_bytes = pdf_bytes
+        self.html_headers = html_headers or {}
+        self.urls = []
+
+    def get(self, url, **kwargs):
+        self.urls.append(url)
+        if kwargs.get("stream"):
+            return FakeScienceResponse(self.pdf_bytes, "application/pdf")
+        return FakeScienceResponse(
+            self.html.encode(), "text/html", extra_headers=self.html_headers
+        )
+
+
+def _pdf_bytes():
+    """A payload large enough to satisfy is_pdf_file's size floor."""
+    document = pymupdf.open()
+    for index in range(3):
+        page = document.new_page()
+        page.insert_text((72, 72), f"Signed Science fixture page {index} " * 40)
+    payload = document.tobytes()
+    document.close()
+    return payload
+
+
+def test_science_plain_http_transport_resolves_and_validates(monkeypatch, tmp_path):
+    from scansci_pdf import _publisher_strategies_core as strategy
+
+    signed = "/doi/pdfdirect/10.1126/adh2586?hmac=1790266406-QUJDREVGR0g%3D"
+    payload = _pdf_bytes()
+    session = FakeScienceSession('{"epubConfig":{"epubUrl":"' + signed + '"}}', payload)
+    monkeypatch.setattr(strategy, "_science_http_session", lambda config: session)
+
+    output = tmp_path / "http.pdf"
+    assert strategy._science_http_download("10.1126/adh2586", output, {})
+    assert output.read_bytes() == payload
+    assert session.urls[-1].endswith(signed)
+
+    # A challenge response must be vetoed by its mitigation header even when the
+    # body happens to carry a reader-looking payload.
+    challenged = FakeScienceSession(
+        '{"epubConfig":{"epubUrl":"' + signed + '"}}',
+        payload,
+        {"cf-mitigated": "challenge"},
+    )
+    monkeypatch.setattr(strategy, "_science_http_session", lambda config: challenged)
+    assert not strategy._science_http_download(
+        "10.1126/adh2586", tmp_path / "a.pdf", {}
+    )
+
+    unsigned = FakeScienceSession(
+        '{"epubConfig":{"epubUrl":"/doi/pdf/10.1126/x"}}', payload
+    )
+    monkeypatch.setattr(strategy, "_science_http_session", lambda config: unsigned)
+    assert not strategy._science_http_download(
+        "10.1126/adh2586", tmp_path / "b.pdf", {}
+    )
+
+
+def test_science_clearance_capture_enables_and_gates_the_fast_path(
+    monkeypatch, tmp_path
+):
+    from scansci_pdf import _publisher_strategies_core as strategy
+    from scansci_pdf import browser_cookies
+
+    config = {"cache_dir": str(tmp_path)}
+    monkeypatch.setattr(
+        browser_engine, "evaluate_js", lambda tab, js, config, **kw: "Agent/1.0 Chrome"
+    )
+    monkeypatch.setattr(
+        browser_engine,
+        "context_cookies",
+        lambda url, config: [
+            {
+                "name": "cf_clearance",
+                "value": "token",
+                "domain": ".www.science.org",
+                "path": "/",
+            },
+            {"name": "tracker", "value": "x", "domain": ".example.com", "path": "/"},
+        ],
+    )
+    assert not strategy._science_has_cached_clearance(config)
+    strategy._capture_science_clearance("tab", config)
+    assert browser_cookies.load_cached_user_agent(config) == "Agent/1.0 Chrome"
+    assert strategy._science_has_cached_clearance(config)
+    assert [c["name"] for c in browser_cookies.load_saved_cookies(config)] == [
+        "cf_clearance"
+    ]
+
+
+def test_science_fast_path_skips_the_browser(monkeypatch, tmp_path):
+    from scansci_pdf import _publisher_strategies_core as strategy
+
+    monkeypatch.setattr(strategy, "_science_has_cached_clearance", lambda config: True)
+    monkeypatch.setattr(
+        browser_engine,
+        "create_tab",
+        lambda *a, **kw: pytest.fail("browser must not open"),
+    )
+
+    def http_download(doi, path, config):
+        path.write_bytes(_pdf_bytes())
+        return True
+
+    monkeypatch.setattr(strategy, "_science_http_download", http_download)
+    result = strategy.try_science_browser(
+        "10.1126/adh2586", tmp_path / "fast.pdf", {"browser_backend": "cdp"}
+    )
+    assert result and result["success"]
+    assert result["source"] == "Science(Signed)"
+
+
+def test_science_without_clearance_still_uses_the_browser(monkeypatch, tmp_path):
+    from scansci_pdf import _publisher_strategies_core as strategy
+
+    monkeypatch.setattr(strategy, "_science_has_cached_clearance", lambda config: False)
+    monkeypatch.setattr(
+        strategy,
+        "_science_http_download",
+        lambda *a: pytest.fail("fast path must not run"),
+    )
+    monkeypatch.setattr(browser_engine, "is_available", lambda config: True)
+    monkeypatch.setattr(browser_engine, "create_tab", lambda *a, **kw: None)
+    assert (
+        strategy.try_science_browser(
+            "10.1126/adh2586", tmp_path / "slow.pdf", {"browser_backend": "cdp"}
+        )
+        is None
+    )
