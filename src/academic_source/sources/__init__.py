@@ -307,13 +307,17 @@ class LegacySources:
             attempts.append(attempt)
             if result:
                 return {**result, "attempts": attempts}
-        reason = next(
-            (
-                item["reason"]
-                for item in reversed(attempts)
-                if item["reason"] not in ("not_found", "")
-            ),
-            "not_found",
+        reason = (
+            "cloudflare_blocked"
+            if any(item["reason"] == "cloudflare_blocked" for item in attempts)
+            else next(
+                (
+                    item["reason"]
+                    for item in reversed(attempts)
+                    if item["reason"] not in ("not_found", "")
+                ),
+                "not_found",
+            )
         )
         reason = {
             "paywall": "auth_required",

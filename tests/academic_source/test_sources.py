@@ -357,6 +357,95 @@ def test_institutional_browser_login_gate_respects_saved_session(monkeypatch, tm
     assert downloader._complete_login_from_current_page(None, None) is False
 
 
+def test_science_challenge_after_large_header_is_not_a_paywall(monkeypatch, tmp_path):
+    from scansci_pdf import _publisher_strategies_core as publisher
+    from scansci_pdf import browser_engine
+
+    html = (
+        "<html><head><title>Science page loading</title></head><body>"
+        + "x" * 5100
+        + '<script src="/cdn-cgi/challenge-platform/scripts/jsd/main.js"></script>'
+        + "get access through your institution</body></html>"
+    )
+    assert publisher._is_challenge_page(html)
+    assert not publisher._detect_paywall(html, status_code=403)
+    short_challenge = "<title>Just a moment...</title>Cloudflare: get access"
+    assert publisher._is_challenge_page(short_challenge)
+    assert not publisher._detect_paywall(short_challenge, status_code=403)
+    article = (
+        "<html><head><title>Science article</title></head><body>"
+        '<script src="/cdn-cgi/rum"></script>Article content</body></html>'
+    )
+    assert not publisher._is_challenge_page(article)
+    assert not publisher._detect_paywall(article)
+    assert publisher._detect_paywall(article + "institutional access")
+
+    monkeypatch.setattr(browser_engine, "is_available", lambda config: True)
+    monkeypatch.setattr(browser_engine, "create_tab", lambda *args, **kwargs: "tab")
+    monkeypatch.setattr(browser_engine, "navigate_tab", lambda *args, **kwargs: True)
+    monkeypatch.setattr(browser_engine, "close_tab", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        browser_engine,
+        "evaluate_js",
+        lambda _tab, script, _config: (
+            html
+            if "document.documentElement.outerHTML" in script
+            else "https://www.science.org/doi/test"
+        ),
+    )
+    monkeypatch.setattr(publisher, "_inject_cookies_to_tab", lambda *args: None)
+    monkeypatch.setattr(
+        publisher,
+        "_try_institutional_login",
+        lambda *args: (_ for _ in ()).throw(AssertionError("challenge is not a login")),
+    )
+    monkeypatch.setattr(publisher.time, "sleep", lambda seconds: None)
+    assert not publisher._browser_download(
+        "10.1126/test",
+        "https://www.science.org/doi/test",
+        tmp_path / "paper.pdf",
+        {"interactive": False},
+        "Science",
+    )
+    assert publisher.get_last_error()[0] == "cloudflare_blocked"
+
+
+def test_challenge_reason_survives_later_source_failures(monkeypatch, tmp_path):
+    from scansci_pdf import _publisher_strategies_core as publisher
+    from scansci_pdf.sources import publishers
+
+    visited = []
+    handler = _patch_handlers(monkeypatch, visited)
+
+    def browser(label, reason):
+        def run(doi, path, config):
+            visited.append(label)
+            publisher._set_error(reason)
+
+        return run
+
+    monkeypatch.setattr(
+        publishers,
+        "get_publisher_fast_sources",
+        lambda doi: [
+            (browser("ScienceBrowser", "cloudflare_blocked"), "ScienceBrowser"),
+            (browser("OtherBrowser", "browser_unavailable"), "OtherBrowser"),
+            (handler("Direct"), "Direct"),
+        ],
+    )
+    result = LegacySources().acquire(
+        "10.1126/test",
+        AcquisitionRequest(identifiers=["10.1126/test"], policy="legal_only"),
+        tmp_path,
+        {"scihub_enabled": False},
+    )
+    assert result["reason"] == "network_error"
+    assert [(item["source"], item["reason"]) for item in result["attempts"][:2]] == [
+        ("ScienceBrowser", "cloudflare_blocked"),
+        ("OtherBrowser", "browser_unavailable"),
+    ]
+
+
 def test_readable_pdf_required_before_source_wins(monkeypatch, tmp_path):
     from scansci_pdf.sources import publishers
 

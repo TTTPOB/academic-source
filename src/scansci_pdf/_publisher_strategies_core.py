@@ -191,6 +191,8 @@ def _save_all_cookie_formats(
 
 def _detect_paywall(html: str, status_code: int = 0) -> bool:
     """Detect if the page is a paywall/login wall rather than anti-bot challenge."""
+    if _is_challenge_page(html):
+        return False
     lower = html.lower()
     # Paywall indicators
     paywall_signals = [
@@ -204,8 +206,8 @@ def _detect_paywall(html: str, status_code: int = 0) -> bool:
     ]
     if any(sig in lower for sig in paywall_signals):
         return True
-    # 403 with article content (not Cloudflare challenge) = paywall
-    if status_code == 403 and not _is_challenge_page(html):
+    # A 403 without challenge markers may be an access restriction.
+    if status_code == 403:
         return True
     return False
 
@@ -1218,9 +1220,11 @@ _CHALLENGE_SIGNATURES = [
 
 
 def _is_challenge_page(html: str) -> bool:
-    """Detect if the page is an anti-bot challenge."""
-    lower = html[:5000].lower()
-    return any(sig in lower for sig in _CHALLENGE_SIGNATURES)
+    """Detect explicit challenge markup even beyond a large page header."""
+    lower = html.lower()
+    if "cf-browser-verification" in lower or "/cdn-cgi/challenge-platform/" in lower:
+        return True
+    return any(sig in lower[:5000] for sig in _CHALLENGE_SIGNATURES)
 
 
 # ============================================================
