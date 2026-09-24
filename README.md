@@ -118,6 +118,7 @@ uv run --frozen patchright install chromium
 ```bash
 # 在 Linux 服务器上，从仓库根目录执行；确保当前用户可写 deploy/chrome-data。
 mkdir -p deploy/chrome-data
+chmod 700 deploy/chrome-data
 PUID=$(id -u) PGID=$(id -g) docker compose -f deploy/chrome.compose.yml up -d
 curl -fsS http://127.0.0.1:19222/json/version
 ```
@@ -126,7 +127,7 @@ Chrome 有头运行于容器内桌面；GUI 的 HTTPS 端口 `3001`、CDP `19222
 
 ```bash
 uv tool install 'academic-source[fast,vpnsci,cdp] @ git+https://github.com/TTTPOB/academic-source.git@main'
-academic-source serve --host 127.0.0.1 --port 8000
+mkdir -p "${ACADEMIC_SOURCE_DATA_DIR:-$HOME/.academic-source}"
 ```
 
 将 `ACADEMIC_SOURCE_DATA_DIR/settings.json`（默认 `~/.academic-source/settings.json`）的 `source_config` 配为：
@@ -135,7 +136,25 @@ academic-source serve --host 127.0.0.1 --port 8000
 {"interactive": false, "source_config": {"browser_backend": "cdp", "browser_cdp_url": "http://127.0.0.1:19222", "scihub_enabled": false}}
 ```
 
-该 URL 必须从**应用进程**可达。Chrome 不在线、缺少默认 context 或未配置 URL 时浏览器来源会失败；HTTP/OA/Elsevier API 成功无需连接 Chrome。对于同宿主 Linux Docker 应用可选 `--network host` 访问相同 loopback CDP URL，应用镜像仍不内置 Chrome。`browser_pdf_timeout`（默认 120 秒）和 `browser_pdf_max_bytes`（默认 100 MiB）可在 `source_config` 调整；超时/过大不登记半成品。CDP 可用性、Science 权限、HTTP/MCP 产物取回仍需新版本的生产 smoke test；不承诺每篇文章可下载、改变 IP、解验证码或任何隐身特性。`cdp` 与本地 Camoufox 依赖版本冲突，请二选一安装；本地 Patchright/CloakBrowser 仍可配置。应用本身不提供远程桌面或网页登录管理后台。
+保存设置后，先以前台方式验证（停止用 `Ctrl+C`）：
+
+```bash
+academic-source serve --host 127.0.0.1 --port 8000
+```
+
+长期运行可用以下后台容器**替代**前台进程；不要同时运行两个实例访问同一数据目录。此例使用 Linux 宿主网络，镜像已包含 CDP 客户端但不包含 Chrome：
+
+```bash
+docker run -d --name academic-source --restart unless-stopped --network host \
+  --user "$(id -u):$(id -g)" \
+  -e HOME=/data/academic-source \
+  -e ACADEMIC_SOURCE_DATA_DIR=/data/academic-source \
+  -v "${ACADEMIC_SOURCE_DATA_DIR:-$HOME/.academic-source}:/data/academic-source" \
+  ghcr.io/tttpob/academic-source:main \
+  academic-source serve --host 127.0.0.1 --port 8000
+```
+
+该 URL 必须从**应用进程**可达。Chrome 不在线、缺少默认 context 或未配置 URL 时浏览器来源会失败；HTTP/OA/Elsevier API 成功无需连接 Chrome。`browser_pdf_timeout`（默认 120 秒）和 `browser_pdf_max_bytes`（默认 100 MiB）可在 `source_config` 调整；超时/过大不登记半成品。部署方仍须针对自己的权限和目标站点验证获取及 HTTP/MCP 产物取回；不承诺每篇文章可下载、改变 IP、解验证码或任何隐身特性。`cdp` 与本地 Camoufox 依赖版本冲突，请二选一安装；本地 Patchright/CloakBrowser 仍可配置。应用本身不提供远程桌面或网页登录管理后台。
 
 SQLite 保存上传、任务和产物记录，文件保存在同一数据目录。一个数据目录由一个运行实例使用；服务已运行时，CLI 使用 `--server` 连接它。重启将未完成任务标记为 interrupted，已完成产物仍可取回，不承诺恢复浏览器执行现场。
 
