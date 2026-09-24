@@ -69,11 +69,11 @@
 - 关闭会等待正在执行的请求结束，取消尚未执行的任务；不承诺强杀任意第三方浏览器调用或恢复浏览器现场。
 - 机构登录管理仍需明确配置/已有会话；没有新增远程桌面或凭据管理平台。
 - 旧 CLI/MCP/Web 入口、插件和品牌资产已经移除；scansci_pdf 仍包含站点规则、机构抓取与列表解析相关模块。旧 sources 调度器被延迟加载，仅供未迁移的历史 pipeline 路径使用；其余无法确认无用的站点知识没有为清理而重写。
-- Docker 配置已更新，但未构建容器；Python wheel 构建不等于容器验收。
+- GHCR 镜像已由 GitHub Actions 实际构建并发布；默认镜像不内置浏览器。NAS 使用独立 Python 环境与 systemd 完成实测，不将镜像构建等同于容器运行验收。
 
 ## 本轮离线验收
 
-- 默认 `pytest -q` 只收集 `tests/academic_source` 和 `tests/providers`：Python 3.13 下 42 passed。当前结果在最后一批会话修复和旧测试清理之后取得；不沿用更早的 382 passed / 4 skipped。
+- 默认 `pytest -q` 只收集 `tests/academic_source` 和 `tests/providers`。初始精简后为 42 项；加入 Elsevier API-first 和默认 XML 回归后，代码提交 `d769470` 为 54 passed，Ruff/Pyrefly 通过，GitHub CI 与 GHCR 构建均成功。不把此前旧测试的 382 passed / 4 skipped 作为当前验收指标。
 - Ruff lint、Ruff format、Pyrefly basic 与提交 hook 均通过；`uv lock --check --offline` 通过。
 - `uv build --offline --out-dir .tmp/dist` 成功生成 `academic_source-0.1.0` 的 sdist 与 pure-Python wheel；wheel 包含两套源码包与公开的 webvpn.json，不包含编译扩展或生成的加密学校数据库。
 - 只保留适用于新引擎的来源行为回归：SAGE CN 的实际文章 ID、有效机构会话与真实授权端点；OpenAIRE 嵌套 JSON/XML 全文 URL；Sci-Hub 下载 Referer；出版商 DOI 前缀路由。删除根层旧接口、固定工具表、旧批量/竞速/缓存与旧编排测试。每组保留测试直接碰到对应来源函数，删除会漏掉路由错误、会话误用或 URL 解析回退；移除目标分支应使断言失败。来源站点与机构在线验收仍未执行。
