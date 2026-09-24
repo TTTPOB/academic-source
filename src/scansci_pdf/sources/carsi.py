@@ -1,3 +1,4 @@
+# Modified by academic-source for unified acquisition and noninteractive operation.
 """CARSI (Shibboleth/SAML) federated authentication for publisher access.
 
 Provides institutional login through CARSI federation, supporting
@@ -287,7 +288,7 @@ class CARSIClient:
 
                     if not self.config.get("interactive", True):
                         if needs_login:
-                            return None
+                            return {"success": False, "error_type": "auth_required", "reason": "CARSI session needs login"}
                         cookies_valid = True
 
                     if not cookies_valid:

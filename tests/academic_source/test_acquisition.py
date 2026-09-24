@@ -201,8 +201,11 @@ def test_noninteractive_legacy_login_fallback_does_not_open_windows(
         publisher._set_error("browser_unavailable", "try_other_source")
         return False
 
+    opened = []
+
     def no_window(*args, **kwargs):
-        raise AssertionError("visible browser launched without user opt-in")
+        opened.append(True)
+        return False
 
     monkeypatch.setattr(publisher, "_HAS_CLOAKBROWSER", True)
     monkeypatch.setattr(publisher, "_browser_download", failed_headless)
@@ -217,3 +220,4 @@ def test_noninteractive_legacy_login_fallback_does_not_open_windows(
         )
         is False
     )
+    assert not opened

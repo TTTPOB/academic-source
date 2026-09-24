@@ -250,8 +250,10 @@ def test_webvpn_saved_session_headless_and_login_page_exits(monkeypatch, tmp_pat
     browser.heading = "CAS 登录"
     sleeps.clear()
     assert (
-        instsci._try_instsci_browser("10.1234/paper", tmp_path / "other.pdf", config)
-        is None
+        instsci._try_instsci_browser("10.1234/paper", tmp_path / "other.pdf", config)[
+            "error_type"
+        ]
+        == "auth_required"
     )
     assert sleeps == [3]
     assert all(item["headless"] for item in launched)
@@ -262,15 +264,13 @@ def test_institutional_browser_login_gate_respects_saved_session(monkeypatch, tm
     from scansci_pdf.sources.carsi import CARSIClient
 
     carsi = CARSIClient({"interactive": False, "cache_dir": str(tmp_path)})
+    opened = []
     monkeypatch.setattr(
-        carsi,
-        "_browser_login",
-        lambda publisher: (_ for _ in ()).throw(
-            AssertionError("visible CARSI login launched")
-        ),
+        carsi, "_browser_login", lambda publisher: opened.append(publisher) or False
     )
     monkeypatch.setattr(carsi, "_try_load_cookies", lambda publisher: False)
     assert carsi.login("Wiley") is False
+    assert not opened
     monkeypatch.setattr(carsi, "_try_load_cookies", lambda publisher: True)
     assert carsi.login("Wiley") is True
 

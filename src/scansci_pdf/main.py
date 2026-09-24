@@ -1,3 +1,4 @@
+# Modified by academic-source for unified acquisition and noninteractive operation.
 """CLI entrypoint for ScanSci PDF server."""
 
 from __future__ import annotations
@@ -25,33 +26,23 @@ def run_server(
     host: str = typer.Option("127.0.0.1", help="HTTP host (default localhost; bind 0.0.0.0 only behind auth)"),
     port: int = typer.Option(8000, help="HTTP port"),
 ) -> None:
-    """Start the ScanSci PDF server."""
-    from .deps import print_status
-    from .log import get_logger
-    log = get_logger()
-
-    # Check dependencies before starting
-    print_status()
-
-    from .server import mcp_app
+    """Compatibility entrypoint for the unified academic-source application."""
+    from academic_source.settings import Settings
 
     if mode == ServerMode.STDIO:
-        log.info("Starting in stdio mode")
-        mcp_app.run(transport="stdio")
-    elif mode == ServerMode.WEB:
+        from academic_source.interfaces.mcp import create_mcp
+        from academic_source.services.application import Application
+
+        application = Application(Settings.load())
         try:
-            import uvicorn
-            from .web import app as web_app
-        except ModuleNotFoundError as e:
-            typer.echo(f"  Missing dependency: {e.name}. Install with: pip install 'scansci-pdf[web]'")
-            raise typer.Exit(1)
-        log.info(f"Starting web UI on http://{host}:{port}")
-        uvicorn.run(web_app, host=host, port=port)
+            create_mcp(application, stdio=True).run(transport="stdio")
+        finally:
+            application.close()
     else:
         import uvicorn
-        log.info(f"Starting HTTP server on {host}:{port}")
-        asgi_app = mcp_app.streamable_http_app()
-        uvicorn.run(asgi_app, host=host, port=port)
+        from academic_source.app import create_app
+
+        uvicorn.run(create_app(), host=host, port=port)
 
 
 @app.command("check")
@@ -66,16 +57,11 @@ def web_server(
     host: str = typer.Option("0.0.0.0", help="Web server host"),
     port: int = typer.Option(8080, help="Web server port"),
 ) -> None:
-    """Start the ScanSci PDF web UI for browser-based paper downloading."""
-    try:
-        import uvicorn
-        from .web import app as web_app
-    except ModuleNotFoundError as e:
-        typer.echo(f"  Missing dependency: {e.name}. Install with: pip install 'scansci-pdf[web]'")
-        raise typer.Exit(1)
-    print(f"  Starting ScanSci PDF Web UI on http://{host}:{port}")
-    print(f"  Open http://localhost:{port} in your browser")
-    uvicorn.run(web_app, host=host, port=port)
+    """Start the unified Web, REST, and MCP service."""
+    import uvicorn
+    from academic_source.app import create_app
+
+    uvicorn.run(create_app(), host=host, port=port)
 
 
 @app.command("login")

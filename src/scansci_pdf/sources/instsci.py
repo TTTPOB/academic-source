@@ -1,3 +1,4 @@
+# Modified by academic-source for unified acquisition and noninteractive operation.
 """WebVPN institutional proxy source (multi-university support).
 
 Uses AES-CFB encrypted URL conversion to access papers through
@@ -811,7 +812,7 @@ def _try_instsci_browser(doi: str, output_path: Path, config: dict[str, Any]) ->
         log.info(f"   [WebVPN-Browser] Page title: '{title}' URL: {url_now[:80]}")
         if "登录" in title or "身份" in title or "二次认证" in title or "CAS" in title or any(t in url_now for t in _auth_url_signals):
             if config.get("interactive", True) is False:
-                return None
+                return {"success": False, "error_type": "auth_required", "reason": "WebVPN session needs login"}
             print(f"  检测到登录页面，请完成登录...")
             # Wait up to 5 minutes, checking title every 3 seconds
             for i in range(100):
@@ -1024,9 +1025,9 @@ def try_instsci(doi: str, output_path: Path, config: dict[str, Any]) -> dict[str
             return result
 
     # Step 1: Try stealth browser download (handles CAS auth + Cloudflare)
-    result = _try_instsci_browser(doi, output_path, config)
-    if result:
-        return result
+    browser_result = _try_instsci_browser(doi, output_path, config)
+    if browser_result and browser_result.get("success"):
+        return browser_result
 
     # Step 2: Try WebVPN HTTP approach (use any saved cookies, even if
     # _validate_session fails — the stealth browser may have just logged in
@@ -1038,7 +1039,7 @@ def try_instsci(doi: str, output_path: Path, config: dict[str, Any]) -> dict[str
             return result
 
     log.info("   [WebVPN] No valid session. Use instsci_login or carsi_login tool first.")
-    return None
+    return browser_result
 
 
 def _try_instsci_http(doi: str, output_path: Path, config: dict[str, Any]) -> dict[str, Any] | None:

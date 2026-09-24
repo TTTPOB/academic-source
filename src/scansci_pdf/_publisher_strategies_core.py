@@ -1,3 +1,4 @@
+# Modified by academic-source for unified acquisition and noninteractive operation.
 """Publisher-specific browser download strategies.
 
 Implements tailored download paths for major academic publishers,

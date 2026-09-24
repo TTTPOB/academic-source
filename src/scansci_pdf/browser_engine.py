@@ -1,3 +1,4 @@
+# Modified by academic-source for unified acquisition and noninteractive operation.
 """Browser engine: CloakBrowser-based replacement for camofox daemon API.
 
 Provides the same public API as the old camofox.py (is_available, solve_url,

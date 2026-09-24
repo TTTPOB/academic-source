@@ -190,7 +190,10 @@ def running_server(application):
             assert not thread.is_alive(), "test HTTP server did not shut down"
 
 
-def test_remote_cli_uploads_and_exports_over_real_http(tmp_path):
+def test_remote_cli_uploads_and_exports_over_real_http(tmp_path, monkeypatch):
+    # This loopback test must not depend on the developer's proxy bypass syntax.
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
     service, source = service_at(tmp_path / "server")
     client_dir = tmp_path / "client"
     client_dir.mkdir()

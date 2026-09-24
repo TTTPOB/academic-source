@@ -1,3 +1,4 @@
+# Modified by academic-source for unified acquisition and noninteractive operation.
 """EZProxy institutional proxy source.
 
 Uses the university library's EZProxy service to access papers.
@@ -10,6 +11,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import requests
 
@@ -23,6 +25,16 @@ from ..pdf_utils import (
 )
 
 log = get_logger()
+
+
+def _is_login_url(url: str) -> bool:
+    """A libproxy hostname is not itself evidence of an authentication page."""
+    parsed = urlsplit(url.lower())
+    return bool(
+        (parsed.hostname or "").startswith("login.")
+        or any(part in {"login", "signin", "sso", "cas"} or part.startswith("login.")
+               for part in parsed.path.split("/"))
+    )
 
 
 def _get_ezproxy_base(config: dict[str, Any]) -> str:
@@ -63,7 +75,7 @@ def _validate_ezproxy_session(config: dict[str, Any]) -> bool:
     try:
         resp = sess.get(test_url, timeout=15, allow_redirects=True)
         # If redirected to login, session is invalid
-        if "login" in resp.url.lower() or "libproxy" in resp.url.lower():
+        if _is_login_url(resp.url):
             return False
         return resp.status_code == 200
     except Exception:
@@ -166,9 +178,9 @@ def try_ezproxy(doi: str, output_path: Path, config: dict[str, Any]) -> dict[str
 
         # Check if redirected to login
         url = page.url
-        if "libproxy" in url.lower() or "login" in url.lower():
+        if _is_login_url(url):
             if config.get("interactive", True) is False:
-                return None
+                return {"success": False, "error_type": "auth_required", "reason": "EZProxy session needs login"}
             log.info("   [EZProxy] Login required. Please log in...")
             max_wait = 180
             elapsed = 0
@@ -179,7 +191,7 @@ def try_ezproxy(doi: str, output_path: Path, config: dict[str, Any]) -> dict[str
                     url = page.url
                 except Exception:
                     return None
-                if "libproxy" not in url.lower() and "login" not in url.lower():
+                if not _is_login_url(url):
                     break
             else:
                 log.info("   [EZProxy] Login timed out.")

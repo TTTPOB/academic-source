@@ -1,3 +1,4 @@
+# Modified by academic-source for unified acquisition and noninteractive operation.
 """Profile-driven CloakBrowser batch downloader with retryable machine states."""
 
 from __future__ import annotations
