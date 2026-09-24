@@ -2338,8 +2338,6 @@ def _try_elsevier_object_pdf_from_xml(
     article_url: str,
     headers: dict[str, str],
     first_resp: Any,
-    *,
-    full_xml_already_tried: bool = False,
 ) -> dict[str, Any] | None:
     import urllib.parse
 
@@ -2352,47 +2350,33 @@ def _try_elsevier_object_pdf_from_xml(
         xml_resp = first_resp
 
     if xml_resp is None:
+        if first_resp is not None:
+            return None
         xml_headers = dict(headers)
         xml_headers["Accept"] = "application/xml"
-        param_options = [None] if full_xml_already_tried else [{"view": "FULL"}, None]
-        for params in param_options:
-            try:
-                request_kwargs: dict[str, Any] = {
-                    "headers": xml_headers,
-                    "timeout": 30,
-                    "allow_redirects": True,
-                }
-                if params:
-                    request_kwargs["params"] = params
-                candidate = session.get(article_url, **request_kwargs)
-            except Exception as exc:
-                log.info(f"   [ElsevierAPI] XML request failed: {exc}")
-                continue
-
-            if getattr(candidate, "status_code", 0) != 200:
-                view_name = "FULL XML" if params else "XML"
-                log.info(
-                    f"   [ElsevierAPI] {view_name} HTTP "
-                    f"{getattr(candidate, 'status_code', 0)} for {doi}"
-                )
-                continue
-            if not _elsevier_response_is_xml(candidate):
-                content_type = _elsevier_header(
-                    getattr(candidate, "headers", {}),
-                    "content-type",
-                )
-                view_name = "FULL XML" if params else "XML"
-                log.info(
-                    f"   [ElsevierAPI] {view_name} request returned non-XML "
-                    f"({content_type[:50]})"
-                )
-                continue
-
-            xml_resp = candidate
-            break
-
-        if xml_resp is None:
+        try:
+            candidate = session.get(
+                article_url,
+                headers=xml_headers,
+                timeout=30,
+                allow_redirects=True,
+            )
+        except Exception as exc:
+            log.info(f"   [ElsevierAPI] XML request failed: {exc}")
             return None
+        if getattr(candidate, "status_code", 0) != 200:
+            log.info(
+                f"   [ElsevierAPI] XML HTTP "
+                f"{getattr(candidate, 'status_code', 0)} for {doi}"
+            )
+            return None
+        if not _elsevier_response_is_xml(candidate):
+            content_type = _elsevier_header(
+                getattr(candidate, "headers", {}), "content-type"
+            )
+            log.info(f"   [ElsevierAPI] XML request returned non-XML ({content_type[:50]})")
+            return None
+        xml_resp = candidate
 
     eids = _extract_elsevier_pdf_attachment_eids(_elsevier_response_text(xml_resp))
     if not eids:
@@ -2514,7 +2498,7 @@ def try_elsevier_api(
          API key, not the client IP, so this works off-campus. The body is
          validated as a real multi-page PDF before saving (rejects the
          1-page preview served to unentitled keys).
-      2. FULL XML → main-PDF attachment EIDs → Content Object API
+      2. Default XML → main-PDF attachment EIDs → Content Object API
          (existing chain; covers articles whose direct endpoint misbehaves).
       3. httpAccept=text/plain full text saved as .txt when no PDF is
          returned at all.
@@ -2590,7 +2574,7 @@ def try_elsevier_api(
         elif pdf_resp is not None and pdf_resp.status_code != 200:
             log.info(
                 f"   [ElsevierAPI] {route_name} direct PDF HTTP "
-                f"{pdf_resp.status_code} for {doi}, trying FULL XML route"
+                f"{pdf_resp.status_code} for {doi}, trying default XML route"
             )
 
         try:
@@ -2599,12 +2583,11 @@ def try_elsevier_api(
             resp = session.get(
                 url,
                 headers=xml_headers,
-                params={"view": "FULL"},
                 timeout=30,
                 allow_redirects=True,
             )
         except Exception as e:
-            log.info(f"   [ElsevierAPI] {route_name} FULL XML request failed: {e}")
+            log.info(f"   [ElsevierAPI] {route_name} default XML request failed: {e}")
             continue
 
         if resp is not None and resp.status_code != 200:
@@ -2640,7 +2623,6 @@ def try_elsevier_api(
             url,
             headers,
             resp,
-            full_xml_already_tried=True,
         )
         if result:
             try:

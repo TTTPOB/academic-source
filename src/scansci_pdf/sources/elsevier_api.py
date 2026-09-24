@@ -20,8 +20,8 @@ def get_api_key(config_key: str = "") -> str:
 def fetch_pdf(doi: str, api_key: str, inst_token: str = "") -> bytes | None:
     """Download full PDF via Elsevier API using the attachment EID approach.
 
-    Strategy (from successful 32-paper batch experience):
-    1. GET /article/doi/{doi}?view=FULL → XML with attachment metadata
+    Strategy (attachment availability and object access depend on entitlement):
+    1. GET /article/doi/{doi} with Accept: application/xml → attachment metadata
     2. Parse XML to find MAIN PDF attachment-eid (main.pdf or mainext.pdf)
     3. GET /object/eid/{attachment-eid} → official publisher PDF
 
@@ -32,7 +32,7 @@ def fetch_pdf(doi: str, api_key: str, inst_token: str = "") -> bytes | None:
     if not api_key:
         return None
 
-    # Step 1: Get FULL XML with attachment metadata
+    # Step 1: Get the default XML representation with attachment metadata
     eids = _fetch_attachment_eids(doi, api_key, inst_token)
     if not eids:
         # Fallback: try direct PDF endpoint (works for OA articles)
@@ -206,7 +206,7 @@ def _valid_pdf_bytes(content: bytes, label: str, *, reject_single_page: bool) ->
 
 
 def _fetch_attachment_eids(doi: str, api_key: str, inst_token: str = "") -> list[str]:
-    """Fetch FULL XML and extract MAIN PDF attachment EIDs."""
+    """Fetch default XML and extract MAIN PDF attachment EIDs."""
     url = f"{ELSEVIER_API}/article/doi/{doi}"
     headers = {
         "X-ELS-APIKey": api_key,
@@ -215,7 +215,7 @@ def _fetch_attachment_eids(doi: str, api_key: str, inst_token: str = "") -> list
     if inst_token:
         headers["X-ELS-InstToken"] = inst_token
 
-    resp = _api_request(url, headers, params={"view": "FULL"})
+    resp = _api_request(url, headers)
     if not resp or resp.status_code != 200:
         return []
 
@@ -341,7 +341,7 @@ def fetch_fulltext(doi: str, api_key: str, inst_token: str = "") -> dict | None:
     if inst_token:
         headers["X-ELS-Insttoken"] = inst_token
 
-    resp = _api_request(url, headers, params={"view": "FULL"})
+    resp = _api_request(url, headers)
     if not resp:
         return None
 
