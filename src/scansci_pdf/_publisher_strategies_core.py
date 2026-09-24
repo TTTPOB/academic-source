@@ -1833,11 +1833,13 @@ def _browser_download(
             # the PDF anchor until JavaScript renders it (notably Science).
             profile = _PUBLISHER_SSO_CONFIG.get(publisher, _PUBLISHER_SSO_CONFIG["_default"])
             candidates.extend(profile["pdf_paths"](doi))
+            first_failure = ""
             for candidate in dict.fromkeys(candidates):
                 if fetch_pdf_in_tab(tab_id, candidate, output_path, config):
                     return success(doi, output_path, f"{publisher}(Browser)")
+                first_failure = first_failure or last_pdf_fetch_error()
             _set_error("paywall" if _detect_paywall(html) else "no_pdf_found",
-                       last_pdf_fetch_error() or "try_other_source")
+                       first_failure or "try_other_source")
             return False
 
         if pdf_url:

@@ -20,6 +20,7 @@ class FakePage:
         self.result_url = "https://www.science.org/doi/pdf/10.1126/adh2586"
         self.broken = False
         self.timeout_after_chunk = False
+        self.headers_timeout = False
         self.aborted = False
         self.cancelled = False
         self.on_close = lambda page: None
@@ -43,7 +44,11 @@ class FakePage:
             )
         )
         assert argument["timeout"] > 0
+        assert "credentials: 'same-origin'" in script
+        assert "headers:" not in script and "application/pdf" not in script
         self.requests.append(argument["url"])
+        if self.headers_timeout:
+            raise TimeoutError("secret-url-query=never-log")
         return FakeSession(self)
 
 
@@ -198,6 +203,27 @@ def test_science_existing_dom_path_uses_borrowed_tab(monkeypatch, tmp_path):
     assert ("own-tab", "https://www.science.org/doi/pdf/10.1126/adh2586") in actions
     assert actions[-1] == "close-tab"
 
+    # Keep the first useful failure if another known publisher URL also fails.
+    def failed_fetch(tab, url, path, config):
+        browser_engine._tls.pdf_fetch_error = (
+            "headers: AbortError; bytes=0; elapsed=120.0s"
+            if "/doi/pdf/" in url
+            else "body: TimeoutError; bytes=1024; elapsed=120.0s"
+        )
+        return False
+
+    monkeypatch.setattr(browser_engine, "fetch_pdf_in_tab", failed_fetch)
+    assert not strategy._browser_download(
+        "10.1126/adh2586",
+        "https://www.science.org/doi/10.1126/adh2586",
+        tmp_path / "failed.pdf",
+        {"browser_backend": "cdp", "interactive": False},
+        "Science",
+    )
+    assert (
+        strategy.get_last_error()[1] == "headers: AbortError; bytes=0; elapsed=120.0s"
+    )
+
 
 @pytest.mark.parametrize(
     "backend,scenario",
@@ -334,6 +360,17 @@ def test_stream_pdf_and_reject_errors(monkeypatch, tmp_path):
 
     output.unlink()
     page.requests.clear()
+    page.headers_timeout = True
+    assert not browser_engine.fetch_pdf_in_tab(
+        "tab", "/doi/pdf/10.1126/adh2586", output, config
+    )
+    header_error = browser_engine.last_pdf_fetch_error()
+    assert "headers: TimeoutError; bytes=0; elapsed=" in header_error
+    assert "status=" not in header_error and "mime=" not in header_error
+    assert "secret-url-query" not in header_error
+    assert not output.exists()
+    page.headers_timeout = False
+    page.requests.clear()
     assert not browser_engine.fetch_pdf_in_tab(
         "tab", "https://other.example/pdf", output, config
     )
@@ -343,13 +380,17 @@ def test_stream_pdf_and_reject_errors(monkeypatch, tmp_path):
         "tab", "/doi/pdf/10.1126/adh2586", output, config
     )
     assert not output.exists()
-    assert "HTTP 403" in browser_engine.last_pdf_fetch_error()
+    assert (
+        "headers: response rejected; bytes=0; elapsed="
+        in browser_engine.last_pdf_fetch_error()
+    )
+    assert "status=403; mime=application/pdf" in browser_engine.last_pdf_fetch_error()
     page.status = 200
     page.content_type = "text/html"
     assert not browser_engine.fetch_pdf_in_tab(
         "tab", "/doi/pdf/10.1126/adh2586", output, config
     )
-    assert "content-type text/html" in browser_engine.last_pdf_fetch_error()
+    assert "status=200; mime=text/html" in browser_engine.last_pdf_fetch_error()
     page.content_type = "application/pdf"
     page.result_url = "https://other.example/pdf"
     assert not browser_engine.fetch_pdf_in_tab(
@@ -363,6 +404,8 @@ def test_stream_pdf_and_reject_errors(monkeypatch, tmp_path):
     assert not output.exists()
     assert not (tmp_path / "article.pdf.part").exists()
     assert page.aborted and page.cancelled
+    assert "body: OSError; bytes=" in browser_engine.last_pdf_fetch_error()
+    assert "status=200; mime=application/pdf" in browser_engine.last_pdf_fetch_error()
 
     page.broken = False
     page.aborted = page.cancelled = False
@@ -374,6 +417,8 @@ def test_stream_pdf_and_reject_errors(monkeypatch, tmp_path):
         {"browser_pdf_timeout": 0.01},
     )
     assert page.aborted and page.cancelled
+    assert "body: TimeoutError; bytes=" in browser_engine.last_pdf_fetch_error()
+    assert "elapsed=" in browser_engine.last_pdf_fetch_error()
     assert not output.exists() and not (tmp_path / "article.pdf.part").exists()
 
     page.timeout_after_chunk = False
@@ -385,4 +430,18 @@ def test_stream_pdf_and_reject_errors(monkeypatch, tmp_path):
         {"browser_pdf_max_bytes": 10},
     )
     assert page.aborted and page.cancelled
+    assert (
+        "body: PDF exceeds configured byte limit; bytes=0"
+        in browser_engine.last_pdf_fetch_error()
+    )
     assert not output.exists() and not (tmp_path / "article.pdf.part").exists()
+
+    page.payload = b"not a PDF"
+    assert not browser_engine.fetch_pdf_in_tab(
+        "tab", "/doi/pdf/10.1126/adh2586", output, config
+    )
+    assert (
+        "validation: invalid PDF header; bytes=9; elapsed="
+        in browser_engine.last_pdf_fetch_error()
+    )
+    assert "status=200; mime=application/pdf" in browser_engine.last_pdf_fetch_error()

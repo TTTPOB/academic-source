@@ -674,16 +674,27 @@ def fetch_pdf_in_tab(
     from urllib.parse import urljoin
 
     _tls.pdf_fetch_error = ""
+    started = time.monotonic()
+    phase = "headers"
+    written = 0
+    status = None
+    mime = None
+
+    def fail(reason: str) -> bool:
+        details = f"{phase}: {reason}; bytes={written}; elapsed={time.monotonic() - started:.1f}s"
+        if status is not None:
+            details += f"; status={status}; mime={mime}"
+        _tls.pdf_fetch_error = details
+        logger.info("browser_engine: PDF fetch failed: %s", details)
+        return False
+
     page = _resolve_tab(tab_id)
     if page is None:
-        _tls.pdf_fetch_error = "tab not found"
-        return False
+        return fail("tab not found")
     origin = urlparse(page.url)
     target = urlparse(urljoin(page.url, pdf_url))
     if (origin.scheme, origin.netloc) != (target.scheme, target.netloc) or origin.scheme not in ("http", "https"):
-        _tls.pdf_fetch_error = "cross-origin PDF URL"
-        logger.info("browser_engine: refusing cross-origin PDF fetch")
-        return False
+        return fail("cross-origin PDF URL")
     # Browser-side abort covers both waiting for headers and a stalled stream.
     # The deadline starts before fetch; byte cap bounds memory/disk use per job.
     timeout_ms = max(1, int(float(config.get("browser_pdf_timeout", 120)) * 1000))
@@ -698,8 +709,8 @@ def fetch_pdf_in_tab(
                 const timer = setTimeout(() => controller.abort(), timeout);
                 try {
                     const response = await fetch(url, {
-                        credentials: 'include', mode: 'same-origin',
-                        headers: {Accept: 'application/pdf'}, signal: controller.signal
+                        credentials: 'same-origin', mode: 'same-origin',
+                        signal: controller.signal
                     });
                     return {controller, response, timer, deadline};
                 } catch (error) { clearTimeout(timer); throw error; }
@@ -711,15 +722,14 @@ def fetch_pdf_in_tab(
                      type: s.response.headers.get('content-type') || '', url: s.response.url})"""
         )
         landed = urlparse(meta["url"])
-        media_type = meta["type"].lower()
-        if (not meta["ok"] or not any(t in media_type for t in ("pdf", "octet-stream"))
+        status = meta["status"]
+        mime = str(meta["type"]).split(";", 1)[0].strip().lower()[:80]
+        if (not meta["ok"] or not any(t in mime for t in ("pdf", "octet-stream"))
                 or (landed.scheme, landed.netloc) != (origin.scheme, origin.netloc)):
-            _tls.pdf_fetch_error = f"HTTP {meta['status']}, content-type {meta['type']}, redirect {landed.netloc}"
-            logger.info("browser_engine: PDF fetch rejected: %s", _tls.pdf_fetch_error)
-            return False
+            return fail("response rejected")
+        phase = "body"
         session.evaluate("s => {s.reader = s.response.body.getReader()}")
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        size = 0
         with partial.open("wb") as stream:
             while True:
                 chunk = session.evaluate(
@@ -732,29 +742,26 @@ def fetch_pdf_in_tab(
                 if chunk["done"]:
                     break
                 data = bytes(chunk["bytes"])
-                size += len(data)
-                if size > max_bytes:
-                    _tls.pdf_fetch_error = "PDF exceeds configured byte limit"
-                    logger.info("browser_engine: PDF exceeds configured byte limit")
-                    return False
+                if written + len(data) > max_bytes:
+                    return fail("PDF exceeds configured byte limit")
                 stream.write(data)
+                written += len(data)
+        phase = "validation"
         import pymupdf
 
         with partial.open("rb") as stream:
             header = stream.read(5)
         if header != b"%PDF-":
-            logger.info("browser_engine: PDF fetch yielded invalid header")
-            return False
+            return fail("invalid PDF header")
         with pymupdf.open(partial) as document:
             if not document.is_pdf or document.page_count < 1 or document.needs_pass:
-                logger.info("browser_engine: PDF fetch yielded unreadable document")
-                return False
+                return fail("unreadable PDF")
         partial.replace(output_path)
         return True
     except Exception as exc:
-        _tls.pdf_fetch_error = str(exc)[:160]
-        logger.info("browser_engine: PDF stream failed: %s", exc)
-        return False
+        # Playwright errors may embed the JS call or URL; report only the class.
+        reason = "AbortError" if "AbortError" in str(exc) else type(exc).__name__
+        return fail(reason)
     finally:
         partial.unlink(missing_ok=True)
         if session is not None:
