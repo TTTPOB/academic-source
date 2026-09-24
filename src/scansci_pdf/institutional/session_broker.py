@@ -12,8 +12,6 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
-import subprocess
-import sys
 import time
 from typing import Any
 from uuid import uuid4
@@ -82,42 +80,6 @@ def broker_is_running(publisher: str) -> bool:
     if not state:
         return False
     return pid_is_running(int(state.get("pid") or 0))
-
-
-def start_broker_process(
-    *,
-    publisher: str,
-    browser_profile: str,
-    institution: str,
-    ttl_seconds: int,
-    cwd: str | Path,
-) -> subprocess.Popen[Any]:
-    root = broker_dir(publisher)
-    root.mkdir(parents=True, exist_ok=True)
-    broker_stop_path(publisher).unlink(missing_ok=True)
-    stdout = root / "broker.out.log"
-    stderr = root / "broker.err.log"
-    args = [
-        sys.executable,
-        "-m",
-        "instsci.cli",  # TODO: port session-broker-run to scansci_pdf CLI
-        "session-broker-run",
-        "--publisher",
-        publisher,
-        "--browser-profile",
-        browser_profile,
-        "--institution",
-        institution,
-        "--ttl",
-        str(ttl_seconds),
-    ]
-    return subprocess.Popen(
-        args,
-        cwd=str(cwd),
-        stdout=stdout.open("a", encoding="utf-8"),
-        stderr=stderr.open("a", encoding="utf-8"),
-        stdin=subprocess.DEVNULL,
-    )
 
 
 def submit_broker_job(
