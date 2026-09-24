@@ -113,39 +113,29 @@ uv run --frozen patchright install chromium
 
 ### 使用外部常驻 Chrome（CDP）
 
-应用可只安装 Playwright **客户端**，不安装或捆绑 Chrome；`browser_backend=cdp` 会延迟连接到已运行 Chrome 的**默认持久 context**，只新建/关闭自己的标签页。先在有图形桌面的同一台 Linux 主机上启动 Chrome（示例命令；Chrome 可执行文件名和 DISPLAY 以本机为准）：
+应用只安装 Playwright **客户端**，不安装或捆绑 Chrome。`browser_backend=cdp` 延迟连接已有 Chrome 的默认持久 context，只新建/关闭自己的标签页。以下是一套**Linux 同宿主参考部署**：[`deploy/chrome.compose.yml`](deploy/chrome.compose.yml) 托管 [LinuxServer Chrome](https://github.com/linuxserver/docker-chrome) 的有头桌面和原始 TCP 转发，不让应用自己启动浏览器。Compose 文件通过 `podman compose config` 及 shell 语法检查，**尚未以该文件实际启动容器**；生产需复验。Chrome 的 profile 保存在 `deploy/chrome-data/academic-profile`，属于非默认 profile，不随应用重启丢失；`deploy/chrome-init.sh` 仅在容器启动、Chrome 尚未运行时清除该 profile 的陈旧 Singleton 链接。
 
 ```bash
-mkdir -p "$HOME/.local/share/academic-source-chrome"
-google-chrome --user-data-dir="$HOME/.local/share/academic-source-chrome" \
-  --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --no-first-run
+# 在 Linux 服务器上，从仓库根目录执行；确保当前用户可写 deploy/chrome-data。
+mkdir -p deploy/chrome-data
+PUID=$(id -u) PGID=$(id -g) docker compose -f deploy/chrome.compose.yml up -d
+curl -fsS http://127.0.0.1:19222/json/version
 ```
 
-Chrome 需要已运行的图形 DISPLAY，保持进程常驻；这个**非默认** `user-data-dir` 必须持久保存且不能被另一个 Chrome 进程同时使用。无桌面 Linux 主机可先安装 `xvfb`、`x11vnc` 和系统 Chrome，启动一个虚拟显示，再在其中启动**有头** Chrome（以下命令是部署参考，未在每种发行版验证；不要加 `--headless`）：
-
-```bash
-Xvfb :99 -screen 0 1440x900x24 &
-DISPLAY=:99 google-chrome --user-data-dir="$HOME/.local/share/academic-source-chrome" \
-  --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --no-first-run &
-x11vnc -storepasswd                       # Interactive prompt, choose a strong password.
-x11vnc -display :99 -localhost -rfbport 5900 -forever -usepw &
-```
-
-仅通过 SSH 本地转发 `ssh -L 5900:127.0.0.1:5900 USER@HOST` 打开 VNC，**人工**完成合法机构登录/验证后可关闭 VNC 客户端，Chrome 和显示服务继续运行；VNC/CDP 均只监听 loopback。若需跨重启常驻，应由部署方的进程管理器分别托管 Xvfb、Chrome 和 x11vnc，保留 Chrome profile 并避免重复启动相同 profile。应用不会处理验证码、登录或改变 IP。CDP 端口提供完整浏览器控制权，**绝不可暴露到公网**。同主机安装应用：
+Chrome 有头运行于容器内桌面；GUI 的 HTTPS 端口 `3001`、CDP `19222` 都**只绑定宿主 loopback**。在个人电脑建立 `ssh -L 3001:127.0.0.1:3001 USER@HOST`，访问 `https://127.0.0.1:3001/` 并接受容器自签证书，仅**人工**完成合法机构登录/验证。LinuxServer 桌面默认没有认证；SSH 端口转发仅保护远程入口，仍应限制服务器本地用户和容器访问，绝不能开放 GUI/CDP 到公网。关闭 SSH/浏览器客户端不会关闭由 Compose 托管的 Chrome；`restart: unless-stopped` 在容器运行时崩溃或主机重启后恢复服务。更新或重建前运行 `docker compose -f deploy/chrome.compose.yml down`，确保旧容器停止；不要在 Chrome 运行时手动清除 profile 锁，也不要同时启动第二个同 profile 的 Chrome。保留 `deploy/chrome-data` 即保留登录会话（其数据敏感，妥善备份和限权）。
 
 ```bash
 uv tool install 'academic-source[fast,vpnsci,cdp] @ git+https://github.com/TTTPOB/academic-source.git@main'
+academic-source serve --host 127.0.0.1 --port 8000
 ```
 
-将 `ACADEMIC_SOURCE_DATA_DIR/settings.json`（默认 `~/.academic-source/settings.json`）的 `source_config` 改为：
+将 `ACADEMIC_SOURCE_DATA_DIR/settings.json`（默认 `~/.academic-source/settings.json`）的 `source_config` 配为：
 
 ```json
-{"interactive": false, "source_config": {"browser_backend": "cdp", "browser_cdp_url": "http://127.0.0.1:9222", "scihub_enabled": false}}
+{"interactive": false, "source_config": {"browser_backend": "cdp", "browser_cdp_url": "http://127.0.0.1:19222", "scihub_enabled": false}}
 ```
 
-这里的 URL 必须从**应用进程**可访问；Chrome 不在线、无默认 context 或未配置 URL 时，浏览器来源会明确失败，但 HTTP/OA/Elsevier API 成功无需连接 Chrome。若使用 Linux Docker 镜像，Chrome 仍需独立常驻于宿主机；最简单的同机方式是 `docker run --network host -v academic-source-data:/data/academic-source -e ACADEMIC_SOURCE_DATA_DIR=/data/academic-source ghcr.io/tttpob/academic-source:main academic-source serve --host 127.0.0.1 --port 8000`，在挂载卷中写入相同设置。`--network host` 使应用和宿主 Chrome 共享 loopback，此例仅适用 Linux；无法使用宿主网络时，应由部署方提供仅可信网络可达的私有 CDP 端点并替换 URL，而不是将 9222 直接公开。镜像不启动 Chrome，停掉应用不会停止它；重启 Chrome 后保留 profile，再次浏览器任务会重新连接。Chrome/CDP/机构访问需针对目标站点手动 smoke test；不承诺每篇文章可下载，也不承诺任何浏览器隐身特性。`cdp` 与本地 Camoufox 依赖版本冲突，请二选一安装；本地 Patchright/CloakBrowser 仍可按原配置选用。
-
-默认不自动弹出可视登录窗口。无会话时应返回需要认证的结果，而不是假定远端客户端与服务器共享桌面。这个版本未提供远程桌面或网页登录管理后台。
+该 URL 必须从**应用进程**可达。Chrome 不在线、缺少默认 context 或未配置 URL 时浏览器来源会失败；HTTP/OA/Elsevier API 成功无需连接 Chrome。对于同宿主 Linux Docker 应用可选 `--network host` 访问相同 loopback CDP URL，应用镜像仍不内置 Chrome。`browser_pdf_timeout`（默认 120 秒）和 `browser_pdf_max_bytes`（默认 100 MiB）可在 `source_config` 调整；超时/过大不登记半成品。CDP 可用性、Science 权限、HTTP/MCP 产物取回仍需新版本的生产 smoke test；不承诺每篇文章可下载、改变 IP、解验证码或任何隐身特性。`cdp` 与本地 Camoufox 依赖版本冲突，请二选一安装；本地 Patchright/CloakBrowser 仍可配置。应用本身不提供远程桌面或网页登录管理后台。
 
 SQLite 保存上传、任务和产物记录，文件保存在同一数据目录。一个数据目录由一个运行实例使用；服务已运行时，CLI 使用 `--server` 连接它。重启将未完成任务标记为 interrupted，已完成产物仍可取回，不承诺恢复浏览器执行现场。
 

@@ -44,6 +44,7 @@ test_download*.py
 ISSUE_REPORT*.md
 
 # Browser profile/cache directories (Chrome user data, CloakBrowser kernels)
+deploy/chrome-data/
 carsi_sciencedirect/
 src/scansci_pdf/_browsers/
 GrShaderCache/

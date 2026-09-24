@@ -1,0 +1,36 @@
+# Reference Linux deployment: headful Chrome with private host-loopback CDP.
+# CDP Chrome advertises port 19222; the raw TCP proxy maps host 19222 to it.
+services:
+  chrome:
+    image: lscr.io/linuxserver/chrome:latest
+    environment:
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
+      CHROME_CLI: "--remote-debugging-address=127.0.0.1 --remote-debugging-port=19222 --user-data-dir=/config/academic-profile"
+    volumes:
+      - ./chrome-data:/config
+      - ./chrome-init.sh:/custom-cont-init.d/10-clear-stale-locks:ro
+    ports:
+      - "127.0.0.1:3001:3001"  # Desktop over HTTPS, human access through SSH.
+      - "127.0.0.1:19222:9222"  # CDP accessible to same-host application.
+    shm_size: "1gb"
+    restart: unless-stopped
+
+  cdp-forward:
+    image: node:22-alpine
+    network_mode: "service:chrome"
+    depends_on:
+      - chrome
+    command:
+      - node
+      - -e
+      - |
+        const net = require('node:net');
+        net.createServer(client => {
+          const chrome = net.connect(19222, '127.0.0.1');
+          client.pipe(chrome);
+          chrome.pipe(client);
+          client.on('error', () => chrome.destroy());
+          chrome.on('error', () => client.destroy());
+        }).listen(9222, '0.0.0.0');
+    restart: unless-stopped
