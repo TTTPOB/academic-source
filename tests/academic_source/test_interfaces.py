@@ -20,7 +20,16 @@ def service_at(path):
     return Application(Settings(data_dir=path), source=source), source
 
 
-def test_http_upload_parse_acquire_and_retrieve_without_shared_paths(tmp_path):
+def test_http_upload_parse_acquire_and_retrieve_without_shared_paths(
+    tmp_path, monkeypatch
+):
+    from scansci_pdf import md_export
+
+    monkeypatch.setattr(
+        md_export,
+        "pdf_to_markdown_detailed",
+        lambda *args, **kwargs: ("# Structured text\n", []),
+    )
     service, source = service_at(tmp_path / "server")
     with TestClient(create_app(application=service)) as client:
         uploaded = client.post(
@@ -36,7 +45,9 @@ def test_http_upload_parse_acquire_and_retrieve_without_shared_paths(tmp_path):
         upload_id = uploaded.json()["id"]
         parsed = client.post("/api/v1/lists/parse", json={"upload_id": upload_id})
         assert parsed.json()[0]["identifier"] == "10.1234/example"
-        submitted = client.post("/api/v1/acquisitions", json={"upload_id": upload_id})
+        submitted = client.post(
+            "/api/v1/acquisitions", json={"upload_id": upload_id, "markdown": True}
+        )
         assert submitted.status_code == 202
         job_id = submitted.json()["id"]
         service.wait(job_id, 5)
@@ -48,6 +59,19 @@ def test_http_upload_parse_acquire_and_retrieve_without_shared_paths(tmp_path):
         fetched = client.get(item["download_url"])
         assert fetched.content == source.content
         assert fetched.headers["content-type"] == "application/pdf"
+        markdown = job["artifacts"][1]
+        assert markdown["kind"] == "markdown"
+        assert markdown["provenance"]["derived_from"] == item["id"]
+        assert client.get(markdown["download_url"]).text == "# Structured text\n"
+        broken = client.post(
+            "/api/v1/uploads", files={"file": ("broken.xlsx", b"not an XLSX")}
+        ).json()
+        assert (
+            client.post(
+                "/api/v1/lists/parse", json={"upload_id": broken["id"]}
+            ).status_code
+            == 400
+        )
         assert client.get("/api/v1/artifacts/unknown/content").status_code == 404
         service.store.artifact_path(item["id"]).unlink()
         assert client.get(item["download_url"]).status_code == 404

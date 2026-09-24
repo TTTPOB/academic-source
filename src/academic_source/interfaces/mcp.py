@@ -9,7 +9,7 @@ from anyio import to_thread
 from mcp.server.fastmcp import FastMCP
 
 from academic_source.domain import AcquisitionRequest
-from academic_source.interfaces.api import job_data
+from academic_source.interfaces.presentation import job_data
 
 if TYPE_CHECKING:
     from academic_source.services.application import Application
@@ -19,6 +19,12 @@ def create_mcp(application: Application) -> FastMCP:
     # The SDK route stays /mcp; mounting its ASGI app at / avoids /mcp/mcp.
     mcp = FastMCP(
         "academic-source",
+        instructions=(
+            "Acquire returns a persistent job. Poll job_status until it finishes. "
+            "Files are artifacts: retrieve download_url through HTTP using the server base URL. "
+            "For paper lists use inline text or upload through POST /api/v1/uploads, then pass upload_id. "
+            "Client-local filesystem paths are not remote inputs."
+        ),
         host="0.0.0.0",
         streamable_http_path="/mcp",
         json_response=True,

@@ -4,6 +4,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+from zipfile import BadZipFile
 
 from academic_source.infrastructure.storage import Store
 
@@ -83,6 +84,10 @@ def _table_entries(path: Path) -> list[dict[str, Any]]:
         rows = read_table(path)
     except UnicodeDecodeError as exc:
         raise ValueError("Uploaded text must be UTF-8 encoded") from exc
+    except BadZipFile as exc:
+        raise ValueError("Invalid XLSX workbook") from exc
+    if any(any(not isinstance(key, str) for key in row) for row in rows):
+        raise ValueError("Table rows must match the header columns")
     queue = entries_from_table(rows)
     entries = []
     for row, item in zip(rows, queue):

@@ -8,7 +8,8 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from academic_source.domain import AcquisitionRequest, Artifact, Job
+from academic_source.domain import AcquisitionRequest
+from academic_source.interfaces.presentation import job_data
 
 if TYPE_CHECKING:
     from academic_source.services.application import Application
@@ -21,23 +22,6 @@ class ResolveInput(BaseModel):
 class ParseInput(BaseModel):
     upload_id: str | None = None
     text: str | None = None
-
-
-def artifact_data(artifact: Artifact) -> dict[str, Any]:
-    return {
-        **artifact.model_dump(mode="json"),
-        "download_url": f"/api/v1/artifacts/{artifact.id}/content",
-    }
-
-
-def job_data(job: Job) -> dict[str, Any]:
-    data = job.model_dump(mode="json")
-    data["artifacts"] = [artifact_data(artifact) for artifact in job.artifacts]
-    for result, original in zip(data["results"], job.results, strict=True):
-        result["artifacts"] = [
-            artifact_data(artifact) for artifact in original.artifacts
-        ]
-    return data
 
 
 def create_router(application: Application) -> APIRouter:

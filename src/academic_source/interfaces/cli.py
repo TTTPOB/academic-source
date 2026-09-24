@@ -12,7 +12,7 @@ import httpx
 import uvicorn
 
 from academic_source.domain import AcquisitionRequest
-from academic_source.interfaces.api import job_data
+from academic_source.interfaces.presentation import job_data
 from academic_source.settings import Settings
 
 
@@ -133,5 +133,5 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, httpx.HTTPError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    print(json.dumps(job, ensure_ascii=False, indent=2))
+    print(json.dumps(job, ensure_ascii=True, indent=2))
     return 0 if job["status"] == "succeeded" else 1

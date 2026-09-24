@@ -22,7 +22,7 @@ button{cursor:pointer}pre{white-space:pre-wrap;overflow-wrap:anywhere}a{display:
 const status=document.querySelector('#status'), files=document.querySelector('#files');
 async function api(path,options){const r=await fetch('/api/v1/'+path,options);const data=await r.json();
  if(!r.ok)throw Error(JSON.stringify(data));return data}
-document.querySelector('#go').onclick=async()=>{files.replaceChildren();status.textContent='Submitting…';
+document.querySelector('#go').onclick=async()=>{const button=document.querySelector('#go');button.disabled=true;files.replaceChildren();status.textContent='Submitting…';
  try{const file=document.querySelector('#file').files[0];let input;
  if(file){const form=new FormData();form.append('file',file);const upload=await api('uploads',{method:'POST',body:form});input={upload_id:upload.id}}
  else{input={identifiers:document.querySelector('#ids').value.split(/\\r?\\n/).map(s=>s.trim()).filter(Boolean)}}
@@ -31,8 +31,9 @@ document.querySelector('#go').onclick=async()=>{files.replaceChildren();status.t
  await new Promise(resolve=>setTimeout(resolve,1000));job=await api('jobs/'+encodeURIComponent(job.id))}
  status.textContent='Job '+job.id+': '+job.status+' ('+job.completed+'/'+job.total+')';
  for(const item of job.artifacts){const link=document.createElement('a');link.href=item.download_url;link.textContent='Download '+item.filename;files.append(link)}
+ for(const result of job.results){if(result.status==='failed'){const note=document.createElement('p');note.textContent=result.identifier+': '+result.reason;files.append(note)}}
  if(job.error)status.textContent+=' — '+job.error;
- }catch(error){status.textContent=String(error)}};
+ }catch(error){status.textContent=String(error)}finally{button.disabled=false}};
 </script></html>"""
 
     return router
