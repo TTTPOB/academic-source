@@ -229,6 +229,40 @@ def load_saved_cookies(config: dict[str, Any]) -> list[dict[str, Any]]:
     return [c for c in cookies if _is_cookie_valid(c, now)]
 
 
+USER_AGENT_FILE = "publisher_user_agent.json"
+
+
+def save_cached_user_agent(user_agent: str, config: dict[str, Any]) -> None:
+    """Persist the user agent that earned the cached bot-management cookies.
+
+    Cloudflare binds cf_clearance to the requesting user agent, so a plain HTTP
+    client can only reuse the cookie by sending the same agent.
+    """
+    from .config import DATA_DIR
+
+    if not user_agent:
+        return
+    path = Path(config.get("cache_dir", str(DATA_DIR / "cache"))) / USER_AGENT_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"user_agent": user_agent}, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def load_cached_user_agent(config: dict[str, Any]) -> str | None:
+    """Return the user agent stored alongside the cached publisher cookies."""
+    from .config import DATA_DIR
+
+    path = Path(config.get("cache_dir", str(DATA_DIR / "cache"))) / USER_AGENT_FILE
+    if not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8")).get("user_agent")
+    except Exception:
+        return None
+    return value if isinstance(value, str) and value else None
+
+
 def _is_cookie_valid(cookie: dict[str, Any], now: float | None = None) -> bool:
     """Check if a cookie is not expired. expires=0 means session cookie (always valid)."""
     expires = cookie.get("expires", 0)

@@ -527,6 +527,20 @@ def solve_url(
                 pass
 
 
+def context_cookies(url: str, config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the shared browser context's cookies for a URL.
+
+    Read-only: a borrowed CDP profile owns its jar, so callers only copy values
+    out of it and never mutate it.
+    """
+    try:
+        _, context = _get_shared_browser(config)
+        return list(context.cookies(url))
+    except Exception as e:
+        logger.info(f"browser_engine: context_cookies error: {e}")
+        return []
+
+
 def get_cookies(
     url: str,
     config: dict[str, Any],
