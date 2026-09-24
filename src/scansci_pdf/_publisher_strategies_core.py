@@ -2487,25 +2487,22 @@ def try_elsevier_api(
 ) -> dict[str, Any] | None:
     """Download Elsevier/ScienceDirect PDF via Article Retrieval API.
 
-    Uses the Elsevier Institutional API (api.elsevier.com) with an API key
-    and optional institutional token. This is far faster and more reliable
-    than browser-based login flows.
+    Uses the Elsevier Article Retrieval API (api.elsevier.com) with an API
+    key and optional institutional token. The response depends on the key,
+    endpoint, institutional authorization, and network conditions.
 
-    API-first request order per route (browser navigation is only a last
-    resort and lives in try_elsevier_browser):
-      1. article endpoint with Accept: application/pdf — the full PDF when
-         the key's entitlement covers the article. Entitlement follows the
-         API key, not the client IP, so this works off-campus. The body is
-         validated as a real multi-page PDF before saving (rejects the
-         1-page preview served to unentitled keys).
-      2. Default XML → main-PDF attachment EIDs → Content Object API
-         (existing chain; covers articles whose direct endpoint misbehaves).
-      3. httpAccept=text/plain full text saved as .txt when no PDF is
-         returned at all.
+    API-first request order per route (browser navigation is handled by
+    try_elsevier_browser):
+      1. Article endpoint with Accept: application/pdf. Reject a one-page
+         graphical abstract or preview instead of treating it as full text.
+      2. Default XML → candidate PDF attachment EIDs → Content Object API.
+         XML HTTP 200 alone does not establish full-text authorization; each
+         returned object must independently pass PDF validation.
+      3. httpAccept=text/plain fallback saved as .txt only when its response
+         passes the text payload checks.
 
-    When the API does not return a PDF directly (no institutional access),
-    cookies from the request chain (api.elsevier.com → linkinghub.elsevier.com
-    → sciencedirect.com) are persisted for the browser strategy to reuse.
+    When the API does not yield a validated PDF, cookies from the request
+    chain are persisted for the browser strategy to reuse when available.
 
     Config keys:
         elsevier_api_key   — personal or institutional API key (required);
