@@ -31,11 +31,20 @@ jobs:
           if not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', tag) or tag != f'v{version}':
               raise SystemExit(f'Tag {tag!r} does not match package version {version!r}')
           PY
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: uv sync --frozen --extra vpnsci --extra fast
+      - name: Test application and providers before publishing
+        run: uv run --frozen pytest -q --tb=short
       - name: Prepare image tags
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/tttpob/academic-source
+          flavor: |
+            latest=false
           tags: |
             type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
             type=ref,event=tag
