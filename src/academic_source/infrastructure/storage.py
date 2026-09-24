@@ -1,0 +1,214 @@
+"""SQLite catalog and local files for uploads, artifacts, jobs, and results."""
+
+import mimetypes
+import shutil
+import sqlite3
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import BinaryIO
+from uuid import uuid4
+
+from academic_source.domain import AcquisitionResult, Artifact, Job, Provenance, Upload
+from academic_source.settings import Settings
+
+_UPLOAD_EXTENSIONS = {".txt", ".md", ".bib", ".csv", ".tsv", ".tab", ".xlsx", ".json"}
+_CHUNK_SIZE = 1024 * 1024
+
+
+class Store:
+    def __init__(self, settings: Settings) -> None:
+        self.root = settings.data_dir.expanduser()
+        self.max_upload_bytes = settings.max_upload_bytes
+        for folder in (
+            self.root,
+            self.root / "uploads",
+            self.root / "artifacts",
+            self.root / "work",
+        ):
+            folder.mkdir(parents=True, exist_ok=True)
+        self._database = self.root / "catalog.sqlite"
+        with self._connect() as db:
+            db.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS uploads (
+                    id TEXT PRIMARY KEY, filename TEXT NOT NULL, size INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS artifacts (
+                    id TEXT PRIMARY KEY, record TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS jobs (
+                    id TEXT PRIMARY KEY, record TEXT NOT NULL, status TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS result_cache (
+                    key TEXT PRIMARY KEY, record TEXT NOT NULL
+                );
+                """
+            )
+
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        # Each operation owns its connection; worker threads never share one.
+        with closing(sqlite3.connect(self._database, timeout=10)) as db, db:
+            yield db
+
+    def put_upload(self, filename: str, stream: BinaryIO) -> Upload:
+        name = _safe_filename(filename)
+        if Path(name).suffix.lower() not in _UPLOAD_EXTENSIONS:
+            raise ValueError(f"Unsupported upload extension: {name}")
+        upload_id = uuid4().hex
+        destination = self.root / "uploads" / upload_id / name
+        destination.parent.mkdir(parents=True)
+        size = 0
+        try:
+            with destination.open("wb") as output:
+                while chunk := stream.read(_CHUNK_SIZE):
+                    size += len(chunk)
+                    if size > self.max_upload_bytes:
+                        raise ValueError("Upload exceeds max_upload_bytes")
+                    output.write(chunk)
+            upload = Upload(id=upload_id, filename=name, size=size)
+            with self._connect() as db:
+                db.execute(
+                    "INSERT INTO uploads (id, filename, size) VALUES (?, ?, ?)",
+                    (upload.id, upload.filename, upload.size),
+                )
+        except Exception:
+            destination.unlink(missing_ok=True)
+            destination.parent.rmdir()
+            raise
+        return upload
+
+    def upload_path(self, upload_id: str) -> Path:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT filename FROM uploads WHERE id = ?", (upload_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(upload_id)
+        return self.root / "uploads" / upload_id / row[0]
+
+    def import_artifact(
+        self,
+        path: Path,
+        *,
+        kind: str,
+        identifier: str | None,
+        source: str,
+        url: str | None = None,
+        derived_from: str | None = None,
+    ) -> Artifact:
+        filename = _safe_filename(path.name)
+        artifact_id = uuid4().hex
+        destination = self.root / "artifacts" / artifact_id / filename
+        destination.parent.mkdir(parents=True)
+        try:
+            shutil.copyfile(path, destination)
+            artifact = Artifact(
+                id=artifact_id,
+                kind=kind,
+                media_type=mimetypes.guess_type(filename)[0]
+                or "application/octet-stream",
+                filename=filename,
+                size=destination.stat().st_size,
+                identifier=identifier,
+                provenance=Provenance(
+                    source=source,
+                    url=url,
+                    acquired_at=datetime.now(UTC).isoformat(),
+                    derived_from=derived_from,
+                ),
+            )
+            with self._connect() as db:
+                db.execute(
+                    "INSERT INTO artifacts (id, record) VALUES (?, ?)",
+                    (artifact.id, artifact.model_dump_json()),
+                )
+        except Exception:
+            destination.unlink(missing_ok=True)
+            destination.parent.rmdir()
+            raise
+        return artifact
+
+    def get_artifact(self, artifact_id: str) -> Artifact:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT record FROM artifacts WHERE id = ?", (artifact_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(artifact_id)
+        return Artifact.model_validate_json(row[0])
+
+    def artifact_path(self, artifact_id: str) -> Path:
+        artifact = self.get_artifact(artifact_id)
+        return self.root / "artifacts" / artifact.id / artifact.filename
+
+    def save_job(self, job: Job) -> None:
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO jobs (id, record, status) VALUES (?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET record=excluded.record, status=excluded.status",
+                (job.id, job.model_dump_json(), job.status),
+            )
+
+    def get_job(self, job_id: str) -> Job:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT record FROM jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(job_id)
+        return Job.model_validate_json(row[0])
+
+    def interrupt_jobs(self) -> None:
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT id, record FROM jobs WHERE status IN ('queued', 'running')"
+            ).fetchall()
+            for job_id, record in rows:
+                job = Job.model_validate_json(record)
+                job.status = "interrupted"
+                job.updated_at = datetime.now(UTC).isoformat()
+                db.execute(
+                    "UPDATE jobs SET record = ?, status = ? WHERE id = ?",
+                    (job.model_dump_json(), job.status, job_id),
+                )
+
+    def get_cached(self, key: str) -> AcquisitionResult | None:
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT record FROM result_cache WHERE key = ?", (key,)
+            ).fetchone()
+            if row is None:
+                return None
+            result = AcquisitionResult.model_validate_json(row[0])
+            for artifact in result.artifacts:
+                registered = db.execute(
+                    "SELECT record FROM artifacts WHERE id = ?", (artifact.id,)
+                ).fetchone()
+                if registered is None:
+                    return None
+                saved = Artifact.model_validate_json(registered[0])
+                if not (self.root / "artifacts" / saved.id / saved.filename).is_file():
+                    return None
+        return result
+
+    def put_cached(self, key: str, result: AcquisitionResult) -> None:
+        with self._connect() as db:
+            db.execute(
+                "INSERT INTO result_cache (key, record) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET record=excluded.record",
+                (key, result.model_dump_json()),
+            )
+
+    def close(self) -> None:
+        # Connections are scoped to operations, so there is nothing to close.
+        pass
+
+
+def _safe_filename(filename: str) -> str:
+    name = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    if name in {"", ".", ".."} or "\x00" in name:
+        raise ValueError("Invalid filename")
+    return name
