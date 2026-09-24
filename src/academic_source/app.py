@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
+from anyio import to_thread
 from fastapi import FastAPI
 
 from academic_source.interfaces.api import create_router
@@ -33,7 +34,7 @@ def create_app(
             try:
                 yield
             finally:
-                service.close()
+                await to_thread.run_sync(service.close)
 
     app = FastAPI(title="academic-source", lifespan=lifespan)
     app.state.application = service

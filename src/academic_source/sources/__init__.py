@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -151,6 +151,12 @@ def _attempt(
     index: int,
 ) -> tuple[dict[str, Any] | None, dict[str, str]]:
     path = work_dir / f"source-{index}.pdf"
+    browser_diagnostics = None
+    if label.endswith("Browser") and label != "InstitutionalBrowser":
+        from scansci_pdf import _publisher_strategies_core
+
+        browser_diagnostics = _publisher_strategies_core
+        browser_diagnostics._clear_error()
     try:
         outcome = fn(doi, path, dict(config))
     except Exception as exc:  # noqa: BLE001 - site failures must not prevent the next source
@@ -172,6 +178,10 @@ def _attempt(
                 },
                 {"source": label, "status": "succeeded"},
             )
+    if outcome is None and browser_diagnostics is not None:
+        error_type, action = browser_diagnostics.get_last_error()
+        if error_type:
+            outcome = {"success": False, "error_type": error_type, "message": action}
     reason = (
         outcome.get("error_type") or outcome.get("reason") or "not_found"
         if isinstance(outcome, dict)
@@ -210,9 +220,16 @@ class LegacySources:
         config: dict[str, Any],
     ) -> dict[str, Any] | None:
         if self._arxiv(identifier):
-            from scansci_pdf.sources.arxiv import try_arxiv
+            from scansci_pdf.sources.arxiv import download_arxiv_pdf
 
-            handlers = [("arXiv", try_arxiv)]
+            def arxiv(reference: str, path: Path, source_config: dict[str, Any]):
+                return download_arxiv_pdf(
+                    f"https://arxiv.org/pdf/{reference.removeprefix('arxiv:')}.pdf",
+                    path,
+                    source_config,
+                )
+
+            handlers = [("arXiv", arxiv)]
         else:
             handlers = _plan(identifier, request, config)
         attempts: list[dict[str, str]] = []
@@ -232,8 +249,11 @@ class LegacySources:
                     i += 1
                 if len(lane) > 1:
                     with ThreadPoolExecutor(max_workers=min(3, len(lane))) as pool:
-                        tasks = {
-                            pool.submit(
+                        remaining = iter(lane)
+
+                        def start(entry):
+                            pos, (name, handler) = entry
+                            return pool.submit(
                                 _attempt,
                                 name,
                                 handler,
@@ -241,17 +261,33 @@ class LegacySources:
                                 work_dir,
                                 config,
                                 pos,
-                            ): pos
-                            for pos, (name, handler) in lane
+                            )
+
+                        tasks = {
+                            start(next(remaining)) for _ in range(min(3, len(lane)))
                         }
                         found = None
-                        for future in as_completed(tasks):
-                            result, attempt = future.result()
-                            attempts.append(attempt)
-                            if result and found is None:
-                                found = result
-                        if found:
-                            return {**found, "attempts": attempts}
+                        while tasks:
+                            done, tasks = wait(tasks, return_when=FIRST_COMPLETED)
+                            for future in done:
+                                result, attempt = future.result()
+                                attempts.append(attempt)
+                                if result and found is None:
+                                    found = result
+                            if found:
+                                # Do not start more providers after success. In-flight HTTP
+                                # calls finish before their temporary work directory is removed.
+                                for future in tasks:
+                                    future.cancel()
+                                for future in tasks:
+                                    if not future.cancelled():
+                                        _, attempt = future.result()
+                                        attempts.append(attempt)
+                                return {**found, "attempts": attempts}
+                            for _ in done:
+                                entry = next(remaining, None)
+                                if entry is not None:
+                                    tasks.add(start(entry))
                     continue
                 label, fn = lane[0][1]
                 index = lane[0][0]

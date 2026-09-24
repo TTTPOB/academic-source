@@ -43,13 +43,23 @@ def job_data(job: Job) -> dict[str, Any]:
 def create_router(application: Application) -> APIRouter:
     api = APIRouter(prefix="/api/v1")
 
+    @api.get("/status")
+    def status() -> dict[str, str]:
+        return {"status": "ok", "application": "academic-source"}
+
     @api.get("/search")
     def search(query: str, limit: int = 10) -> list[dict[str, Any]]:
-        return application.search(query, limit)
+        try:
+            return application.search(query, limit)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @api.post("/resolve")
     def resolve(payload: ResolveInput) -> dict[str, Any]:
-        return application.resolve(payload.identifier)
+        try:
+            return application.resolve(payload.identifier)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @api.post("/uploads", status_code=201)
     def upload(file: Annotated[UploadFile, File()]) -> dict[str, Any]:
@@ -96,6 +106,10 @@ def create_router(application: Application) -> APIRouter:
             path = application.store.artifact_path(artifact_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Unknown artifact") from exc
+        if not path.is_file():
+            raise HTTPException(
+                status_code=404, detail="Artifact file is no longer available"
+            )
         return FileResponse(path, media_type=item.media_type, filename=item.filename)
 
     return api

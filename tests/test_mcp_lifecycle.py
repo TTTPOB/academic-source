@@ -16,13 +16,14 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 
 
-def _spawn_server():
+def _spawn_server(data_dir):
     env = dict(os.environ)
+    env["ACADEMIC_SOURCE_DATA_DIR"] = str(data_dir)
     env["PYTHONPATH"] = str(REPO / "src")
     # Binary pipes: Windows console encoding produces GBK bytes on stderr for
     # Chinese log lines; decoding happens manually with errors="replace".
     return subprocess.Popen(
-        [sys.executable, "-m", "scansci_pdf.main", "run"],
+        [sys.executable, "-m", "academic_source", "mcp"],
         cwd=str(REPO),
         env=env,
         stdin=subprocess.PIPE,
@@ -40,8 +41,8 @@ def _rpc(method: str, params: dict, msg_id: int | None = None) -> str:
     return json.dumps(body, ensure_ascii=False)
 
 
-def test_stdio_server_exits_on_eof():
-    proc = _spawn_server()
+def test_stdio_server_exits_on_eof(tmp_path):
+    proc = _spawn_server(tmp_path)
     try:
         payload = (
             "\n".join(
@@ -57,11 +58,8 @@ def test_stdio_server_exits_on_eof():
             )
             + "\n"
         )
-        proc.stdin.write(payload.encode("utf-8"))
-        proc.stdin.close()
-
         t0 = time.monotonic()
-        out_bytes, err_bytes = proc.communicate(timeout=20)
+        out_bytes, err_bytes = proc.communicate(input=payload.encode("utf-8"), timeout=20)
         elapsed = time.monotonic() - t0
         out = out_bytes.decode("utf-8", errors="replace")
         err = err_bytes.decode("utf-8", errors="replace")

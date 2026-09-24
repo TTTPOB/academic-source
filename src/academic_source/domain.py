@@ -2,10 +2,14 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-Policy = Literal["fastest", "oa_first", "legal_only", "scihub_first", "grey_only", "scihub_only"]
-JobStatus = Literal["queued", "running", "succeeded", "partial", "failed", "interrupted"]
+Policy = Literal[
+    "fastest", "oa_first", "legal_only", "scihub_first", "grey_only", "scihub_only"
+]
+JobStatus = Literal[
+    "queued", "running", "succeeded", "partial", "failed", "interrupted"
+]
 
 
 class Provenance(BaseModel):
@@ -39,6 +43,8 @@ class Attempt(BaseModel):
 
 
 class AcquisitionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     identifiers: list[str] = Field(default_factory=list)
     upload_id: str | None = None
     text: str | None = None
@@ -50,8 +56,19 @@ class AcquisitionRequest(BaseModel):
 
     @model_validator(mode="after")
     def check_input(self) -> "AcquisitionRequest":
-        self.identifiers = [value.strip() for value in self.identifiers if value.strip()]
-        if sum((bool(self.identifiers), bool(self.upload_id), bool(self.text and self.text.strip()))) != 1:
+        self.identifiers = [
+            value.strip() for value in self.identifiers if value.strip()
+        ]
+        if (
+            sum(
+                (
+                    bool(self.identifiers),
+                    bool(self.upload_id),
+                    bool(self.text and self.text.strip()),
+                )
+            )
+            != 1
+        ):
             raise ValueError("Provide exactly one of identifiers, upload_id, or text")
         return self
 

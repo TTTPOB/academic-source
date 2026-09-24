@@ -61,6 +61,27 @@ def _patch_handlers(monkeypatch, visited, *, win=None):
     return handler
 
 
+def test_explicit_arxiv_version_reaches_download_url(monkeypatch, tmp_path):
+    from scansci_pdf.sources import arxiv
+
+    requested = []
+
+    def fetch(url, path, config):
+        requested.append(url)
+        _pdf(path)
+        return {"file": str(path), "source": "arXiv", "success": True}
+
+    monkeypatch.setattr(arxiv, "download_arxiv_pdf", fetch)
+    result = LegacySources().acquire(
+        "arxiv:2401.01234v2",
+        AcquisitionRequest(identifiers=["arxiv:2401.01234v2"]),
+        tmp_path,
+        {},
+    )
+    assert requested == ["https://arxiv.org/pdf/2401.01234v2.pdf"]
+    assert result["source"] == "arXiv"
+
+
 def _get(tmp_path, policy, config):
     return LegacySources().acquire(
         "10.1234/paper",
@@ -131,7 +152,7 @@ def test_configured_institution_channels_reachable_after_failed_legal(
     assert "InstitutionalBrowser" not in visited
 
 
-def test_fastest_bounds_http_race_and_keeps_publisher_on_owner_thread(
+def test_fastest_parallelizes_http_and_keeps_publisher_on_owner_thread(
     monkeypatch, tmp_path
 ):
     import threading

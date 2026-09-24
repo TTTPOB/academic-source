@@ -3,9 +3,9 @@
 from io import BytesIO
 
 import pytest
-from academic_source.infrastructure.storage import Store
 
 from academic_source.domain import AcquisitionRequest, AcquisitionResult, Job
+from academic_source.infrastructure.storage import Store
 from academic_source.settings import Settings
 
 

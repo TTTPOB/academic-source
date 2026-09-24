@@ -33,6 +33,9 @@ def _parser() -> argparse.ArgumentParser:
             "--output", type=Path, default=Path("."), help="Local output directory"
         )
         command.add_argument("--policy", default="fastest")
+        command.add_argument("--markdown", action="store_true")
+        command.add_argument("--supplementary", action="store_true")
+        command.add_argument("--bibtex", action="store_true")
     return parser
 
 
@@ -55,6 +58,9 @@ def _remote(args: argparse.Namespace) -> dict[str, Any]:
             request = {"upload_id": response.json()["id"], "policy": args.policy}
         else:
             request = {"identifiers": [args.identifier], "policy": args.policy}
+        request.update(
+            markdown=args.markdown, supplementary=args.supplementary, bibtex=args.bibtex
+        )
         response = client.post("api/v1/acquisitions", json=request)
         response.raise_for_status()
         job = response.json()
@@ -65,11 +71,16 @@ def _remote(args: argparse.Namespace) -> dict[str, Any]:
             job = response.json()
         for item in job["artifacts"]:
             path = _save_path(args.output, item)
-            with client.stream("GET", item["download_url"].lstrip("/")) as response:
-                response.raise_for_status()
-                with path.open("wb") as destination:
-                    for chunk in response.iter_bytes():
-                        destination.write(chunk)
+            partial = path.with_suffix(path.suffix + ".part")
+            try:
+                with client.stream("GET", item["download_url"].lstrip("/")) as response:
+                    response.raise_for_status()
+                    with partial.open("wb") as destination:
+                        for chunk in response.iter_bytes():
+                            destination.write(chunk)
+                partial.replace(path)
+            finally:
+                partial.unlink(missing_ok=True)
         return job
 
 
@@ -86,6 +97,9 @@ def _local(args: argparse.Namespace) -> dict[str, Any]:
             request = AcquisitionRequest(
                 identifiers=[args.identifier], policy=args.policy
             )
+        request.markdown = args.markdown
+        request.supplementary = args.supplementary
+        request.bibtex = args.bibtex
         job = application.submit(request)
         while job.status in ("queued", "running"):
             job = application.wait(job.id, timeout=0.5)

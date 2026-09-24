@@ -3,10 +3,10 @@
 from io import BytesIO
 
 import pytest
-from academic_source.services.discovery import normalize_identifier, resolve, search
-from academic_source.services.lists import parse_list
 
 from academic_source.infrastructure.storage import Store
+from academic_source.services.discovery import normalize_identifier, resolve, search
+from academic_source.services.lists import parse_list
 from academic_source.settings import Settings
 
 

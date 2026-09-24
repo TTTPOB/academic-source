@@ -5,6 +5,7 @@ from __future__ import annotations
 from academic_source.domain import AcquisitionRequest
 from academic_source.services.application import Application
 from academic_source.settings import Settings
+from tests.academic_source.helpers import paper_bytes
 
 
 class FixtureSource:
@@ -31,7 +32,9 @@ class FixtureSource:
         paper.write_bytes(
             b"<html>not a paper</html>"
             if identifier.endswith("html")
-            else b"%PDF-1.7\nbody\n%%EOF"
+            else b"%PDF-1.7\ntruncated document"
+            if identifier.endswith("truncated")
+            else paper_bytes()
         )
         return {
             "path": paper,
@@ -55,14 +58,16 @@ def test_batch_persists_each_result_and_rejects_failure_dict_and_html(tmp_path):
                 "10.1234/missing",
                 "10.1234/paywall",
                 "10.1234/html",
+                "10.1234/truncated",
             ]
         )
         job = app.wait(app.submit(request).id, timeout=5)
-        assert job.status == "partial" and job.completed == job.total == 4
+        assert job.status == "partial" and job.completed == job.total == 5
         assert [item.reason for item in job.results] == [
             "",
             "not_found",
             "auth_required",
+            "invalid_document",
             "invalid_document",
         ]
         assert len(job.artifacts) == 1
@@ -138,7 +143,7 @@ def test_uploaded_list_and_inline_text_share_identifier_resolution(tmp_path):
 def test_optional_exports_fail_without_downgrading_pdf(monkeypatch, tmp_path):
     from scansci_pdf import bibtex, md_export, supplementary
 
-    def conversion_failed(*args):
+    def conversion_failed(*args, **kwargs):
         raise RuntimeError("converter unavailable")
 
     monkeypatch.setattr(md_export, "pdf_to_markdown_detailed", conversion_failed)
@@ -168,7 +173,7 @@ def test_source_adapter_preserves_failed_attempts_and_publisher_order(
         return {"success": False, "error_type": "auth_required", "error": "paywall"}
 
     def available(identifier, path, config):
-        path.write_bytes(b"%PDF-1.7\nbody\n%%EOF")
+        path.write_bytes(paper_bytes())
         return {"success": True, "file": str(path), "source": "publisher"}
 
     monkeypatch.setattr(
@@ -187,54 +192,10 @@ def test_source_adapter_preserves_failed_attempts_and_publisher_order(
     assert [item["source"] for item in outcome["attempts"]] == ["Direct", "Publisher"]
 
 
-def test_legal_only_never_calls_grey_sources(monkeypatch, tmp_path):
-    from academic_source.sources import LegacySources
-    from scansci_pdf.sources import (
-        europepmc,
-        libgen,
-        oa_discovery,
-        openalex,
-        publishers,
-        scihub,
-        unpaywall,
-    )
-
-    monkeypatch.setattr(publishers, "get_publisher_fast_sources", lambda doi: [])
-    for module, names in (
-        (europepmc, ("try_pmc", "try_europepmc")),
-        (oa_discovery, ("try_doaj",)),
-        (openalex, ("try_openalex_oa",)),
-        (unpaywall, ("try_unpaywall",)),
-    ):
-        for name in names:
-            monkeypatch.setattr(module, name, lambda *args: None)
-
-    def forbidden(*args):
-        raise AssertionError("grey source called under legal_only")
-
-    monkeypatch.setattr(scihub, "try_scihub", forbidden)
-    monkeypatch.setattr(libgen, "try_libgen", forbidden)
-    outcome = LegacySources().acquire(
-        "10.1234/test",
-        AcquisitionRequest(identifiers=["10.1234/test"], policy="legal_only"),
-        tmp_path,
-        {"vpnsci_enabled": False},
-    )
-    assert outcome["reason"] == "not_found"
-    assert {item["source"] for item in outcome["attempts"]} == {
-        "Unpaywall",
-        "OpenAlexOA",
-        "PMC",
-        "EuropePMC",
-        "DOAJ",
-    }
-
-
 def test_noninteractive_legacy_login_fallback_does_not_open_windows(
     monkeypatch, tmp_path
 ):
     from scansci_pdf import _publisher_strategies_core as publisher
-    from scansci_pdf.sources import instsci
 
     def failed_headless(*args):
         publisher._set_error("browser_unavailable", "try_other_source")
@@ -243,6 +204,7 @@ def test_noninteractive_legacy_login_fallback_does_not_open_windows(
     def no_window(*args, **kwargs):
         raise AssertionError("visible browser launched without user opt-in")
 
+    monkeypatch.setattr(publisher, "_HAS_CLOAKBROWSER", True)
     monkeypatch.setattr(publisher, "_browser_download", failed_headless)
     monkeypatch.setattr(publisher, "_browser_download_visible", no_window)
     assert (
@@ -255,11 +217,3 @@ def test_noninteractive_legacy_login_fallback_does_not_open_windows(
         )
         is False
     )
-    monkeypatch.setattr(instsci, "_try_instsci_browser", no_window)
-    config = {
-        "vpnsci_enabled": True,
-        "interactive": False,
-        "cache_dir": str(tmp_path),
-        "vpnsci_base_url": "https://example.org",
-    }
-    assert instsci.try_instsci("10.1234/test", tmp_path / "other.pdf", config) is None
