@@ -146,7 +146,7 @@ def try_ezproxy(doi: str, output_path: Path, config: dict[str, Any]) -> dict[str
         except Exception:
             pass
 
-    browser = launch(headless=False, humanize=True, args=args)
+    browser = launch(headless=config.get("interactive", True) is False, humanize=True, args=args)
     try:
         context = browser.new_context()
         page = context.new_page()
@@ -167,6 +167,8 @@ def try_ezproxy(doi: str, output_path: Path, config: dict[str, Any]) -> dict[str
         # Check if redirected to login
         url = page.url
         if "libproxy" in url.lower() or "login" in url.lower():
+            if config.get("interactive", True) is False:
+                return None
             log.info("   [EZProxy] Login required. Please log in...")
             max_wait = 180
             elapsed = 0

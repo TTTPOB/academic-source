@@ -442,7 +442,7 @@ class PublisherBatchDownloader:
         profile_path.mkdir(parents=True, exist_ok=True)
         return launch_persistent_context(
             user_data_dir=str(profile_path),
-            headless=False,
+            headless=self.config.get("interactive", True) is False,
             humanize=True,
             args=["--disable-features=CrossOriginOpenerPolicy"],
         )
@@ -599,6 +599,8 @@ class PublisherBatchDownloader:
         return self._complete_login_from_current_page(page, result)
 
     def _complete_login_from_current_page(self, page: Any, result: DownloadResult) -> bool:
+        if self.config.get("interactive", True) is False:
+            return False
         result.state = "sso_required"
         self._event(result, "sso_start", page.url)
         self._dismiss_cookie_banners(page, result)

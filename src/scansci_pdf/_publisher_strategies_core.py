@@ -99,7 +99,7 @@ def _visible_browser(config: dict[str, Any], publisher: str, *, viewport: dict |
     try:
         ctx = launch_persistent_context(
             str(profile_dir),
-            headless=False, humanize=True,
+            headless=config.get("interactive", True) is False, humanize=True,
             args=["--disable-features=CrossOriginOpenerPolicy"],
             config=config,
         )
@@ -110,7 +110,7 @@ def _visible_browser(config: dict[str, Any], publisher: str, *, viewport: dict |
     except Exception as _e:
         log.info(f"   [{publisher}] persistent context unavailable ({_e}), using ephemeral")
         _vp = viewport or {"width": 1440, "height": 900}
-        browser = launch(headless=False, humanize=True,
+        browser = launch(headless=config.get("interactive", True) is False, humanize=True,
                          args=["--disable-features=CrossOriginOpenerPolicy"],
                          config=config)
         ctx = browser.new_context(viewport=_vp)

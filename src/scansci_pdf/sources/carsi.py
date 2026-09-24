@@ -105,6 +105,8 @@ class CARSIClient:
             if not force and self._try_load_cookies(publisher):
                 log.info(f"   [CARSI] Loaded saved cookies for {publisher}")
                 return True
+            if self.config.get("interactive", True) is False:
+                return False
             log.info(f"   [CARSI] No valid session for {publisher}. Opening browser...")
             return self._browser_login(publisher)
 
@@ -282,6 +284,11 @@ class CARSIClient:
                                     log.info("   [CARSI-Browser] Cookie probe failed, re-login needed")
                             except Exception:
                                 log.info("   [CARSI-Browser] Cookie probe error, will re-login")
+
+                    if not self.config.get("interactive", True):
+                        if needs_login:
+                            return None
+                        cookies_valid = True
 
                     if not cookies_valid:
                         # Step 2: Navigate to "Institutional login" link on article page
