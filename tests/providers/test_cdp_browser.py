@@ -33,7 +33,15 @@ class FakePage:
         self.on_close(self)
 
     def evaluate_handle(self, script, argument):
-        assert "AbortController" in script and "setTimeout" in script
+        assert all(
+            operation in script
+            for operation in (
+                "AbortController",
+                "setTimeout",
+                "controller.abort()",
+                "signal: controller.signal",
+            )
+        )
         assert argument["timeout"] > 0
         self.requests.append(argument["url"])
         return FakeSession(self)
@@ -56,7 +64,8 @@ class FakeSession:
         if "s.reader =" in script:
             return None
         if "clearTimeout" in script:
-            self.page.aborted = self.page.cancelled = True
+            self.page.aborted = "s.controller.abort()" in script
+            self.page.cancelled = "s.reader?.cancel()" in script
             return None
         assert "s.reader.read()" in script and "Date.now() >= s.deadline" in script
         if self.page.timeout_after_chunk and self.position:
