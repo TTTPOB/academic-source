@@ -157,8 +157,7 @@ Hook 参考 jcli：Ruff lint/format 与 Pyrefly basic。新代码执行这些检
 
 ## 架构与上游
 
-- 架构设计：`docs/ARCHITECTURE_PROPOSAL.md`
-- 当前模块协作契约：`docs/IMPLEMENTATION_CONTRACT.md`
+- 当前架构：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - 原项目说明：[上游 README](https://github.com/Rimagination/scansci-pdf#readme)（历史参考，不是本项目操作手册）
 - 许可证：Apache-2.0，保留上游版权与归属；未包含的闭源 Cython 源码不是新架构的依赖。
 
