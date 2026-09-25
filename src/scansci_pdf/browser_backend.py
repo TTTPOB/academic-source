@@ -51,6 +51,36 @@ class OwnedTargets:
         temporary.write_text(json.dumps(data), encoding="utf-8")
         temporary.replace(self.path)
 
+    def recover(self, browser: Any) -> None:
+        data = self.load()
+        recorded = data.get(self.endpoint, [])
+        if not recorded:
+            return
+        session = browser.new_browser_cdp_session()
+        try:
+            present = {
+                target["targetId"]
+                for target in session.send("Target.getTargets")["targetInfos"]
+            }
+            remaining = []
+            for target_id in recorded:
+                if target_id not in present:
+                    continue
+                try:
+                    result = session.send("Target.closeTarget", {"targetId": target_id})
+                    if not result.get("success", False):
+                        raise RuntimeError("CDP target not closed")
+                except Exception:
+                    logger.warning("CDP owned tab cleanup failed; will retry on next connection")
+                    remaining.append(target_id)
+            if remaining:
+                data[self.endpoint] = remaining
+            else:
+                data.pop(self.endpoint, None)
+            self.save(data)
+        finally:
+            session.detach()
+
     def add(self, target_id: str) -> None:
         data = self.load()
         targets = data.setdefault(self.endpoint, [])
@@ -115,7 +145,7 @@ class BorrowedCDPSession:
             self.driver.stop()
 
 
-def connect_cdp(config: dict[str, Any] | None) -> BorrowedCDPSession:
+def connect_cdp(config: dict[str, Any] | None, *, probe: bool = False) -> BorrowedCDPSession:
     """Attach lazily to an existing Chrome default context, never launch one."""
     url = str((config or {}).get("browser_cdp_url") or "").strip()
     if not url:
@@ -146,7 +176,13 @@ def connect_cdp(config: dict[str, Any] | None) -> BorrowedCDPSession:
         if not browser.contexts:
             browser.close()
             raise CDPSetupError("CDP browser has no existing default context")
-        return BorrowedCDPSession(browser, browser.contexts[0], driver)
+        registry = None if probe else OwnedTargets(config or {}, url)
+        if registry is not None:
+            try:
+                registry.recover(browser)
+            except Exception:
+                logger.warning("CDP owned tab cleanup unavailable; entries retained for retry")
+        return BorrowedCDPSession(browser, browser.contexts[0], driver, registry)
     except Exception:
         driver.stop()
         raise
@@ -154,7 +190,7 @@ def connect_cdp(config: dict[str, Any] | None) -> BorrowedCDPSession:
 
 def probe_cdp(config: dict[str, Any] | None) -> None:
     """Check the borrowed default context without creating a page."""
-    connect_cdp(config).close()
+    connect_cdp(config, probe=True).close()
 
 
 # ---------------------------------------------------------------------------
