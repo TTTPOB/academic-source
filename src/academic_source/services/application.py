@@ -48,6 +48,23 @@ class Application:
         )
         self._futures: dict[str, Future[None]] = {}
         self._closed = False
+        if (
+            str(settings.source_config.get("browser_backend", "")).strip().lower()
+            == "cdp"
+        ):
+            self._executor.submit(self._preflight_cdp, self._config())
+
+    @staticmethod
+    def _preflight_cdp(config: dict[str, Any]) -> None:
+        from scansci_pdf.browser_backend import probe_cdp
+
+        try:
+            probe_cdp(config)
+        except Exception:  # noqa: BLE001 - optional startup check must not block jobs
+            # Playwright errors may contain endpoint credentials.
+            log.warning(
+                "CDP startup preflight failed; browser requests will retry on demand"
+            )
 
     def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         return discovery.search(query, limit)

@@ -142,6 +142,38 @@ def test_cdp_missing_url_and_default_context_never_launch(monkeypatch):
         browser_backend.connect_cdp({"browser_cdp_url": "http://localhost:9222"})
 
 
+def test_cdp_probe_disconnects_without_touching_default_context(monkeypatch):
+    calls = []
+    context = SimpleNamespace(
+        new_page=lambda: pytest.fail("probe must not create a page"),
+        close=lambda: pytest.fail("probe must not close default context"),
+    )
+    browser = SimpleNamespace(
+        contexts=[context], close=lambda: calls.append("disconnect")
+    )
+    driver = SimpleNamespace(
+        chromium=SimpleNamespace(
+            connect_over_cdp=lambda url, **kwargs: (
+                calls.append((url, kwargs)) or browser
+            )
+        ),
+        stop=lambda: calls.append("stop"),
+    )
+    sync_api = ModuleType("playwright.sync_api")
+    sync_api.sync_playwright = lambda: SimpleNamespace(start=lambda: driver)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", sync_api)
+    for url in ("http://localhost:9222", "ws://localhost:9222/devtools/browser/id"):
+        browser_backend.probe_cdp({"browser_cdp_url": url, "browser_cdp_timeout": 0.2})
+        assert calls[-3:] == [
+            (url, {"no_defaults": True, "timeout": 200.0}),
+            "disconnect",
+            "stop",
+        ]
+    for url in ("ftp://localhost:9222", "http://", "http://localhost:bad"):
+        with pytest.raises(RuntimeError, match="valid HTTP\\(S\\) or WS\\(S\\) URL"):
+            browser_backend.connect_cdp({"browser_cdp_url": url})
+
+
 def test_cdp_connection_failure_is_not_local_fallback(monkeypatch):
     config = {"browser_backend": "cdp", "browser_cdp_url": "http://127.0.0.1:9222"}
     monkeypatch.setattr(browser_engine, "_check_browser_backend", lambda cfg: True)

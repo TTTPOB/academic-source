@@ -1,11 +1,41 @@
 """User-visible progress, bounded waiting, and optional-export retry semantics."""
 
-from threading import Event
+from threading import Event, get_ident
 
 from academic_source.domain import AcquisitionRequest
 from academic_source.services.application import Application
 from academic_source.settings import Settings
 from tests.academic_source.helpers import RecordingSource
+
+
+def test_cdp_preflight_once_offline_does_not_block_http_job(
+    tmp_path, monkeypatch, caplog
+):
+    from scansci_pdf import browser_backend
+
+    calls = []
+    main_thread = get_ident()
+
+    def offline(config):
+        calls.append(get_ident())
+        raise ConnectionError("endpoint-token=secret")
+
+    monkeypatch.setattr(browser_backend, "probe_cdp", offline)
+    source = RecordingSource()
+    application = Application(
+        Settings(data_dir=tmp_path, source_config={"browser_backend": "cdp"}),
+        source=source,
+    )
+    try:
+        request = AcquisitionRequest(identifiers=["10.1234/first", "10.1234/second"])
+        job = application.wait(application.submit(request).id, 5)
+        assert job.status == "succeeded"
+        assert source.calls == ["10.1234/first", "10.1234/second"]
+        assert len(calls) == 1 and calls[0] != main_thread
+        assert "CDP startup preflight failed" in caplog.text
+        assert "endpoint-token" not in caplog.text
+    finally:
+        application.close()
 
 
 def test_running_batch_exposes_completed_items_before_final_result(tmp_path):
