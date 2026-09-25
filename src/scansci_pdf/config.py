@@ -40,6 +40,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "network_proxy": "",
     # Optional Science-only egress override; empty string explicitly selects direct.
     "science_http_proxy": None,
+    "science_reader_grace": 5,
+    "science_reader_timeout": 60,
     "proxy_pool": "",  # 逗号分隔的代理列表；非空时批量下载按代理轮换出口 IP
     "download_strategy": "fastest",  # fastest / grey_only(all 3 grey) / scihub_only(Sci-Hub only) / scihub_first / oa_first / legal_only
     "race_mode": "hedge",  # hedge: score-ordered staggered cascade (fewer requests, less anti-bot heat) / full: flat parallel race
@@ -83,6 +85,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # 浏览器后端：patchright（默认，Apache-2.0 开源 playwright fork，内核随本机 Chrome 自动更新）
     # 或 cloakbrowser（免费版内核卡 Chromium 146，作为可选回退）
     "browser_backend": "patchright",
+    "browser_cdp_timeout": 5,
     # 批量下载时每 N 篇回收一次浏览器上下文（cookie 内存交接，登录态不丢）。
     # 0 = 关闭。长批次（上千篇）建议 100-200，避免 Chrome 长会话内存漂移。
     "browser_restart_every": 0,

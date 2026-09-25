@@ -1768,7 +1768,7 @@ def _browser_download(
                 timeout=(
                     float(config.get("science_reader_timeout", 60))
                     if challenged
-                    else 5.0
+                    else float(config.get("science_reader_grace", 5))
                 ),
             )
             if science_signed:
@@ -3194,15 +3194,15 @@ def _wait_for_science_reader(
     HTML sample can still be the challenge. Polling the reader config is the
     reliable completion signal.
     """
-    interval = 2.0
-    attempts = max(1, int(timeout / interval))
-    for attempt in range(attempts):
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
         signed = _science_reader_signed_url(tab_id, config)
         if signed:
             return signed
-        if attempt + 1 < attempts:
-            time.sleep(interval)
-    return None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        time.sleep(min(2.0, remaining))
 
 
 _SCIENCE_READER_HTML_TIMEOUT = 30.0

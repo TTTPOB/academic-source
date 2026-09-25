@@ -529,19 +529,35 @@ def test_wait_for_science_reader_polls_until_reader_replaces_challenge(monkeypat
 
     answers = [None, None, SIGNED_PDFDIRECT]
     sleeps = []
+    clock = [100.0]
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(strategy.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(strategy.time, "sleep", sleep)
     monkeypatch.setattr(
         browser_engine,
         "evaluate_js",
         lambda *a, **kw: answers.pop(0) if answers else None,
     )
-    monkeypatch.setattr(strategy.time, "sleep", lambda seconds: sleeps.append(seconds))
     assert strategy._wait_for_science_reader("tab", {}, timeout=60) == SIGNED_PDFDIRECT
     assert sleeps == [2.0, 2.0]
 
-    monkeypatch.setattr(browser_engine, "evaluate_js", lambda *a, **kw: None)
+    checks = []
+    monkeypatch.setattr(
+        browser_engine, "evaluate_js", lambda *a, **kw: checks.append(clock[0]) or None
+    )
     sleeps.clear()
-    assert strategy._wait_for_science_reader("tab", {}, timeout=6) is None
-    assert sleeps == [2.0, 2.0]  # bounded attempts, never an unbounded busy loop
+    assert strategy._wait_for_science_reader("tab", {}, timeout=5) is None
+    assert sleeps == [2.0, 2.0, 1.0]
+    assert checks == [104.0, 106.0, 108.0, 109.0]
+    checks.clear()
+    sleeps.clear()
+    assert strategy._wait_for_science_reader("tab", {}, timeout=0) is None
+    assert checks == [109.0]
+    assert sleeps == []
 
 
 def _science_browser_stubs(monkeypatch, evaluate):
