@@ -26,6 +26,10 @@ BACKEND_CDP = "cdp"
 DEFAULT_BACKEND = BACKEND_PATCHRIGHT
 
 
+class CDPSetupError(RuntimeError):
+    """Safe, fixed diagnostic for local CDP setup failures."""
+
+
 class BorrowedCDPSession:
     """Only the connection and tabs are ours; the default context/profile are not."""
 
@@ -63,7 +67,7 @@ def connect_cdp(config: dict[str, Any] | None) -> BorrowedCDPSession:
     """Attach lazily to an existing Chrome default context, never launch one."""
     url = str((config or {}).get("browser_cdp_url") or "").strip()
     if not url:
-        raise RuntimeError("browser_backend=cdp requires source_config.browser_cdp_url")
+        raise CDPSetupError("browser_backend=cdp requires source_config.browser_cdp_url")
     try:
         parsed = urlsplit(url)
         if parsed.scheme not in ("http", "https", "ws", "wss") or not parsed.hostname:
@@ -72,24 +76,24 @@ def connect_cdp(config: dict[str, Any] | None) -> BorrowedCDPSession:
         if parsed.netloc.endswith(":") or (port is not None and port == 0):
             raise ValueError
     except ValueError:
-        raise RuntimeError("browser_cdp_url must be a valid HTTP(S) or WS(S) URL") from None
+        raise CDPSetupError("browser_cdp_url must be a valid HTTP(S) or WS(S) URL") from None
     try:
         timeout = float((config or {}).get("browser_cdp_timeout", 5))
         if not 0 < timeout < float("inf"):
             raise ValueError
     except (TypeError, ValueError):
-        raise ValueError("browser_cdp_timeout must be a positive number of seconds") from None
+        raise CDPSetupError("browser_cdp_timeout must be a positive number of seconds") from None
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
-        raise RuntimeError("browser_backend=cdp requires playwright>=1.63") from exc
+        raise CDPSetupError("browser_backend=cdp requires playwright>=1.63") from exc
 
     driver = sync_playwright().start()
     try:
         browser = driver.chromium.connect_over_cdp(url, no_defaults=True, timeout=timeout * 1000)
         if not browser.contexts:
             browser.close()
-            raise RuntimeError("CDP browser has no existing default context")
+            raise CDPSetupError("CDP browser has no existing default context")
         return BorrowedCDPSession(browser, browser.contexts[0], driver)
     except Exception:
         driver.stop()

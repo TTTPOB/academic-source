@@ -56,23 +56,14 @@ class Application:
 
     @staticmethod
     def _preflight_cdp(config: dict[str, Any]) -> None:
-        from scansci_pdf.browser_backend import probe_cdp
+        from scansci_pdf.browser_backend import CDPSetupError, probe_cdp
 
         try:
             probe_cdp(config)
         except Exception as exc:  # noqa: BLE001 - optional check must not block jobs
-            # Playwright messages may contain endpoint credentials; use fixed diagnostics.
-            detail = str(exc)
-            if detail == "browser_backend=cdp requires source_config.browser_cdp_url":
-                reason = "set source_config.browser_cdp_url"
-            elif detail == "browser_cdp_url must be a valid HTTP(S) or WS(S) URL":
-                reason = "fix source_config.browser_cdp_url (HTTP(S) or WS(S))"
-            elif detail == "browser_cdp_timeout must be a positive number of seconds":
-                reason = "set a positive source_config.browser_cdp_timeout"
-            elif detail == "browser_backend=cdp requires playwright>=1.63":
-                reason = "install playwright>=1.63"
-            elif detail == "CDP browser has no existing default context":
-                reason = "Chrome has no default context"
+            # Only CDPSetupError carries a known-safe message; Playwright errors may leak URLs.
+            if isinstance(exc, CDPSetupError):
+                reason = str(exc)
             elif isinstance(exc, TimeoutError) or type(exc).__name__ == "TimeoutError":
                 reason = "connection timeout"
             else:
