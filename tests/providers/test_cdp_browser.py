@@ -653,10 +653,12 @@ def test_science_plain_http_transport_resolves_and_validates(monkeypatch, tmp_pa
     signed = "/doi/pdfdirect/10.1126/adh2586?hmac=1790266406-QUJDREVGR0g%3D"
     payload = _pdf_bytes()
     session = FakeScienceSession('{"epubConfig":{"epubUrl":"' + signed + '"}}', payload)
-    monkeypatch.setattr(strategy, "_science_http_session", lambda config: session)
+    monkeypatch.setattr(
+        strategy, "_science_http_session", lambda config, state: session
+    )
 
     output = tmp_path / "http.pdf"
-    assert strategy._science_http_download("10.1126/adh2586", output, {})
+    assert strategy._science_http_download("10.1126/adh2586", output, {}, {})
     assert output.read_bytes() == payload
     assert session.urls[-1].endswith(signed)
     assert session.closed and all(response.closed for response in session.responses)
@@ -668,9 +670,11 @@ def test_science_plain_http_transport_resolves_and_validates(monkeypatch, tmp_pa
         payload,
         {"cf-mitigated": "challenge"},
     )
-    monkeypatch.setattr(strategy, "_science_http_session", lambda config: challenged)
+    monkeypatch.setattr(
+        strategy, "_science_http_session", lambda config, state: challenged
+    )
     assert not strategy._science_http_download(
-        "10.1126/adh2586", tmp_path / "a.pdf", {}
+        "10.1126/adh2586", tmp_path / "a.pdf", {}, {}
     )
     assert challenged.closed and all(
         response.closed for response in challenged.responses
@@ -679,9 +683,11 @@ def test_science_plain_http_transport_resolves_and_validates(monkeypatch, tmp_pa
     unsigned = FakeScienceSession(
         '{"epubConfig":{"epubUrl":"/doi/pdf/10.1126/x"}}', payload
     )
-    monkeypatch.setattr(strategy, "_science_http_session", lambda config: unsigned)
+    monkeypatch.setattr(
+        strategy, "_science_http_session", lambda config, state: unsigned
+    )
     assert not strategy._science_http_download(
-        "10.1126/adh2586", tmp_path / "b.pdf", {}
+        "10.1126/adh2586", tmp_path / "b.pdf", {}, {}
     )
 
 
@@ -708,26 +714,60 @@ def test_science_clearance_capture_enables_and_gates_the_fast_path(
             {"name": "tracker", "value": "x", "domain": ".example.com", "path": "/"},
         ],
     )
-    assert not strategy._science_has_cached_clearance(config)
+    assert browser_cookies.load_science_http_state(config) is None
     strategy._capture_science_clearance("tab", config)
-    assert browser_cookies.load_cached_user_agent(config) == "Agent/1.0 Chrome"
-    assert strategy._science_has_cached_clearance(config)
+    assert (
+        browser_cookies.load_science_http_state(config)["user_agent"]
+        == "Agent/1.0 Chrome"
+    )
     assert [c["name"] for c in browser_cookies.load_saved_cookies(config)] == [
         "cf_clearance"
     ]
 
 
+def test_science_snapshot_rejects_wrong_scope_and_expired_clearance(tmp_path):
+    from scansci_pdf import browser_cookies
+
+    config = {"cache_dir": str(tmp_path)}
+    clearance = {
+        "name": "cf_clearance",
+        "value": "token",
+        "domain": ".science.org",
+        "path": "/",
+        "expires": -1,
+    }
+    browser_cookies.save_science_http_state("Agent/2", [clearance], config)
+    state = browser_cookies.load_science_http_state(config)
+    assert state["user_agent"] == "Agent/2" and state["cookies"][0]["expires"] == -1
+    for bad in (
+        {**clearance, "domain": ".evilscience.org"},
+        {**clearance, "path": "/doi/epdf"},
+        {**clearance, "expires": 1},
+    ):
+        browser_cookies.save_science_http_state("Agent/3", [bad], config)
+        assert (
+            browser_cookies.load_science_http_state(config)["user_agent"] == "Agent/2"
+        )
+    (tmp_path / browser_cookies.SCIENCE_HTTP_STATE_FILE).unlink()
+    assert browser_cookies.load_science_http_state(config) is None
+
+
 def test_science_fast_path_skips_the_browser(monkeypatch, tmp_path):
     from scansci_pdf import _publisher_strategies_core as strategy
+    from scansci_pdf import browser_cookies
 
-    monkeypatch.setattr(strategy, "_science_has_cached_clearance", lambda config: True)
+    monkeypatch.setattr(
+        browser_cookies,
+        "load_science_http_state",
+        lambda config: {"user_agent": "Agent", "cookies": []},
+    )
     monkeypatch.setattr(
         browser_engine,
         "create_tab",
         lambda *a, **kw: pytest.fail("browser must not open"),
     )
 
-    def http_download(doi, path, config):
+    def http_download(doi, path, config, state):
         path.write_bytes(_pdf_bytes())
         return True
 
@@ -741,8 +781,9 @@ def test_science_fast_path_skips_the_browser(monkeypatch, tmp_path):
 
 def test_science_without_clearance_still_uses_the_browser(monkeypatch, tmp_path):
     from scansci_pdf import _publisher_strategies_core as strategy
+    from scansci_pdf import browser_cookies
 
-    monkeypatch.setattr(strategy, "_science_has_cached_clearance", lambda config: False)
+    monkeypatch.setattr(browser_cookies, "load_science_http_state", lambda config: None)
     monkeypatch.setattr(
         strategy,
         "_science_http_download",

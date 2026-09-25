@@ -229,44 +229,66 @@ def load_saved_cookies(config: dict[str, Any]) -> list[dict[str, Any]]:
     return [c for c in cookies if _is_cookie_valid(c, now)]
 
 
-USER_AGENT_FILE = "publisher_user_agent.json"
+SCIENCE_HTTP_ORIGIN = "https://www.science.org/"
+SCIENCE_HTTP_STATE_FILE = "science_http_state.json"
 
 
-def save_cached_user_agent(user_agent: str, config: dict[str, Any]) -> None:
-    """Persist the user agent that earned the cached bot-management cookies.
-
-    Cloudflare binds cf_clearance to the requesting user agent, so a plain HTTP
-    client can only reuse the cookie by sending the same agent.
-    """
-    from .config import DATA_DIR
-
-    if not user_agent:
-        return
-    path = Path(config.get("cache_dir", str(DATA_DIR / "cache"))) / USER_AGENT_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"user_agent": user_agent}, ensure_ascii=False), encoding="utf-8"
+def _science_cookie_applies(cookie: dict[str, Any]) -> bool:
+    """Match the Science origin with cookie domain and path boundaries."""
+    domain = cookie.get("domain")
+    path = cookie.get("path", "/")
+    if not isinstance(cookie.get("name"), str) or not isinstance(cookie.get("value"), str):
+        return False
+    if not isinstance(domain, str) or not isinstance(path, str):
+        return False
+    host = "www.science.org"
+    bare = domain.lstrip(".").lower()
+    if not bare or not (host == bare or host.endswith("." + bare)):
+        return False
+    return path.startswith("/") and all(
+        target == path or target.startswith(path.rstrip("/") + "/")
+        for target in ("/doi/epdf/10.1126/example", "/doi/pdfdirect/10.1126/example")
     )
 
 
-def load_cached_user_agent(config: dict[str, Any]) -> str | None:
-    """Return the user agent stored alongside the cached publisher cookies."""
+def save_science_http_state(
+    user_agent: str, cookies: list[dict[str, Any]], config: dict[str, Any]
+) -> None:
+    """Save the browser context's matched Science identity in one file."""
     from .config import DATA_DIR
 
-    path = Path(config.get("cache_dir", str(DATA_DIR / "cache"))) / USER_AGENT_FILE
-    if not path.exists():
-        return None
+    matched = [c for c in cookies if isinstance(c, dict) and _science_cookie_applies(c) and _is_cookie_valid(c)]
+    if not isinstance(user_agent, str) or not user_agent.strip() or not any(
+        c.get("name") == "cf_clearance" and c.get("value") for c in matched
+    ):
+        return
+    path = Path(config.get("cache_dir", str(DATA_DIR / "cache"))) / SCIENCE_HTTP_STATE_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"origin": SCIENCE_HTTP_ORIGIN, "user_agent": user_agent, "cookies": matched}, ensure_ascii=False), encoding="utf-8")
+
+
+def load_science_http_state(config: dict[str, Any]) -> dict[str, Any] | None:
+    """Load only a paired, currently usable Science clearance identity."""
+    from .config import DATA_DIR
+
+    path = Path(config.get("cache_dir", str(DATA_DIR / "cache"))) / SCIENCE_HTTP_STATE_FILE
     try:
-        value = json.loads(path.read_text(encoding="utf-8")).get("user_agent")
-    except Exception:
+        state = json.loads(path.read_text(encoding="utf-8"))
+        cookies = state["cookies"]
+        if state["origin"] != SCIENCE_HTTP_ORIGIN or not isinstance(state["user_agent"], str) or not state["user_agent"].strip() or not isinstance(cookies, list):
+            return None
+        valid = [c for c in cookies if isinstance(c, dict) and _science_cookie_applies(c) and _is_cookie_valid(c)]
+        if not any(c.get("name") == "cf_clearance" and c.get("value") for c in valid):
+            return None
+        return {"origin": SCIENCE_HTTP_ORIGIN, "user_agent": state["user_agent"], "cookies": valid}
+    except (OSError, ValueError, KeyError, TypeError):
         return None
-    return value if isinstance(value, str) and value else None
 
 
 def _is_cookie_valid(cookie: dict[str, Any], now: float | None = None) -> bool:
-    """Check if a cookie is not expired. expires=0 means session cookie (always valid)."""
+    """Check expiry; Playwright uses -1 for session cookies."""
     expires = cookie.get("expires", 0)
-    if not expires or expires == 0:
+    if expires in (None, 0, -1):
         return True
     if now is None:
         now = time.time()
