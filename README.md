@@ -113,7 +113,7 @@ uv run --frozen patchright install chromium
 
 ### 使用外部常驻 Chrome（CDP）
 
-应用只安装 Playwright **客户端**，不安装或捆绑 Chrome。`browser_backend=cdp` 延迟连接已有 Chrome 的默认持久 context，只新建/关闭自己的标签页。以下是一套**Linux 同宿主参考部署**：[`deploy/chrome.compose.yml`](deploy/chrome.compose.yml) 托管 [LinuxServer Chrome](https://github.com/linuxserver/docker-chrome) 的有头桌面和原始 TCP 转发，不让应用自己启动浏览器。Compose 文件通过 `podman compose config` 及 shell 语法检查；在 NAS 的**独立副本**经 Podman Compose 启停 smoke（GUI HTTP 200、CDP WebSocket 可用、profile 经 down/up 保留；实际部署仅覆盖 loopback 端口并固定缓存镜像 digest）。这不等于该示例完成站点获取验收；正式 NAS 部署使用 Quadlet，仍需按环境复验。Chrome 的 profile 保存在 `deploy/chrome-data/academic-profile`，属于非默认 profile，不随应用重启丢失；`deploy/chrome-init.sh` 仅在容器启动、Chrome 尚未运行时清除该 profile 的陈旧 Singleton 链接。
+应用只安装 Playwright **客户端**，不安装或捆绑 Chrome。`browser_backend=cdp` 延迟连接已有 Chrome 的默认持久 context，只新建/关闭自己的标签页。以下是一套**Linux 同宿主参考部署**：[`deploy/chrome.compose.yml`](deploy/chrome.compose.yml) 托管 [LinuxServer Chrome](https://github.com/linuxserver/docker-chrome) 的有头桌面和原始 TCP 转发，不让应用自己启动浏览器。部署前须按实际环境检查端口、持久化 profile 与站点获取；此示例不代表 NAS 或生产验收。Chrome 的 profile 保存在 `deploy/chrome-data/academic-profile`，属于非默认 profile，不随应用重启丢失；`deploy/chrome-init.sh` 仅在容器启动、Chrome 尚未运行时清除该 profile 的陈旧 Singleton 链接。
 
 ```bash
 # 在 Linux 服务器上，从仓库根目录执行；确保当前用户可写 deploy/chrome-data。
@@ -154,7 +154,11 @@ docker run -d --name academic-source --restart unless-stopped --network host \
   academic-source serve --host 127.0.0.1 --port 8000
 ```
 
-该 URL 必须从**应用进程**可达。Chrome 不在线、缺少默认 context 或未配置 URL 时浏览器来源会失败；HTTP/OA/Elsevier API 成功无需连接 Chrome。`browser_pdf_timeout`（默认 120 秒）和 `browser_pdf_max_bytes`（默认 100 MiB）可在 `source_config` 调整；超时/过大不登记半成品。部署方仍须针对自己的权限和目标站点验证获取及 HTTP/MCP 产物取回；不承诺每篇文章可下载、改变 IP、解验证码或任何隐身特性。`cdp` 与本地 Camoufox 依赖版本冲突，请二选一安装；本地 Patchright/CloakBrowser 仍可配置。应用本身不提供远程桌面或网页登录管理后台。
+该 URL 必须从**应用进程**可达。启动时工作线程安排一次非致命 CDP 预检（`browser_cdp_timeout` 默认 5 秒）：连接并检查默认 context 后断开，不开页、不清理标签页；失败只警告，不阻断 HTTP 来源。正式浏览器获取仍按需连接，预检结果不作为永久可用状态。HTTP/OA/Elsevier API 获取不需要 CDP 工作连接，但配置 CDP 时仍可能发生上述启动预检。`browser_pdf_timeout`（默认 120 秒）和 `browser_pdf_max_bytes`（默认 100 MiB）可在 `source_config` 调整；超时/过大不登记半成品。
+
+Science 快路径在 `cache_dir/science_http_state.json` 成对保存 UA 与 cookie 快照；旧全局 UA 缓存不迁移，下一次浏览器成功后重新取得。快照只表示配对，不保证站点接受。`science_http_proxy` 未设置或为 `null` 时继承代理：本地浏览器优先 `browser_static_proxy`、再 `network_proxy`；CDP 优先 `SCANSCI_PDF_PROXY`、再 `network_proxy`，不假定外部 Chrome 的出口。设为空字符串则 HTTP 直连。Science 阅读器参数 `science_reader_grace`（默认 5 秒）、`science_reader_timeout`（默认 60 秒）控制其等待边界。
+
+CDP 正式工作连接借用默认 context，在 `cache_dir/cdp_owned_targets.json` 登记确切创建的 target，下一次正式连接可恢复并仅关闭登记页；断开连接不关闭外部 Chrome 或 context。`SIGKILL` 恰逢建页与登记间不能保证回收，历史未知归属页不会清理。普通 CDP 路径不适用 `browser_restart_every`，不建议将其设为非零；CDP forward 仍保留。部署方仍须自行验证权限、目标站点获取及 HTTP/MCP 产物取回；不承诺每篇文章可下载、改变 IP、解验证码或任何隐身特性。`cdp` 与本地 Camoufox 依赖版本冲突，请二选一安装；本地 Patchright/CloakBrowser 仍可配置。应用本身不提供远程桌面或网页登录管理后台。
 
 SQLite 保存上传、任务和产物记录，文件保存在同一数据目录。一个数据目录由一个运行实例使用；服务已运行时，CLI 使用 `--server` 连接它。重启将未完成任务标记为 interrupted，已完成产物仍可取回，不承诺恢复浏览器执行现场。
 
