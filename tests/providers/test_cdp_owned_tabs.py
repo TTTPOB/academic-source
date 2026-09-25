@@ -4,6 +4,8 @@ import json
 import sys
 from types import ModuleType, SimpleNamespace
 
+import pytest
+
 from scansci_pdf import browser_backend
 
 
@@ -39,6 +41,57 @@ def test_created_target_is_recorded_and_normal_close_removes_it(tmp_path):
     session.close_page(page)
     assert page.closed
     assert registry.load() == {}
+
+
+@pytest.mark.parametrize("failure", ["target_lookup", "registry_write"])
+def test_new_page_failure_closes_created_page(monkeypatch, tmp_path, failure):
+    registry = browser_backend.OwnedTargets(
+        {"cache_dir": str(tmp_path)}, "http://localhost:9222"
+    )
+    page = Page()
+
+    def target_info(method):
+        if failure == "target_lookup":
+            raise RuntimeError("lookup failed")
+        return {"targetInfo": {"targetId": "owned-id"}}
+
+    if failure == "registry_write":
+        monkeypatch.setattr(
+            registry,
+            "add",
+            lambda target_id: (_ for _ in ()).throw(OSError("disk full")),
+        )
+    cdp = SimpleNamespace(send=target_info, detach=lambda: None)
+    context = SimpleNamespace(new_page=lambda: page, new_cdp_session=lambda p: cdp)
+    session = browser_backend.BorrowedCDPSession(None, context, None, registry)
+    with pytest.raises((RuntimeError, OSError)):
+        session.new_page()
+    assert page.closed
+    assert page not in session.pages
+
+
+def test_close_event_and_failed_close_preserve_record(tmp_path):
+    registry = browser_backend.OwnedTargets(
+        {"cache_dir": str(tmp_path)}, "http://localhost:9222"
+    )
+    page = Page()
+    cdp = SimpleNamespace(
+        send=lambda method: {"targetInfo": {"targetId": "owned-id"}},
+        detach=lambda: None,
+    )
+    context = SimpleNamespace(new_page=lambda: page, new_cdp_session=lambda p: cdp)
+    session = browser_backend.BorrowedCDPSession(None, context, None, registry)
+    session.new_page()
+
+    def disconnected_close():
+        page.callback(page)
+        raise RuntimeError("connection lost")
+
+    page.close = disconnected_close
+    with pytest.raises(RuntimeError, match="connection lost"):
+        session.close_page(page)
+    assert registry.load()[registry.endpoint] == ["owned-id"]
+    assert page not in session.pages
 
 
 def test_reconnect_only_closes_recorded_targets_and_retries_failures(

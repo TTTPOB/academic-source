@@ -111,27 +111,32 @@ class BorrowedCDPSession:
 
     def new_page(self) -> Any:
         page = self.context.new_page()
-        if self.registry is not None:
-            session = self.context.new_cdp_session(page)
-            try:
-                target_id = session.send("Target.getTargetInfo")["targetInfo"]["targetId"]
-                self.registry.add(target_id)
-                self.target_ids[page] = target_id
-            finally:
-                session.detach()
         self.pages.add(page)
-        page.on("close", lambda _: self._page_closed(page))
+        try:
+            page.on("close", lambda _: self.pages.discard(page))
+            if self.registry is not None:
+                session = self.context.new_cdp_session(page)
+                try:
+                    target_id = session.send("Target.getTargetInfo")["targetInfo"]["targetId"]
+                    self.registry.add(target_id)
+                    self.target_ids[page] = target_id
+                finally:
+                    session.detach()
+        except Exception:
+            try:
+                page.close()
+            except Exception:
+                logger.warning("CDP new tab cleanup failed")
+            raise
         return page
 
-    def _page_closed(self, page: Any) -> None:
+    def close_page(self, page: Any) -> None:
+        target_id = self.target_ids.get(page)
+        page.close()
         self.pages.discard(page)
-        target_id = self.target_ids.pop(page, None)
         if target_id is not None and self.registry is not None:
             self.registry.remove(target_id)
-
-    def close_page(self, page: Any) -> None:
-        page.close()
-        self._page_closed(page)
+            self.target_ids.pop(page, None)
 
     def close(self) -> None:
         for page in tuple(self.pages):
