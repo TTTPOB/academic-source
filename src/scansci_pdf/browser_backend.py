@@ -66,13 +66,19 @@ def connect_cdp(config: dict[str, Any] | None) -> BorrowedCDPSession:
         raise RuntimeError("browser_backend=cdp requires source_config.browser_cdp_url")
     try:
         parsed = urlsplit(url)
-        if parsed.scheme not in ("http", "https", "ws", "wss") or not parsed.hostname or not parsed.port and parsed.netloc.endswith(":"):
+        if parsed.scheme not in ("http", "https", "ws", "wss") or not parsed.hostname:
+            raise ValueError
+        port = parsed.port  # Access also validates an explicitly supplied port.
+        if parsed.netloc.endswith(":") or (port is not None and port == 0):
             raise ValueError
     except ValueError:
         raise RuntimeError("browser_cdp_url must be a valid HTTP(S) or WS(S) URL") from None
-    timeout = float((config or {}).get("browser_cdp_timeout", 5))
-    if timeout <= 0:
-        raise ValueError("browser_cdp_timeout must be positive")
+    try:
+        timeout = float((config or {}).get("browser_cdp_timeout", 5))
+        if not 0 < timeout < float("inf"):
+            raise ValueError
+    except (TypeError, ValueError):
+        raise ValueError("browser_cdp_timeout must be a positive number of seconds") from None
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:

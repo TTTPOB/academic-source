@@ -60,10 +60,26 @@ class Application:
 
         try:
             probe_cdp(config)
-        except Exception:  # noqa: BLE001 - optional startup check must not block jobs
-            # Playwright errors may contain endpoint credentials.
+        except Exception as exc:  # noqa: BLE001 - optional check must not block jobs
+            # Playwright messages may contain endpoint credentials; use fixed diagnostics.
+            detail = str(exc)
+            if detail == "browser_backend=cdp requires source_config.browser_cdp_url":
+                reason = "set source_config.browser_cdp_url"
+            elif detail == "browser_cdp_url must be a valid HTTP(S) or WS(S) URL":
+                reason = "fix source_config.browser_cdp_url (HTTP(S) or WS(S))"
+            elif detail == "browser_cdp_timeout must be a positive number of seconds":
+                reason = "set a positive source_config.browser_cdp_timeout"
+            elif detail == "browser_backend=cdp requires playwright>=1.63":
+                reason = "install playwright>=1.63"
+            elif detail == "CDP browser has no existing default context":
+                reason = "Chrome has no default context"
+            elif isinstance(exc, TimeoutError) or type(exc).__name__ == "TimeoutError":
+                reason = "connection timeout"
+            else:
+                reason = "connection unavailable"
             log.warning(
-                "CDP startup preflight failed; browser requests will retry on demand"
+                "CDP startup preflight failed (%s); browser requests will retry on demand",
+                reason,
             )
 
     def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:

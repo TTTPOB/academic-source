@@ -38,6 +38,17 @@ def test_cdp_preflight_once_offline_does_not_block_http_job(
         application.close()
 
 
+def test_cdp_preflight_reports_actionable_configuration_error(monkeypatch, caplog):
+    from scansci_pdf import browser_backend
+
+    def invalid(config):
+        raise RuntimeError("browser_backend=cdp requires source_config.browser_cdp_url")
+
+    monkeypatch.setattr(browser_backend, "probe_cdp", invalid)
+    Application._preflight_cdp({})
+    assert "set source_config.browser_cdp_url" in caplog.text
+
+
 def test_running_batch_exposes_completed_items_before_final_result(tmp_path):
     second_started, release = Event(), Event()
 
