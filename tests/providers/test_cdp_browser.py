@@ -647,7 +647,9 @@ def _pdf_bytes():
     return payload
 
 
-def test_science_plain_http_transport_resolves_and_validates(monkeypatch, tmp_path):
+def test_science_plain_http_transport_resolves_and_validates(
+    monkeypatch, tmp_path, caplog
+):
     from scansci_pdf import _publisher_strategies_core as strategy
 
     signed = "/doi/pdfdirect/10.1126/adh2586?hmac=1790266406-QUJDREVGR0g%3D"
@@ -679,6 +681,9 @@ def test_science_plain_http_transport_resolves_and_validates(monkeypatch, tmp_pa
     assert challenged.closed and all(
         response.closed for response in challenged.responses
     )
+    assert "HTTP reader challenge" in caplog.text
+    assert "HTTP reader status=" not in caplog.text
+    caplog.clear()
 
     unsigned = FakeScienceSession(
         '{"epubConfig":{"epubUrl":"/doi/pdf/10.1126/x"}}', payload
@@ -689,6 +694,10 @@ def test_science_plain_http_transport_resolves_and_validates(monkeypatch, tmp_pa
     assert not strategy._science_http_download(
         "10.1126/adh2586", tmp_path / "b.pdf", {}, {}
     )
+    assert "HTTP reader unsupported epub URL" in caplog.text
+    assert "HTTP reader challenge" not in caplog.text
+    assert "hmac=" not in caplog.text
+    assert "QUJDREVGR0g" not in caplog.text
 
 
 def test_science_clearance_capture_enables_and_gates_the_fast_path(
@@ -726,21 +735,24 @@ def test_science_clearance_capture_enables_and_gates_the_fast_path(
 
 
 @pytest.mark.parametrize(
-    "backend,override,expected",
+    "backend,override,expected,browser_proxy",
     [
-        ("patchright", None, "http://browser:8080"),
-        ("cdp", None, "http://global:8080"),
-        ("patchright", "", None),
-        ("cdp", "http://explicit:8080", "http://explicit:8080"),
+        ("patchright", None, "http://browser:8080", "http://browser:8080"),
+        ("patchright", None, "http://network:8080", "   "),
+        ("cdp", None, "http://global:8080", "http://browser:8080"),
+        ("patchright", "", None, "http://browser:8080"),
+        ("cdp", "http://explicit:8080", "http://explicit:8080", "http://browser:8080"),
     ],
 )
-def test_science_session_proxy_selection(monkeypatch, backend, override, expected):
+def test_science_session_proxy_selection(
+    monkeypatch, backend, override, expected, browser_proxy
+):
     from scansci_pdf import _publisher_strategies_core as strategy
 
     monkeypatch.setenv("SCANSCI_PDF_PROXY", "http://global:8080")
     config = {
         "browser_backend": backend,
-        "browser_static_proxy": "http://browser:8080",
+        "browser_static_proxy": browser_proxy,
         "network_proxy": "http://network:8080",
         "science_http_proxy": override,
     }
@@ -756,9 +768,12 @@ def test_science_session_proxy_selection(monkeypatch, backend, override, expecte
         session.close()
 
 
-def test_science_snapshot_rejects_wrong_scope_and_expired_clearance(tmp_path):
+def test_science_snapshot_rejects_wrong_scope_and_expired_clearance(
+    monkeypatch, tmp_path, caplog
+):
     from scansci_pdf import browser_cookies
 
+    monkeypatch.setattr(browser_cookies.time, "time", lambda: 100.0)
     config = {"cache_dir": str(tmp_path)}
     clearance = {
         "name": "cf_clearance",
@@ -779,8 +794,17 @@ def test_science_snapshot_rejects_wrong_scope_and_expired_clearance(tmp_path):
         assert (
             browser_cookies.load_science_http_state(config)["user_agent"] == "Agent/2"
         )
-    (tmp_path / browser_cookies.SCIENCE_HTTP_STATE_FILE).unlink()
+    browser_cookies.save_science_http_state(
+        "Agent/4", [{**clearance, "expires": 200}], config
+    )
+    assert browser_cookies.load_science_http_state(config)["user_agent"] == "Agent/4"
+    monkeypatch.setattr(browser_cookies.time, "time", lambda: 201.0)
     assert browser_cookies.load_science_http_state(config) is None
+    assert "clearance expired or invalid" in caplog.text
+    (tmp_path / browser_cookies.SCIENCE_HTTP_STATE_FILE).unlink()
+    caplog.clear()
+    assert browser_cookies.load_science_http_state(config) is None
+    assert "snapshot missing" in caplog.text
 
 
 def test_science_fast_path_skips_the_browser(monkeypatch, tmp_path):

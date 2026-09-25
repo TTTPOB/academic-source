@@ -3218,7 +3218,8 @@ def _science_http_session(config: dict[str, Any], state: dict[str, Any]) -> Any:
 
     session = requests.Session()
     session.trust_env = False
-    session.proxies = proxy_dict(science_http_proxy(config, cdp=resolve_backend(config) == BACKEND_CDP)) or {}
+    proxy = science_http_proxy(config, cdp=resolve_backend(config) == BACKEND_CDP)
+    session.proxies = proxy_dict(proxy) or {}
     session.headers["User-Agent"] = state["user_agent"]
     for cookie in state["cookies"]:
         session.cookies.set(
@@ -3227,7 +3228,11 @@ def _science_http_session(config: dict[str, Any], state: dict[str, Any]) -> Any:
             domain=cookie["domain"],
             path=cookie.get("path", "/"),
             secure=cookie.get("secure", False),
-            expires=(int(cookie["expires"]) if cookie.get("expires") not in (None, 0, -1) else None),
+            expires=(
+                int(cookie["expires"])
+                if cookie.get("expires") not in (None, 0, -1)
+                else None
+            ),
         )
     return session
 
@@ -3344,11 +3349,9 @@ def try_science_browser(
     from .browser_cookies import load_science_http_state
 
     state = load_science_http_state(config) if doi.startswith(_SCIENCE_DOI_PREFIX) else None
-    if state:
-        if _science_http_download(doi, output_path, config, state) and is_pdf_file(output_path):
+    if state and _science_http_download(doi, output_path, config, state):
+        if is_pdf_file(output_path):
             return success(doi, output_path, "Science(Signed)")
-    elif doi.startswith(_SCIENCE_DOI_PREFIX):
-        log.info("   [Science] HTTP fast path skipped: no paired clearance snapshot")
 
     # CDP's authorized profile opens the ePDF reader, whose HTML carries a
     # per-request signed pdfdirect URL. The reader page also absorbs the

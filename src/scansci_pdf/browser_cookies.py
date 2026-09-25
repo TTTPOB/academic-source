@@ -257,14 +257,24 @@ def save_science_http_state(
     """Save the browser context's matched Science identity in one file."""
     from .config import DATA_DIR
 
-    matched = [c for c in cookies if isinstance(c, dict) and _science_cookie_applies(c) and _is_cookie_valid(c)]
+    matched = [
+        c
+        for c in cookies
+        if isinstance(c, dict) and _science_cookie_applies(c) and _is_cookie_valid(c)
+    ]
     if not isinstance(user_agent, str) or not user_agent.strip() or not any(
         c.get("name") == "cf_clearance" and c.get("value") for c in matched
     ):
         return
     path = Path(config.get("cache_dir", str(DATA_DIR / "cache"))) / SCIENCE_HTTP_STATE_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"origin": SCIENCE_HTTP_ORIGIN, "user_agent": user_agent, "cookies": matched}, ensure_ascii=False), encoding="utf-8")
+    path.write_text(
+        json.dumps(
+            {"origin": SCIENCE_HTTP_ORIGIN, "user_agent": user_agent, "cookies": matched},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
 
 def load_science_http_state(config: dict[str, Any]) -> dict[str, Any] | None:
@@ -272,16 +282,35 @@ def load_science_http_state(config: dict[str, Any]) -> dict[str, Any] | None:
     from .config import DATA_DIR
 
     path = Path(config.get("cache_dir", str(DATA_DIR / "cache"))) / SCIENCE_HTTP_STATE_FILE
+    if not path.exists():
+        log.info("   [Science] HTTP fast path skipped: snapshot missing")
+        return None
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
         cookies = state["cookies"]
-        if state["origin"] != SCIENCE_HTTP_ORIGIN or not isinstance(state["user_agent"], str) or not state["user_agent"].strip() or not isinstance(cookies, list):
+        if (
+            state["origin"] != SCIENCE_HTTP_ORIGIN
+            or not isinstance(state["user_agent"], str)
+            or not state["user_agent"].strip()
+            or not isinstance(cookies, list)
+        ):
+            log.info("   [Science] HTTP fast path skipped: snapshot invalid")
             return None
-        valid = [c for c in cookies if isinstance(c, dict) and _science_cookie_applies(c) and _is_cookie_valid(c)]
+        valid = [
+            c
+            for c in cookies
+            if isinstance(c, dict) and _science_cookie_applies(c) and _is_cookie_valid(c)
+        ]
         if not any(c.get("name") == "cf_clearance" and c.get("value") for c in valid):
+            log.info("   [Science] HTTP fast path skipped: clearance expired or invalid")
             return None
-        return {"origin": SCIENCE_HTTP_ORIGIN, "user_agent": state["user_agent"], "cookies": valid}
+        return {
+            "origin": SCIENCE_HTTP_ORIGIN,
+            "user_agent": state["user_agent"],
+            "cookies": valid,
+        }
     except (OSError, ValueError, KeyError, TypeError):
+        log.info("   [Science] HTTP fast path skipped: snapshot invalid")
         return None
 
 

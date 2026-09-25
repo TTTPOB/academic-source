@@ -80,8 +80,14 @@ def science_http_proxy(config: dict[str, Any], *, cdp: bool) -> str | None:
     if explicit is not None:
         return str(explicit).strip() or None
     if cdp:
-        return os.environ.get("SCANSCI_PDF_PROXY") or config.get("network_proxy") or None
-    return config.get("browser_static_proxy") or config.get("network_proxy") or None
+        candidates = (os.environ.get("SCANSCI_PDF_PROXY"), config.get("network_proxy"))
+    else:
+        candidates = (config.get("browser_static_proxy"), config.get("network_proxy"))
+    for candidate in candidates:
+        proxy = str(candidate or "").strip()
+        if proxy:
+            return proxy
+    return None
 
 
 def proxy_dict(proxy: str | None) -> dict[str, str] | None:
