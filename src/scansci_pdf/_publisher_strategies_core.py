@@ -84,6 +84,11 @@ def _restore_cookies_to_context(context: Any, config: dict[str, Any]) -> None:
 def _visible_browser(config: dict[str, Any], publisher: str, *, viewport: dict | None = None):
     """Open visible stealth browser with persistent profile. Falls back to ephemeral."""
     from .browser_engine import close_shared_browser, is_available
+    from .browser_backend import BACKEND_CDP, resolve_backend
+
+    # CDP borrows an existing browser; visible fallback must never close it.
+    if resolve_backend(config) == BACKEND_CDP:
+        raise RuntimeError("visible browser is unavailable with CDP")
 
     # Any resolved backend works (camoufox included); the old _HAS_CLOAKBROWSER
     # gate wrongly required the cloakbrowser package.
