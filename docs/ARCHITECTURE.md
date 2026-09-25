@@ -50,9 +50,11 @@ PDF 是获取成功的基础产物；可选 Markdown、补充材料和 BibTeX �
 
 ## 浏览器生命周期与 PDF 流
 
-本地 Patchright、CloakBrowser、Camoufox 后端由应用按配置启动并拥有浏览器/上下文生命周期。`cdp` 后端不同：只在实际执行到浏览器来源时延迟连接配置的 CDP URL，借用 Chrome 已存在的默认持久 context；应用只拥有连接和自己创建的标签页。关闭标签页或任务会断开 CDP 客户端连接，不关闭 Chrome、不关闭其默认 context，也不删除浏览器 profile。浏览器操作须留在创建同步 Playwright 对象的工作线程。
+本地 Patchright、CloakBrowser、Camoufox 后端由应用按配置启动并拥有浏览器/上下文生命周期。`cdp` 启动时在工作线程安排一次非致命预检（`browser_cdp_timeout` 默认 5 秒），只连接、检查默认 context 并断开，不开页、不清理；预检失败不阻断 HTTP 来源，也不缓存为永久状态。正式浏览器获取按需连接并借用 Chrome 已存在的默认持久 context。`cache_dir/cdp_owned_targets.json` 登记确切创建的 target，下一次正式连接恢复、只关闭登记页；历史未知归属页不清理，`SIGKILL` 落在建页与登记之间也无法保证回收。断开 CDP 客户端连接不关闭 Chrome、默认 context 或 profile；同步 Playwright 对象只在所属工作线程操作。普通 CDP 路径不适用 `browser_restart_every`，不建议设为非零；CDP forward 保留。
 
-浏览器从已认证文章页发起同源 PDF 流请求，不依赖浏览器 PDF 阅读器或客户端与服务端共享文件路径。默认总时限为 120 秒、大小上限为 100 MiB，可通过 `source_config` 调整；超时、超限或内容校验失败会清理临时文件，不登记半成品。配置的 CDP 端点必须能从应用进程访问。具体外部 Chrome 参考部署、配置及未完成的运行验收状态见 README；原生浏览器探针不等同于应用 HTTP/MCP 生产全链路验收。
+Science HTTP 快路径使用 `cache_dir/science_http_state.json` 中成对的 UA/cookie 快照；不迁移旧全局 UA 缓存，下一次浏览器成功后重获。快照不保证站点接受。`science_http_proxy` 非空显式值优先；未设置或为 `null` 时，本地浏览器沿 `browser_static_proxy` → `network_proxy`，CDP 沿 `SCANSCI_PDF_PROXY` → `network_proxy`；空串表示直连，不假设外部 Chrome 出口。Science 阅读器普通加载宽限 `science_reader_grace` 默认 5 秒，遇到 challenge 的等待上限 `science_reader_timeout` 默认 60 秒。HTTP 快路径成功不需要 CDP 工作连接，但不排除应用启动时的预检。
+
+浏览器从已认证文章页发起同源 PDF 流请求，不依赖浏览器 PDF 阅读器或客户端与服务端共享文件路径。默认总时限为 120 秒、大小上限为 100 MiB，可通过 `source_config` 调整；超时、超限或内容校验失败会清理临时文件，不登记半成品。配置的 CDP 端点必须能从应用进程访问。具体外部 Chrome 参考部署和配置见 README；原生浏览器探针不等同于应用 HTTP/MCP 生产全链路验收。
 
 应用没有额外的浏览器 MCP 工具、远程桌面或浏览器管理接口。MCP 只暴露获取业务动作，产物仍通过 HTTP 下载。
 
