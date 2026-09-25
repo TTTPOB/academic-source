@@ -192,7 +192,9 @@ def test_cdp_connection_failure_is_not_local_fallback(monkeypatch):
 
 def test_science_existing_dom_path_uses_borrowed_tab(monkeypatch, tmp_path):
     from scansci_pdf import _publisher_strategies_core as strategy
+    from scansci_pdf.publisher_strategies import science
 
+    monkeypatch.setattr(science, "_wait_for_science_reader", lambda *a, **kw: None)
     html = '<html><nav>Get access | Institutional access | Subscribe</nav><a href="/doi/pdf/10.1126/adh2586">View PDF</a></html>'
     assert strategy._detect_paywall(html)
     actions = []
@@ -353,7 +355,9 @@ def test_public_science_handler_uses_verified_pdf_entry(
 
 def test_challenge_stays_distinct_from_paywall(monkeypatch, tmp_path):
     from scansci_pdf import _publisher_strategies_core as strategy
+    from scansci_pdf.publisher_strategies import science
 
+    monkeypatch.setattr(science, "_wait_for_science_reader", lambda *a, **kw: None)
     challenge = '<html><title>Just a moment...</title><div id="challenge-platform">Checking your browser</div></html>'
     calls = []
     monkeypatch.setattr(browser_engine, "is_available", lambda config: True)
