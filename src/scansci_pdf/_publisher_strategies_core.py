@@ -3213,8 +3213,12 @@ def _science_http_session(config: dict[str, Any], state: dict[str, Any]) -> Any:
     """
     import requests
 
+    from .browser_backend import BACKEND_CDP, resolve_backend
+    from .network import proxy_dict, science_http_proxy
+
     session = requests.Session()
     session.trust_env = False
+    session.proxies = proxy_dict(science_http_proxy(config, cdp=resolve_backend(config) == BACKEND_CDP)) or {}
     session.headers["User-Agent"] = state["user_agent"]
     for cookie in state["cookies"]:
         session.cookies.set(

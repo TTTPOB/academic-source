@@ -725,6 +725,37 @@ def test_science_clearance_capture_enables_and_gates_the_fast_path(
     ]
 
 
+@pytest.mark.parametrize(
+    "backend,override,expected",
+    [
+        ("patchright", None, "http://browser:8080"),
+        ("cdp", None, "http://global:8080"),
+        ("patchright", "", None),
+        ("cdp", "http://explicit:8080", "http://explicit:8080"),
+    ],
+)
+def test_science_session_proxy_selection(monkeypatch, backend, override, expected):
+    from scansci_pdf import _publisher_strategies_core as strategy
+
+    monkeypatch.setenv("SCANSCI_PDF_PROXY", "http://global:8080")
+    config = {
+        "browser_backend": backend,
+        "browser_static_proxy": "http://browser:8080",
+        "network_proxy": "http://network:8080",
+        "science_http_proxy": override,
+    }
+    state = {"user_agent": "Agent/paired", "cookies": []}
+    session = strategy._science_http_session(config, state)
+    try:
+        assert session.trust_env is False
+        assert session.headers["User-Agent"] == "Agent/paired"
+        assert session.proxies == (
+            {"http": expected, "https": expected} if expected else {}
+        )
+    finally:
+        session.close()
+
+
 def test_science_snapshot_rejects_wrong_scope_and_expired_clearance(tmp_path):
     from scansci_pdf import browser_cookies
 
