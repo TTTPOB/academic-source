@@ -15,6 +15,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -64,13 +65,22 @@ def connect_cdp(config: dict[str, Any] | None) -> BorrowedCDPSession:
     if not url:
         raise RuntimeError("browser_backend=cdp requires source_config.browser_cdp_url")
     try:
+        parsed = urlsplit(url)
+        if parsed.scheme not in ("http", "https", "ws", "wss") or not parsed.hostname or not parsed.port and parsed.netloc.endswith(":"):
+            raise ValueError
+    except ValueError:
+        raise RuntimeError("browser_cdp_url must be a valid HTTP(S) or WS(S) URL") from None
+    timeout = float((config or {}).get("browser_cdp_timeout", 5))
+    if timeout <= 0:
+        raise ValueError("browser_cdp_timeout must be positive")
+    try:
         from playwright.sync_api import sync_playwright
     except ImportError as exc:
         raise RuntimeError("browser_backend=cdp requires playwright>=1.63") from exc
 
     driver = sync_playwright().start()
     try:
-        browser = driver.chromium.connect_over_cdp(url, no_defaults=True)
+        browser = driver.chromium.connect_over_cdp(url, no_defaults=True, timeout=timeout * 1000)
         if not browser.contexts:
             browser.close()
             raise RuntimeError("CDP browser has no existing default context")
@@ -78,6 +88,11 @@ def connect_cdp(config: dict[str, Any] | None) -> BorrowedCDPSession:
     except Exception:
         driver.stop()
         raise
+
+
+def probe_cdp(config: dict[str, Any] | None) -> None:
+    """Check the borrowed default context without creating a page."""
+    connect_cdp(config).close()
 
 
 # ---------------------------------------------------------------------------
