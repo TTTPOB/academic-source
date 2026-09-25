@@ -3253,14 +3253,23 @@ def _science_signed_url_over_http(
         timeout=_SCIENCE_READER_HTML_TIMEOUT,
         headers={"Accept": "text/html,application/xhtml+xml"},
     )
-    if response.status_code != 200:
-        return None
-    if str(response.headers.get("cf-mitigated", "")).lower() == "challenge":
-        return None
-    match = _SCIENCE_EPUB_URL_RE.search(response.text)
-    if not match:
-        return None
-    return _science_signed_pdf_path(match.group(1))
+    try:
+        if str(response.headers.get("cf-mitigated", "")).lower() == "challenge":
+            log.info("   [Science] HTTP reader challenge")
+            return None
+        if response.status_code != 200:
+            log.info("   [Science] HTTP reader status=%s", response.status_code)
+            return None
+        match = _SCIENCE_EPUB_URL_RE.search(response.text)
+        if not match:
+            log.info("   [Science] HTTP reader has no epub URL")
+            return None
+        signed = _science_signed_pdf_path(match.group(1))
+        if not signed:
+            log.info("   [Science] HTTP reader unsupported epub URL")
+        return signed
+    finally:
+        response.close()
 
 
 def _science_http_download(
@@ -3277,6 +3286,7 @@ def _science_http_download(
     from .pdf_utils import _response_looks_pdf, is_pdf_file
     from .sources.publishers import _write_pdf_atomic
 
+    session = None
     try:
         session = _science_http_session(config)
         signed = _science_signed_url_over_http(doi, config, session)
@@ -3288,18 +3298,30 @@ def _science_http_download(
             stream=True,
             headers={"Accept": "application/pdf,*/*"},
         )
-        if response.status_code >= 400:
-            return False
-        iterator = response.iter_content(chunk_size=8192)
-        first = next(iterator, b"")
-        if not _response_looks_pdf(response, first):
-            return False
-        if not _write_pdf_atomic(output_path, first, iterator):
-            return False
-        return is_pdf_file(output_path)
+        try:
+            if response.status_code >= 400:
+                log.info("   [Science] HTTP PDF status=%s", response.status_code)
+                return False
+            iterator = response.iter_content(chunk_size=8192)
+            first = next(iterator, b"")
+            if not _response_looks_pdf(response, first):
+                log.info("   [Science] HTTP PDF response is not a PDF")
+                return False
+            if not _write_pdf_atomic(output_path, first, iterator):
+                log.info("   [Science] HTTP PDF write failed")
+                return False
+            if not is_pdf_file(output_path):
+                log.info("   [Science] HTTP PDF validation failed")
+                return False
+            return True
+        finally:
+            response.close()
     except Exception as exc:
-        log.info(f"   [Science] plain HTTP path failed: {type(exc).__name__}")
+        log.info("   [Science] plain HTTP path failed: %s", type(exc).__name__)
         return False
+    finally:
+        if session is not None:
+            session.close()
 
 
 def _capture_science_clearance(tab_id: str, config: dict[str, Any]) -> None:

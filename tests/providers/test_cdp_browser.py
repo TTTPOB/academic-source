@@ -601,6 +601,10 @@ class FakeScienceResponse:
         self.headers = {"content-type": content_type, **(extra_headers or {})}
         self.text = payload.decode("utf-8", "replace")
         self._payload = payload
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
     def iter_content(self, chunk_size):
         yield self._payload
@@ -614,14 +618,22 @@ class FakeScienceSession:
         self.pdf_bytes = pdf_bytes
         self.html_headers = html_headers or {}
         self.urls = []
+        self.responses = []
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
     def get(self, url, **kwargs):
         self.urls.append(url)
         if kwargs.get("stream"):
-            return FakeScienceResponse(self.pdf_bytes, "application/pdf")
-        return FakeScienceResponse(
-            self.html.encode(), "text/html", extra_headers=self.html_headers
-        )
+            response = FakeScienceResponse(self.pdf_bytes, "application/pdf")
+        else:
+            response = FakeScienceResponse(
+                self.html.encode(), "text/html", extra_headers=self.html_headers
+            )
+        self.responses.append(response)
+        return response
 
 
 def _pdf_bytes():
@@ -647,6 +659,7 @@ def test_science_plain_http_transport_resolves_and_validates(monkeypatch, tmp_pa
     assert strategy._science_http_download("10.1126/adh2586", output, {})
     assert output.read_bytes() == payload
     assert session.urls[-1].endswith(signed)
+    assert session.closed and all(response.closed for response in session.responses)
 
     # A challenge response must be vetoed by its mitigation header even when the
     # body happens to carry a reader-looking payload.
@@ -658,6 +671,9 @@ def test_science_plain_http_transport_resolves_and_validates(monkeypatch, tmp_pa
     monkeypatch.setattr(strategy, "_science_http_session", lambda config: challenged)
     assert not strategy._science_http_download(
         "10.1126/adh2586", tmp_path / "a.pdf", {}
+    )
+    assert challenged.closed and all(
+        response.closed for response in challenged.responses
     )
 
     unsigned = FakeScienceSession(
