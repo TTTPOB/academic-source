@@ -8,6 +8,7 @@ connection and tabs. A CDP connection does not provide fingerprint guarantees.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -16,6 +17,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+from .config import DATA_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -30,26 +33,75 @@ class CDPSetupError(RuntimeError):
     """Safe, fixed diagnostic for local CDP setup failures."""
 
 
+class OwnedTargets:
+    """Persist only exact target IDs created by this application."""
+
+    def __init__(self, config: dict[str, Any], endpoint: str):
+        self.path = Path(config.get("cache_dir") or DATA_DIR / "cache") / "cdp_owned_targets.json"
+        self.endpoint = endpoint
+
+    def load(self) -> dict[str, list[str]]:
+        if not self.path.exists():
+            return {}
+        return json.loads(self.path.read_text(encoding="utf-8"))
+
+    def save(self, data: dict[str, list[str]]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(data), encoding="utf-8")
+        temporary.replace(self.path)
+
+    def add(self, target_id: str) -> None:
+        data = self.load()
+        targets = data.setdefault(self.endpoint, [])
+        if target_id not in targets:
+            targets.append(target_id)
+            self.save(data)
+
+    def remove(self, target_id: str) -> None:
+        data = self.load()
+        targets = data.get(self.endpoint, [])
+        if target_id in targets:
+            targets.remove(target_id)
+            if not targets:
+                data.pop(self.endpoint, None)
+            self.save(data)
+
+
 class BorrowedCDPSession:
     """Only the connection and tabs are ours; the default context/profile are not."""
 
-    def __init__(self, browser: Any, context: Any, driver: Any):
+    def __init__(self, browser: Any, context: Any, driver: Any, registry: OwnedTargets | None = None):
         self.browser = browser
         self.context = context
         self.driver = driver
+        self.registry = registry
         self.pages: set[Any] = set()
+        self.target_ids: dict[Any, str] = {}
 
     def new_page(self) -> Any:
         page = self.context.new_page()
+        if self.registry is not None:
+            session = self.context.new_cdp_session(page)
+            try:
+                target_id = session.send("Target.getTargetInfo")["targetInfo"]["targetId"]
+                self.registry.add(target_id)
+                self.target_ids[page] = target_id
+            finally:
+                session.detach()
         self.pages.add(page)
-        page.on("close", lambda _: self.pages.discard(page))
+        page.on("close", lambda _: self._page_closed(page))
         return page
 
+    def _page_closed(self, page: Any) -> None:
+        self.pages.discard(page)
+        target_id = self.target_ids.pop(page, None)
+        if target_id is not None and self.registry is not None:
+            self.registry.remove(target_id)
+
     def close_page(self, page: Any) -> None:
-        try:
-            page.close()
-        finally:
-            self.pages.discard(page)
+        page.close()
+        self._page_closed(page)
 
     def close(self) -> None:
         for page in tuple(self.pages):
