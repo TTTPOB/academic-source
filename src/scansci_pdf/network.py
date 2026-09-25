@@ -74,6 +74,22 @@ def request_timeout(config: dict[str, Any]) -> tuple[int, int]:
     return (int(config.get("connect_timeout", 3)), int(config.get("read_timeout", 7)))
 
 
+def science_http_proxy(config: dict[str, Any], *, cdp: bool) -> str | None:
+    """Choose Science HTTP egress without borrowing an unrelated browser proxy."""
+    explicit = config.get("science_http_proxy")
+    if explicit is not None:
+        return str(explicit).strip() or None
+    if cdp:
+        candidates = (os.environ.get("SCANSCI_PDF_PROXY"), config.get("network_proxy"))
+    else:
+        candidates = (config.get("browser_static_proxy"), config.get("network_proxy"))
+    for candidate in candidates:
+        proxy = str(candidate or "").strip()
+        if proxy:
+            return proxy
+    return None
+
+
 def proxy_dict(proxy: str | None) -> dict[str, str] | None:
     if not proxy:
         return None
