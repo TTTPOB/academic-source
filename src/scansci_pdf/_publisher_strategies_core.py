@@ -84,6 +84,11 @@ def _restore_cookies_to_context(context: Any, config: dict[str, Any]) -> None:
 def _visible_browser(config: dict[str, Any], publisher: str, *, viewport: dict | None = None):
     """Open visible stealth browser with persistent profile. Falls back to ephemeral."""
     from .browser_engine import close_shared_browser, is_available
+    from .browser_backend import BACKEND_CDP, resolve_backend
+
+    # CDP borrows an existing browser; visible fallback must never close it.
+    if resolve_backend(config) == BACKEND_CDP:
+        raise RuntimeError("visible browser is unavailable with CDP")
 
     # Any resolved backend works (camoufox included); the old _HAS_CLOAKBROWSER
     # gate wrongly required the cloakbrowser package.
@@ -1751,32 +1756,18 @@ def _browser_download(
         # Get page HTML
         html = evaluate_js(tab_id, "document.documentElement.outerHTML", config) or ""
 
-        # The Science ePDF reader embeds a per-request signed pdfdirect URL. A
-        # Cloudflare challenge replaces the document before the reader starts,
-        # so poll for that URL rather than sampling the HTML once.
-        science_signed: str | None = None
-        if publisher == "Science" and doi.startswith(_SCIENCE_DOI_PREFIX):
-            challenged = _is_challenge_page(html)
-            science_signed = _wait_for_science_reader(
-                tab_id,
-                config,
-                timeout=(
-                    float(config.get("science_reader_timeout", 60))
-                    if challenged
-                    else 5.0
-                ),
+        from .publisher_strategies import StrategyRegistry
+
+        publisher_strategy = StrategyRegistry.get_by_name(publisher)
+        preferred_candidates: list[str] = []
+        if publisher_strategy is not None:
+            html, preferred_candidates = publisher_strategy.prepare_download_page(
+                tab_id, doi, html, config
             )
-            if science_signed:
-                html = (
-                    evaluate_js(tab_id, "document.documentElement.outerHTML", config)
-                    or html
-                )
-                # Cache the clearance so later jobs can skip the browser entirely.
-                _capture_science_clearance(tab_id, config)
 
         # Check for anti-bot challenges
         if _is_challenge_page(html):
-            if science_signed:
+            if preferred_candidates:
                 log.info(f"   [{publisher}] reader page resolved after challenge")
             else:
                 log.info(f"   [{publisher}] challenge detected, waiting for auto-resolve...")
@@ -1851,11 +1842,7 @@ def _browser_download(
         pdf_url = _extract_pdf_from_page(html, str(current_url), publisher)
 
         if resolve_backend(config) == BACKEND_CDP:
-            candidates = [pdf_url] if pdf_url else []
-            if science_signed:
-                # Server-signed ePDF transport: the publisher's own clean PDF,
-                # preferred over the watermarked /doi/pdf/ rendering.
-                candidates.insert(0, science_signed)
+            candidates = [*preferred_candidates, *([pdf_url] if pdf_url else [])]
             if pdf_url and "/doi/pdf/" in pdf_url:
                 candidates.append(pdf_url.replace("/doi/pdf/", "/doi/pdfdirect/"))
             elif pdf_url and "/doi/epdf/" in pdf_url:
@@ -3143,228 +3130,14 @@ def try_nature_browser(
     return None
 
 
-_SCIENCE_DOI_PREFIX = "10.1126/"
-_SCIENCE_EPDF_URL = "https://www.science.org/doi/epdf/{doi}"
-
-
-def _science_signed_pdf_path(value: Any) -> str | None:
-    """Validate a site-relative signed pdfdirect path.
-
-    Only a path the publisher itself emitted is accepted; the signature is a
-    short-lived credential and is never computed, extended, or rewritten here.
-    """
-    if not isinstance(value, str):
-        return None
-    candidate = value.replace("\\u003d", "=").replace("\\/", "/")
-    if not candidate.startswith("/doi/pdfdirect/") or "hmac=" not in candidate:
-        return None
-    return candidate
-
-
-def _science_reader_signed_url(tab_id: str, config: dict[str, Any]) -> str | None:
-    """Read the server-signed pdfdirect URL from a loaded Science ePDF page.
-
-    Science renders readerConfig.epubConfig.epubUrl into the ePDF HTML with a
-    per-request hmac signature. The value is a short-lived credential: it is
-    consumed in place and never logged or persisted.
-    """
-    from .browser_engine import evaluate_js
-
-    return _science_signed_pdf_path(
-        evaluate_js(
-            tab_id,
-            "(() => { const c = window.readerConfig;"
-            " return (c && c.epubConfig && c.epubConfig.epubUrl) || null; })()",
-            config,
-        )
-    )
-
-
-def _wait_for_science_reader(
-    tab_id: str, config: dict[str, Any], *, timeout: float
-) -> str | None:
-    """Poll until the Science reader replaces a Cloudflare challenge document.
-
-    A challenge page and the reader page are different documents, so a single
-    HTML sample can still be the challenge. Polling the reader config is the
-    reliable completion signal.
-    """
-    interval = 2.0
-    attempts = max(1, int(timeout / interval))
-    for attempt in range(attempts):
-        signed = _science_reader_signed_url(tab_id, config)
-        if signed:
-            return signed
-        if attempt + 1 < attempts:
-            time.sleep(interval)
-    return None
-
-
-_SCIENCE_READER_HTML_TIMEOUT = 30.0
-_SCIENCE_PDF_TIMEOUT = 180.0
-_SCIENCE_EPUB_URL_RE = re.compile(r'"epubUrl"\s*:\s*"([^"]+)"')
-
-
-def _science_http_session(config: dict[str, Any], state: dict[str, Any]) -> Any:
-    """Build a plain HTTP session carrying the cached Science clearance.
-
-    Cloudflare binds cf_clearance to the user agent that earned it, so the
-    captured agent is reused verbatim instead of the generic HTTP one.
-    """
-    import requests
-
-    from .browser_backend import BACKEND_CDP, resolve_backend
-    from .network import proxy_dict, science_http_proxy
-
-    session = requests.Session()
-    session.trust_env = False
-    proxy = science_http_proxy(config, cdp=resolve_backend(config) == BACKEND_CDP)
-    session.proxies = proxy_dict(proxy) or {}
-    session.headers["User-Agent"] = state["user_agent"]
-    for cookie in state["cookies"]:
-        session.cookies.set(
-            cookie["name"],
-            cookie["value"],
-            domain=cookie["domain"],
-            path=cookie.get("path", "/"),
-            secure=cookie.get("secure", False),
-            expires=(
-                int(cookie["expires"])
-                if cookie.get("expires") not in (None, 0, -1)
-                else None
-            ),
-        )
-    return session
-
-
-def _science_signed_url_over_http(
-    doi: str, config: dict[str, Any], session: Any
-) -> str | None:
-    """Resolve the signed pdfdirect path from the ePDF HTML without a browser."""
-    response = session.get(
-        _SCIENCE_EPDF_URL.format(doi=doi),
-        timeout=_SCIENCE_READER_HTML_TIMEOUT,
-        headers={"Accept": "text/html,application/xhtml+xml"},
-    )
-    try:
-        if str(response.headers.get("cf-mitigated", "")).lower() == "challenge":
-            log.info("   [Science] HTTP reader challenge")
-            return None
-        if response.status_code != 200:
-            log.info("   [Science] HTTP reader status=%s", response.status_code)
-            return None
-        match = _SCIENCE_EPUB_URL_RE.search(response.text)
-        if not match:
-            log.info("   [Science] HTTP reader has no epub URL")
-            return None
-        signed = _science_signed_pdf_path(match.group(1))
-        if not signed:
-            log.info("   [Science] HTTP reader unsupported epub URL")
-        return signed
-    finally:
-        response.close()
-
-
-def _science_http_download(
-    doi: str, output_path: Path, config: dict[str, Any], state: dict[str, Any]
-) -> bool:
-    """Plain-HTTP Science path: ePDF HTML, then the signed pdfdirect resource.
-
-    No browser page is opened. This only works while the cached clearance cookie
-    and its issuing user agent are still accepted, so any failure simply defers
-    to the browser strategy.
-    """
-    from urllib.parse import urljoin
-
-    from .pdf_utils import _response_looks_pdf, is_pdf_file
-    from .sources.publishers import _write_pdf_atomic
-
-    session = None
-    try:
-        session = _science_http_session(config, state)
-        signed = _science_signed_url_over_http(doi, config, session)
-        if not signed:
-            return False
-        response = session.get(
-            urljoin(_SCIENCE_EPDF_URL.format(doi=doi), signed),
-            timeout=float(config.get("science_http_timeout", _SCIENCE_PDF_TIMEOUT)),
-            stream=True,
-            headers={"Accept": "application/pdf,*/*"},
-        )
-        try:
-            if response.status_code >= 400:
-                log.info("   [Science] HTTP PDF status=%s", response.status_code)
-                return False
-            iterator = response.iter_content(chunk_size=8192)
-            first = next(iterator, b"")
-            if not _response_looks_pdf(response, first):
-                log.info("   [Science] HTTP PDF response is not a PDF")
-                return False
-            if not _write_pdf_atomic(output_path, first, iterator):
-                log.info("   [Science] HTTP PDF write failed")
-                return False
-            if not is_pdf_file(output_path):
-                log.info("   [Science] HTTP PDF validation failed")
-                return False
-            return True
-        finally:
-            response.close()
-    except Exception as exc:
-        log.info("   [Science] plain HTTP path failed: %s", type(exc).__name__)
-        return False
-    finally:
-        if session is not None:
-            session.close()
-
-
-def _capture_science_clearance(tab_id: str, config: dict[str, Any]) -> None:
-    """Persist the Science clearance cookie and its user agent for reuse.
-
-    Later acquisitions can then resolve the signed URL over plain HTTP without
-    opening a browser page. Failures here must never fail the acquisition.
-    """
-    try:
-        from .browser_cookies import merge_cookies, save_science_http_state
-        from .browser_engine import context_cookies, evaluate_js
-
-        agent = evaluate_js(tab_id, "navigator.userAgent", config)
-        cookies = context_cookies("https://www.science.org/", config)
-        if isinstance(agent, str) and agent and cookies:
-            save_science_http_state(agent, cookies, config)
-            merge_cookies(cookies, config)
-    except Exception as exc:
-        log.info(f"   [Science] clearance capture skipped: {type(exc).__name__}")
-
 
 def try_science_browser(
     doi: str, output_path: Path, config: dict[str, Any],
 ) -> dict[str, Any] | None:
-    """Science/AAAS browser strategy."""
-    from .browser_backend import BACKEND_CDP, resolve_backend
-    from .pdf_utils import is_pdf_file
-    from .pdf_utils import success
+    """Public legacy entry delegates to the Science strategy."""
+    from .publisher_strategies.science import ScienceStrategy
 
-    # Fast path: a cached clearance cookie already satisfies Cloudflare, so the
-    # signed reader URL can be resolved over plain HTTP with no browser at all.
-    from .browser_cookies import load_science_http_state
-
-    state = load_science_http_state(config) if doi.startswith(_SCIENCE_DOI_PREFIX) else None
-    if state and _science_http_download(doi, output_path, config, state):
-        if is_pdf_file(output_path):
-            return success(doi, output_path, "Science(Signed)")
-
-    # CDP's authorized profile opens the ePDF reader, whose HTML carries a
-    # per-request signed pdfdirect URL. The reader page also absorbs the
-    # Cloudflare challenge that blocks a direct /doi/pdf/ navigation.
-    entry_url = (
-        _SCIENCE_EPDF_URL.format(doi=doi)
-        if resolve_backend(config) == BACKEND_CDP
-        else f"https://doi.org/{doi}"
-    )
-    if _browser_download_with_fallback(doi, entry_url, output_path, config, "Science"):
-        if is_pdf_file(output_path):
-            return success(doi, output_path, "Science(Browser)")
-    return None
+    return ScienceStrategy().download_sync(doi, output_path, config)
 
 
 def try_sage_browser(

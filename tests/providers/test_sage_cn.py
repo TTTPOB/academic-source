@@ -187,3 +187,23 @@ def test_visible_browser_forwards_selected_backend_config(monkeypatch, tmp_path)
     assert seen["kwargs"]["config"] is config
     assert seen["kwargs"]["headless"] is False
     assert context.closed is True
+
+
+def test_visible_browser_rejects_cdp_before_side_effects(monkeypatch):
+    import pytest
+
+    from scansci_pdf import browser_engine
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("CDP visible fallback touched browser state")
+
+    monkeypatch.setattr(browser_engine, "is_available", forbidden)
+    monkeypatch.setattr(browser_engine, "close_shared_browser", forbidden)
+    monkeypatch.setattr(core, "launch_persistent_context", forbidden)
+    monkeypatch.setattr(core, "launch", forbidden)
+
+    with (
+        pytest.raises(RuntimeError, match="CDP"),
+        core._visible_browser({"browser_backend": "cdp"}, "sage"),
+    ):
+        pass
