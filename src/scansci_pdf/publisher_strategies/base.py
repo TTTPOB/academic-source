@@ -76,6 +76,16 @@ class BasePublisherStrategy:
             return self.article_url_template.format(doi=doi)
         return f"https://doi.org/{doi}"
 
+    def browser_entry_url(self, doi: str, config: dict[str, Any]) -> str:
+        """Choose the first browser page for this publisher."""
+        return self.article_url(doi)
+
+    def prepare_download_page(
+        self, tab_id: str, doi: str, html: str, config: dict[str, Any]
+    ) -> tuple[str, list[str]]:
+        """Return refreshed HTML and PDF candidates to try before parsed links."""
+        return html, []
+
     def pdf_urls(self, doi: str) -> list[str]:
         """Build ordered candidate PDF URLs from a DOI."""
         doi_suffix = doi.split("/", 1)[-1] if "/" in doi else doi

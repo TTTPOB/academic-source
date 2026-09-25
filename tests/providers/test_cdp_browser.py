@@ -289,6 +289,9 @@ def test_public_science_handler_uses_verified_pdf_entry(
     monkeypatch.setattr(strategy, "_has_publisher_cookies", lambda config: False)
     monkeypatch.setattr(strategy, "_inject_cookies_to_tab", lambda *args: None)
     monkeypatch.setattr(strategy.time, "sleep", lambda seconds: None)
+    from scansci_pdf.publisher_strategies import science
+
+    monkeypatch.setattr(science, "_wait_for_science_reader", lambda *a, **kw: None)
     monkeypatch.setattr(browser_engine, "is_available", lambda config: True)
     monkeypatch.setattr(browser_engine, "close_tab", lambda *args: None)
 
@@ -499,7 +502,7 @@ SIGNED_PDFDIRECT = "/doi/pdfdirect/10.1126/adh2586?hmac=1790266406-QUJDREVGR0g%3
 
 
 def test_science_reader_signed_url_accepts_only_site_signed_pdfdirect(monkeypatch):
-    from scansci_pdf import _publisher_strategies_core as strategy
+    from scansci_pdf import science_transport as transport
 
     accepted = (
         SIGNED_PDFDIRECT,
@@ -516,16 +519,16 @@ def test_science_reader_signed_url_accepts_only_site_signed_pdfdirect(monkeypatc
         monkeypatch.setattr(
             browser_engine, "evaluate_js", lambda *a, _v=value, **kw: _v
         )
-        assert strategy._science_reader_signed_url("tab", {}) == value
+        assert transport._science_reader_signed_url("tab", {}) == value
     for value in rejected:
         monkeypatch.setattr(
             browser_engine, "evaluate_js", lambda *a, _v=value, **kw: _v
         )
-        assert strategy._science_reader_signed_url("tab", {}) is None
+        assert transport._science_reader_signed_url("tab", {}) is None
 
 
 def test_wait_for_science_reader_polls_until_reader_replaces_challenge(monkeypatch):
-    from scansci_pdf import _publisher_strategies_core as strategy
+    from scansci_pdf import science_transport as transport
 
     answers = [None, None, SIGNED_PDFDIRECT]
     sleeps = []
@@ -535,14 +538,14 @@ def test_wait_for_science_reader_polls_until_reader_replaces_challenge(monkeypat
         sleeps.append(seconds)
         clock[0] += seconds
 
-    monkeypatch.setattr(strategy.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(strategy.time, "sleep", sleep)
+    monkeypatch.setattr(transport.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(transport.time, "sleep", sleep)
     monkeypatch.setattr(
         browser_engine,
         "evaluate_js",
         lambda *a, **kw: answers.pop(0) if answers else None,
     )
-    assert strategy._wait_for_science_reader("tab", {}, timeout=60) == SIGNED_PDFDIRECT
+    assert transport._wait_for_science_reader("tab", {}, timeout=60) == SIGNED_PDFDIRECT
     assert sleeps == [2.0, 2.0]
 
     checks = []
@@ -550,27 +553,65 @@ def test_wait_for_science_reader_polls_until_reader_replaces_challenge(monkeypat
         browser_engine, "evaluate_js", lambda *a, **kw: checks.append(clock[0]) or None
     )
     sleeps.clear()
-    assert strategy._wait_for_science_reader("tab", {}, timeout=5) is None
+    assert transport._wait_for_science_reader("tab", {}, timeout=5) is None
     assert sleeps == [2.0, 2.0, 1.0]
     assert checks == [104.0, 106.0, 108.0, 109.0]
     checks.clear()
     sleeps.clear()
-    assert strategy._wait_for_science_reader("tab", {}, timeout=0) is None
+    assert transport._wait_for_science_reader("tab", {}, timeout=0) is None
     assert checks == [109.0]
     assert sleeps == []
 
 
+def test_science_strategy_reader_budgets_and_default_hooks(monkeypatch):
+    from scansci_pdf.publisher_strategies import science
+    from scansci_pdf.publisher_strategies.sage import SAGEStrategy
+    from scansci_pdf.publisher_strategies.science import ScienceStrategy
+
+    budgets = []
+    monkeypatch.setattr(
+        science,
+        "_wait_for_science_reader",
+        lambda tab, config, *, timeout: budgets.append(timeout) or None,
+    )
+    strategy = ScienceStrategy()
+    assert strategy.prepare_download_page("tab", "10.1126/adh2586", "<html/>", {}) == (
+        "<html/>",
+        [],
+    )
+    assert strategy.prepare_download_page(
+        "tab", "10.1126/adh2586", "<title>Just a moment...</title>", {}
+    ) == ("<title>Just a moment...</title>", [])
+    assert budgets == [5.0, 60.0]
+    sage = SAGEStrategy()
+    assert sage.browser_entry_url("10.1177/example", {}) == sage.article_url(
+        "10.1177/example"
+    )
+    assert sage.prepare_download_page("tab", "10.1177/example", "original", {}) == (
+        "original",
+        [],
+    )
+
+
 def _science_browser_stubs(monkeypatch, evaluate):
-    from scansci_pdf import _publisher_strategies_core as strategy
+    from scansci_pdf import _publisher_strategies_core as core
+    from scansci_pdf import science_transport as transport
 
     monkeypatch.setattr(browser_engine, "is_available", lambda config: True)
     monkeypatch.setattr(browser_engine, "create_tab", lambda *a, **kw: "own-tab")
     monkeypatch.setattr(browser_engine, "navigate_tab", lambda *a, **kw: True)
     monkeypatch.setattr(browser_engine, "close_tab", lambda *a: None)
     monkeypatch.setattr(browser_engine, "evaluate_js", evaluate)
-    monkeypatch.setattr(strategy, "_inject_cookies_to_tab", lambda *a: None)
-    monkeypatch.setattr(strategy.time, "sleep", lambda seconds: None)
-    return strategy
+    monkeypatch.setattr(core, "_inject_cookies_to_tab", lambda *a: None)
+    monkeypatch.setattr(core.time, "sleep", lambda seconds: None)
+    from scansci_pdf.publisher_strategies import science
+
+    monkeypatch.setattr(
+        science,
+        "_wait_for_science_reader",
+        lambda tab, cfg, **kw: transport._science_reader_signed_url(tab, cfg),
+    )
+    return core
 
 
 def test_science_signed_pdfdirect_preferred_over_watermarked_pdf(
@@ -698,17 +739,17 @@ def _pdf_bytes():
 def test_science_plain_http_transport_resolves_and_validates(
     monkeypatch, tmp_path, caplog
 ):
-    from scansci_pdf import _publisher_strategies_core as strategy
+    from scansci_pdf import science_transport as transport
 
     signed = "/doi/pdfdirect/10.1126/adh2586?hmac=1790266406-QUJDREVGR0g%3D"
     payload = _pdf_bytes()
     session = FakeScienceSession('{"epubConfig":{"epubUrl":"' + signed + '"}}', payload)
     monkeypatch.setattr(
-        strategy, "_science_http_session", lambda config, state: session
+        transport, "_science_http_session", lambda config, state: session
     )
 
     output = tmp_path / "http.pdf"
-    assert strategy._science_http_download("10.1126/adh2586", output, {}, {})
+    assert transport._science_http_download("10.1126/adh2586", output, {}, {})
     assert output.read_bytes() == payload
     assert session.urls[-1].endswith(signed)
     assert session.closed and all(response.closed for response in session.responses)
@@ -721,9 +762,9 @@ def test_science_plain_http_transport_resolves_and_validates(
         {"cf-mitigated": "challenge"},
     )
     monkeypatch.setattr(
-        strategy, "_science_http_session", lambda config, state: challenged
+        transport, "_science_http_session", lambda config, state: challenged
     )
-    assert not strategy._science_http_download(
+    assert not transport._science_http_download(
         "10.1126/adh2586", tmp_path / "a.pdf", {}, {}
     )
     assert challenged.closed and all(
@@ -737,9 +778,9 @@ def test_science_plain_http_transport_resolves_and_validates(
         '{"epubConfig":{"epubUrl":"/doi/pdf/10.1126/x"}}', payload
     )
     monkeypatch.setattr(
-        strategy, "_science_http_session", lambda config, state: unsigned
+        transport, "_science_http_session", lambda config, state: unsigned
     )
-    assert not strategy._science_http_download(
+    assert not transport._science_http_download(
         "10.1126/adh2586", tmp_path / "b.pdf", {}, {}
     )
     assert "HTTP reader unsupported epub URL" in caplog.text
@@ -751,8 +792,8 @@ def test_science_plain_http_transport_resolves_and_validates(
 def test_science_clearance_capture_enables_and_gates_the_fast_path(
     monkeypatch, tmp_path
 ):
-    from scansci_pdf import _publisher_strategies_core as strategy
     from scansci_pdf import browser_cookies
+    from scansci_pdf import science_transport as transport
 
     config = {"cache_dir": str(tmp_path)}
     monkeypatch.setattr(
@@ -772,7 +813,7 @@ def test_science_clearance_capture_enables_and_gates_the_fast_path(
         ],
     )
     assert browser_cookies.load_science_http_state(config) is None
-    strategy._capture_science_clearance("tab", config)
+    transport._capture_science_clearance("tab", config)
     assert (
         browser_cookies.load_science_http_state(config)["user_agent"]
         == "Agent/1.0 Chrome"
@@ -795,7 +836,7 @@ def test_science_clearance_capture_enables_and_gates_the_fast_path(
 def test_science_session_proxy_selection(
     monkeypatch, backend, override, expected, browser_proxy
 ):
-    from scansci_pdf import _publisher_strategies_core as strategy
+    from scansci_pdf import science_transport as transport
 
     monkeypatch.setenv("SCANSCI_PDF_PROXY", "http://global:8080")
     config = {
@@ -805,7 +846,7 @@ def test_science_session_proxy_selection(
         "science_http_proxy": override,
     }
     state = {"user_agent": "Agent/paired", "cookies": []}
-    session = strategy._science_http_session(config, state)
+    session = transport._science_http_session(config, state)
     try:
         assert session.trust_env is False
         assert session.headers["User-Agent"] == "Agent/paired"
@@ -856,7 +897,7 @@ def test_science_snapshot_rejects_wrong_scope_and_expired_clearance(
 
 
 def test_science_fast_path_skips_the_browser(monkeypatch, tmp_path):
-    from scansci_pdf import _publisher_strategies_core as strategy
+    from scansci_pdf import _publisher_strategies_core as core
     from scansci_pdf import browser_cookies
 
     monkeypatch.setattr(
@@ -874,8 +915,10 @@ def test_science_fast_path_skips_the_browser(monkeypatch, tmp_path):
         path.write_bytes(_pdf_bytes())
         return True
 
-    monkeypatch.setattr(strategy, "_science_http_download", http_download)
-    result = strategy.try_science_browser(
+    from scansci_pdf.publisher_strategies import science
+
+    monkeypatch.setattr(science, "_science_http_download", http_download)
+    result = core.try_science_browser(
         "10.1126/adh2586", tmp_path / "fast.pdf", {"browser_backend": "cdp"}
     )
     assert result and result["success"]
@@ -883,19 +926,21 @@ def test_science_fast_path_skips_the_browser(monkeypatch, tmp_path):
 
 
 def test_science_without_clearance_still_uses_the_browser(monkeypatch, tmp_path):
-    from scansci_pdf import _publisher_strategies_core as strategy
+    from scansci_pdf import _publisher_strategies_core as core
     from scansci_pdf import browser_cookies
 
     monkeypatch.setattr(browser_cookies, "load_science_http_state", lambda config: None)
+    from scansci_pdf.publisher_strategies import science
+
     monkeypatch.setattr(
-        strategy,
+        science,
         "_science_http_download",
         lambda *a: pytest.fail("fast path must not run"),
     )
     monkeypatch.setattr(browser_engine, "is_available", lambda config: True)
     monkeypatch.setattr(browser_engine, "create_tab", lambda *a, **kw: None)
     assert (
-        strategy.try_science_browser(
+        core.try_science_browser(
             "10.1126/adh2586", tmp_path / "slow.pdf", {"browser_backend": "cdp"}
         )
         is None

@@ -12,6 +12,7 @@ from typing import Any
 
 import requests
 
+from ..science_transport import _SCIENCE_DOI_PREFIX
 from .crossref import try_crossref
 
 
@@ -64,7 +65,7 @@ DOI_PREFIX_TO_PUBLISHER: dict[str, str] = {
     "10.1038/": "Nature",
     "10.1016/": "Elsevier",
     "10.1002/": "Wiley",
-    "10.1126/": "Science",
+    _SCIENCE_DOI_PREFIX: "Science",
     "10.1073/": "PNAS",
     "10.1093/": "Oxford",
     "10.1021/": "ACS",
@@ -353,7 +354,7 @@ def try_mdpi_direct(doi: str, output_path: Path, config: dict[str, Any]) -> dict
 
 def try_science_direct(doi: str, output_path: Path, config: dict[str, Any]) -> dict[str, Any] | None:
     """Download Science/AAAS papers directly. Science Advances is OA."""
-    if not doi.startswith("10.1126/"):
+    if not doi.startswith(_SCIENCE_DOI_PREFIX):
         return None
 
     from ..network import polite_delay
@@ -377,7 +378,7 @@ def try_science_direct(doi: str, output_path: Path, config: dict[str, Any]) -> d
         return resp
 
     # Extract article ID from DOI (e.g., sciadv.1600983 -> 1600983)
-    doi_suffix = doi.split("10.1126/")[-1]
+    doi_suffix = doi.removeprefix(_SCIENCE_DOI_PREFIX)
 
     # Try Science Advances PDF URL patterns
     pdf_urls = []
