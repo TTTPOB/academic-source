@@ -44,7 +44,7 @@ def parse_list(
 
 def _text_entries(text: str, *, bibtex: bool = False) -> list[dict[str, Any]]:
     from scansci_pdf.paperlist import _parse_bib_to_entries, parse_apa_references
-    from scansci_pdf.pipeline import extract_identifier, parse_queue
+    from scansci_pdf.queue import extract_identifier, parse_queue
 
     if bibtex or _BIBTEX_ENTRY.search(text):
         papers = _parse_bib_to_entries(text)
@@ -78,7 +78,7 @@ def _text_entries(text: str, *, bibtex: bool = False) -> list[dict[str, Any]]:
 
 
 def _table_entries(path: Path) -> list[dict[str, Any]]:
-    from scansci_pdf.pipeline import entries_from_table, extract_identifier, read_table
+    from scansci_pdf.queue import entries_from_table, extract_identifier, read_table
 
     try:
         rows = read_table(path)

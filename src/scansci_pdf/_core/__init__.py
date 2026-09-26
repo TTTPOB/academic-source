@@ -18,7 +18,6 @@ __all__ = [
     # racing.pyx
     "run_parallel_race",
     "build_tiers",
-    "batch_download",
     # scihub_core.pyx
     "domain_score",
     "filter_cooldown_domains",

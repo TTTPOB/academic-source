@@ -26,7 +26,7 @@ def parse_paper_list(file_path: str | Path) -> list[PaperEntry]:
 
     suffix = path.suffix.lower()
     if suffix in (".csv", ".xlsx", ".tsv", ".tab"):
-        from .pipeline import entries_from_table, read_table
+        from .queue import entries_from_table, read_table
 
         return _entries_from_queue(entries_from_table(read_table(path)))
 
@@ -51,7 +51,7 @@ def parse_paper_list(file_path: str | Path) -> list[PaperEntry]:
 
 
 def _entries_from_queue(queue_entries) -> list[PaperEntry]:
-    """Convert pipeline QueueEntry objects to PaperEntry (skipping unresolved)."""
+    """Convert queue entries to paper entries (skipping unresolved)."""
     out = []
     for e in queue_entries:
         if e.unresolved or not e.identifier:
