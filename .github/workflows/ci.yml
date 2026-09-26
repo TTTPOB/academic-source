@@ -24,5 +24,28 @@ jobs:
       - run: uv sync --frozen --extra vpnsci --extra fast
       - run: uv run --frozen ruff check src/academic_source tests/academic_source tests/providers
       - run: uv run --frozen ruff format --check src/academic_source tests/academic_source tests/providers
+      - run: >-
+          uv run --frozen ruff check --select E4,E7,E9,F
+          src/scansci_pdf/identifiers.py
+          src/scansci_pdf/publisher_strategies/registry.py
+          src/scansci_pdf/publisher_profiles.py
+          src/scansci_pdf/publisher_pdf_router.py
       - run: uv run --frozen pyrefly check
       - run: uv run --frozen pytest -q --tb=short
+
+  wheel-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - run: uv build --wheel --out-dir "$RUNNER_TEMP/wheels"
+      - run: uv venv "$RUNNER_TEMP/wheel-env" --python 3.13
+      - run: |
+          for wheel in "$RUNNER_TEMP"/wheels/*.whl; do
+            uv pip install --python "$RUNNER_TEMP/wheel-env/bin/python" "academic-source[cdp] @ file://$wheel"
+          done
+      - run: |
+          "$RUNNER_TEMP/wheel-env/bin/python" "$GITHUB_WORKSPACE/tests/academic_source/test_installation.py" --cdp
+        working-directory: ${{ runner.temp }}
