@@ -1,8 +1,8 @@
 """Lightweight live canaries for publisher surfaces and grey-lane backends.
 
-Run in CI (weekly-to-biweekly, .github/workflows/canary.yml) to catch silent
-route rot: a failing check usually means a publisher changed their page
-structure or started blocking plain HTTP. Exit code 1 alerts the workflow.
+Run manually to catch silent route rot: a failing check usually means a
+publisher changed their page structure or started blocking plain HTTP.
+Exit code 1 indicates failed checks.
 
 2026-09 rot this file now watches for (all three found in one field day):
 - MDPI: www.mdpi.com is Akamai-walled; the package routes 10.3390 to the
