@@ -144,6 +144,27 @@ class Store:
         artifact = self.get_artifact(artifact_id)
         return self.root / "artifacts" / artifact.id / artifact.filename
 
+    def export_artifacts(
+        self, artifact_ids: list[str], output_dir: str
+    ) -> list[dict[str, str | int]]:
+        output = Path(output_dir).expanduser().resolve()
+        exported = []
+        for artifact_id in artifact_ids:
+            artifact = self.get_artifact(artifact_id)
+            source = self.artifact_path(artifact_id)
+            output.mkdir(parents=True, exist_ok=True)
+            destination = output / f"{artifact.id}-{artifact.filename}"
+            if source.resolve() != destination.resolve():
+                shutil.copyfile(source, destination)
+            exported.append(
+                {
+                    "id": artifact.id,
+                    "path": str(destination),
+                    "size": destination.stat().st_size,
+                }
+            )
+        return exported
+
     def save_job(self, job: Job) -> None:
         with self._connect() as db:
             db.execute(
@@ -201,10 +222,6 @@ class Store:
                 "ON CONFLICT(key) DO UPDATE SET record=excluded.record",
                 (key, result.model_dump_json()),
             )
-
-    def close(self) -> None:
-        # Connections are scoped to operations, so there is nothing to close.
-        pass
 
 
 def _safe_filename(filename: str) -> str:

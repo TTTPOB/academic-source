@@ -30,14 +30,23 @@ def create_mcp(application: Application, *, stdio: bool = False) -> FastMCP:
                     await to_thread.run_sync(application.close)
 
     # The SDK route stays /mcp; mounting its ASGI app at / avoids /mcp/mcp.
+    instructions = (
+        "Acquire returns a persistent job. Poll job_status until it finishes. "
+        "For paper lists use inline text or a previously uploaded upload_id. "
+    )
+    if stdio:
+        instructions += (
+            "Use export_artifacts to copy registered files to output_dir on the "
+            "stdio server's machine (or a mounted directory). Paths refer to that machine."
+        )
+    else:
+        instructions += (
+            "Retrieve download_url through HTTP using the server base URL. "
+            "Upload lists through POST /api/v1/uploads; client-local paths are not remote inputs."
+        )
     mcp = FastMCP(
         "academic-source",
-        instructions=(
-            "Acquire returns a persistent job. Poll job_status until it finishes. "
-            "Files are artifacts: retrieve download_url through HTTP using the server base URL. "
-            "For paper lists use inline text or upload through POST /api/v1/uploads, then pass upload_id. "
-            "Client-local filesystem paths are not remote inputs."
-        ),
+        instructions=instructions,
         host="0.0.0.0",
         streamable_http_path="/mcp",
         json_response=True,
@@ -77,15 +86,27 @@ def create_mcp(application: Application, *, stdio: bool = False) -> FastMCP:
         def submit_and_wait() -> dict[str, Any]:
             job = application.submit(request)
             return job_data(
-                application.wait(job.id, timeout=max(0.0, min(wait_seconds, 10.0)))
+                application.wait(job.id, timeout=max(0.0, min(wait_seconds, 10.0))),
+                downloadable=not stdio,
             )
 
         return await to_thread.run_sync(submit_and_wait)
 
     @mcp.tool()
     async def job_status(job_id: str) -> dict[str, Any]:
-        """Inspect a previously submitted job and its downloadable artifacts."""
+        """Inspect a previously submitted job and its artifacts."""
         job = await to_thread.run_sync(partial(application.job, job_id))
-        return job_data(job)
+        return job_data(job, downloadable=not stdio)
+
+    if stdio:
+
+        @mcp.tool()
+        async def export_artifacts(
+            artifact_ids: list[str], output_dir: str
+        ) -> list[dict[str, Any]]:
+            """Copy registered artifacts to a directory on this stdio server's machine."""
+            return await to_thread.run_sync(
+                partial(application.export_artifacts, artifact_ids, output_dir)
+            )
 
     return mcp

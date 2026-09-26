@@ -22,13 +22,13 @@ stdio MCP / CLI ────────────┴─> Application ─> Sou
 - `services.discovery`、`lists`、`exports`：标识解析、列表输入和可选产物转换；继续复用所需的上游解析及抓取知识。
 - `sources`：统一选源和结果边界，直接调用保留下来的来源函数；不把旧下载编排器作为新的总入口。
 - `infrastructure.storage`、`documents`：SQLite 记录、文件落盘和 PDF 可读性检查。
-- `interfaces.api`、`mcp`、`cli`、`web`：共享应用服务的协议适配；MCP 仅提供搜索、解析、列表解析、获取和任务状态等用户动作。
+- `interfaces.api`、`mcp`、`cli`、`web`：共享应用服务的协议适配；MCP 提供搜索、解析、列表解析、获取和任务状态；仅 stdio 另提供 `export_artifacts`，不代理 HTTP。
 
 ## 输入与产物
 
 获取请求恰好选择一种输入：标识符列表、已上传文件的 `upload_id` 或内联文本。上传在服务端按块流式写入，保留文件扩展名并受大小限制；列表解析支持文本、BibTeX、表格及 JSON 等当前解析器支持的格式。
 
-请求不接受客户端文件系统路径。客户端与服务端无需共享目录：远程 CLI 先上传本地列表，获取后经 HTTP 下载产物并保存在客户端指定目录。HTTP/MCP 返回产物 ID、文件名、大小、媒体类型和来源信息，不公开服务器绝对路径；实际文件由服务端数据目录管理。
+请求不接受客户端文件系统路径。客户端与服务端无需共享目录：远程 CLI 先上传本地列表，获取后经 HTTP 下载产物并保存在客户端指定目录。HTTP/HTTP MCP 返回产物 ID、文件名、大小、媒体类型、来源及 HTTP `download_url`；stdio 返回相同元数据但不附无法使用的 HTTP 链接。仅 stdio 的 `export_artifacts(artifact_ids, output_dir)` 从已登记文件复制到 stdio 进程所在机器的目录（容器中须挂载），返回实际文件路径；文件名前缀为产物 ID 以防同名覆盖。不传 base64、不重新下载。实际文件由服务端数据目录管理。
 
 PDF 是获取成功的基础产物；可选 Markdown、补充材料和 BibTeX 结果单独报告，不因可选转换失败而丢弃已取得的 PDF。只登记经过校验且可读取的 PDF，不以文件头或正文长度单独判成功。
 
@@ -42,9 +42,9 @@ PDF 是获取成功的基础产物；可选 Markdown、补充材料和 BibTeX �
 
 ## 任务、文件与缓存
 
-一个数据目录由一个运行实例使用，不支持多个进程共享同一目录。SQLite 的 `catalog.sqlite` 保存上传、产物、任务、逐项结果和获取缓存；上传、产物和工作文件位于同一数据目录的独立子目录。SQLite 连接按操作创建，不在线程间共享。
+一个数据目录由一个运行实例使用，由 Application 的跨进程文件锁确保同一时间只有一个实例；锁在中断历史任务前取得，关闭时释放。SQLite 的 `catalog.sqlite` 保存上传、产物、任务、逐项结果和获取缓存；上传、产物和工作文件位于同一数据目录的独立子目录。SQLite 连接按操作创建，不在线程间共享。
 
-任务在进程内执行并持久化状态：`queued`、`running`、`succeeded`、`partial`、`failed`、`interrupted`。当前任务执行器只有一个工作线程，批量任务逐项保存进度；限定的 HTTP 开放获取来源可并发探测，浏览器及会话操作仍在所属任务线程中执行。结果缓存按标识符、策略、配置、来源和可选导出请求区分；命中前检查已登记的产物文件仍存在。PDF 与可选导出缓存分开，未成功生成的可选导出可重试。
+任务在进程内执行并持久化状态：`queued`、`running`、`succeeded`、`partial`、`failed`、`interrupted`。当前任务执行器只有一个工作线程，批量任务逐项保存进度；来源尝试按顺序执行，浏览器及会话操作仍在所属任务线程中执行。结果缓存按标识符、策略、配置、来源和可选导出请求区分；命中前检查已登记的产物文件仍存在。PDF 与可选导出缓存分开，未成功生成的可选导出可重试。
 
 应用关闭时停止接收任务、取消尚未开始的任务，并等待运行中的调用结束；不承诺强行终止第三方调用或恢复浏览器执行现场。启动时将上次遗留的未完成任务标为 `interrupted`，不自动续跑；已完成且仍存在的产物可以继续下载。
 
@@ -54,9 +54,9 @@ PDF 是获取成功的基础产物；可选 Markdown、补充材料和 BibTeX �
 
 Science HTTP 快路径使用 `cache_dir/science_http_state.json` 中成对的 UA/cookie 快照；不迁移旧全局 UA 缓存，下一次浏览器成功后重获。快照不保证站点接受。`science_http_proxy` 非空显式值优先；未设置或为 `null` 时，本地浏览器沿 `browser_static_proxy` → `network_proxy`，CDP 沿 `SCANSCI_PDF_PROXY` → `network_proxy`；空串表示直连，不假设外部 Chrome 出口。Science 阅读器普通加载宽限 `science_reader_grace` 默认 5 秒，遇到 challenge 的等待上限 `science_reader_timeout` 默认 60 秒。HTTP 快路径成功不需要 CDP 工作连接，但不排除应用启动时的预检。
 
-浏览器从已认证文章页发起同源 PDF 流请求，不依赖浏览器 PDF 阅读器或客户端与服务端共享文件路径。默认总时限为 120 秒、大小上限为 100 MiB，可通过 `source_config` 调整；超时、超限或内容校验失败会清理临时文件，不登记半成品。配置的 CDP 端点必须能从应用进程访问。具体外部 Chrome 参考部署和配置见 README；原生浏览器探针不等同于应用 HTTP/MCP 生产全链路验收。
+浏览器从已认证文章页发起同源 PDF 流请求，不依赖浏览器 PDF 阅读器或客户端与服务端共享文件路径。默认总时限为 120 秒、大小上限为 100 MiB，可通过 `source_config` 调整；超时、超限或内容校验失败会清理临时文件，不登记半成品。配置的 CDP 端点必须能从应用进程访问。具体外部 Chrome 参考部署和配置见 [专题文档](SOURCES_AND_CDP.md)；原生浏览器探针不等同于应用 HTTP/MCP 生产全链路验收。
 
-应用没有额外的浏览器 MCP 工具、远程桌面或浏览器管理接口。MCP 只暴露获取业务动作，产物仍通过 HTTP 下载。
+应用没有额外的浏览器 MCP 工具、远程桌面或浏览器管理接口。HTTP MCP 产物通过 HTTP 下载；独立 stdio 通过本机 `export_artifacts` 复制产物。
 
 ## 范围与保证
 

@@ -130,7 +130,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         job = _remote(args) if args.server else _local(args)
-    except (OSError, httpx.HTTPError, httpx.InvalidURL, ValueError) as exc:
+    except (
+        OSError,
+        httpx.HTTPError,
+        httpx.InvalidURL,
+        ValueError,
+        RuntimeError,
+    ) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     print(json.dumps(job, ensure_ascii=True, indent=2))

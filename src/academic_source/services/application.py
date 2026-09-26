@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import sys
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from copy import deepcopy
@@ -40,19 +41,44 @@ class Application:
         self.settings = settings
         self.store = store if store is not None else Store(settings)
         self.source = source if source is not None else LegacySources()
-        (self.store.root / "sessions").mkdir(exist_ok=True)
-        self.store.interrupt_jobs()
-        # Legacy browser state is thread-affine; source-level HTTP concurrency is separate.
-        self._executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="acquisition"
-        )
-        self._futures: dict[str, Future[None]] = {}
-        self._closed = False
-        if (
-            str(settings.source_config.get("browser_backend", "")).strip().lower()
-            == "cdp"
-        ):
-            self._executor.submit(self._preflight_cdp, self._config())
+        self._lock = (self.store.root / ".application.lock").open("a+b")
+        try:
+            self._acquire_lock()
+            (self.store.root / "sessions").mkdir(exist_ok=True)
+            self.store.interrupt_jobs()
+            # Browser state is thread-affine; jobs execute on one worker.
+            self._executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="acquisition"
+            )
+            self._futures: dict[str, Future[None]] = {}
+            self._closed = False
+            if (
+                str(settings.source_config.get("browser_backend", "")).strip().lower()
+                == "cdp"
+            ):
+                self._executor.submit(self._preflight_cdp, self._config())
+        except BaseException:
+            if hasattr(self, "_executor"):
+                self._executor.shutdown(wait=True, cancel_futures=True)
+            self._lock.close()
+            raise
+
+    def _acquire_lock(self) -> None:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                self._lock.seek(0)
+                msvcrt.locking(self._lock.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(self._lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Data directory {self.store.root} is already in use; "
+                "use --server to connect to the running service"
+            ) from exc
 
     @staticmethod
     def _preflight_cdp(config: dict[str, Any]) -> None:
@@ -129,9 +155,16 @@ class Application:
         if self._closed:
             return
         self._closed = True
-        self._executor.shutdown(wait=True, cancel_futures=True)
-        self.store.interrupt_jobs()
-        self.store.close()
+        try:
+            self._executor.shutdown(wait=True, cancel_futures=True)
+            self.store.interrupt_jobs()
+        finally:
+            self._lock.close()
+
+    def export_artifacts(
+        self, artifact_ids: list[str], output_dir: str
+    ) -> list[dict[str, str | int]]:
+        return self.store.export_artifacts(artifact_ids, output_dir)
 
     def _config(self) -> dict[str, Any]:
         from scansci_pdf.config import DEFAULT_CONFIG

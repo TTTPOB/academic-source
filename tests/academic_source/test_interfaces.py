@@ -149,6 +149,22 @@ def test_mcp_and_http_share_one_real_job_and_artifact_store(tmp_path):
         assert response.status_code == 200, response.text
         job = response.json()["result"]["structuredContent"]
         service.wait(job["id"], 5)
+        assert (
+            "download_url"
+            in client.post(
+                "/mcp",
+                headers=headers,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 5,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "job_status",
+                        "arguments": {"job_id": job["id"]},
+                    },
+                },
+            ).json()["result"]["structuredContent"]["artifacts"][0]
+        )
         current = client.get(f"/api/v1/jobs/{job['id']}").json()
         assert current["status"] == "succeeded"
         assert (

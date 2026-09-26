@@ -1,6 +1,7 @@
 """Exercise persisted uploads, artifacts, jobs, and cache invalidation."""
 
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 
@@ -21,7 +22,6 @@ def test_upload_and_artifact_survive_reopen(tmp_path):
         identifier="10.1/example",
         source="test",
     )
-    store.close()
 
     reopened = Store(settings)
     assert reopened.upload_path(upload.id).read_bytes() == b"@book{}"
@@ -34,6 +34,21 @@ def test_upload_and_artifact_survive_reopen(tmp_path):
     with pytest.raises(ValueError, match="max_upload_bytes"):
         reopened.put_upload("large.csv", BytesIO(b"123456789"))
     assert not list((tmp_path / "uploads").glob("*/large.csv"))
+
+
+def test_export_same_filename_keeps_both_artifacts(tmp_path):
+    store = Store(Settings(data_dir=tmp_path / "data"))
+    original = tmp_path / "paper.pdf"
+    original.write_bytes(b"first")
+    first = store.import_artifact(original, kind="pdf", identifier=None, source="test")
+    original.write_bytes(b"second")
+    second = store.import_artifact(original, kind="pdf", identifier=None, source="test")
+    exported = store.export_artifacts([first.id, second.id], str(tmp_path / "output"))
+    assert [Path(item["path"]).read_bytes() for item in exported] == [
+        b"first",
+        b"second",
+    ]
+    assert exported[0]["path"] != exported[1]["path"]
 
 
 def test_restart_interrupts_only_unfinished_jobs(tmp_path):
@@ -50,7 +65,6 @@ def test_restart_interrupts_only_unfinished_jobs(tmp_path):
                 updated_at="2026-01-01",
             )
         )
-    store.close()
 
     restarted = Store(settings)
     assert restarted.get_job("queued").status == "queued"

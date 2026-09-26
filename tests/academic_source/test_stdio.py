@@ -8,6 +8,8 @@ from pathlib import Path
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from tests.academic_source.helpers import paper_bytes
+
 SCRIPT = """
 import sys
 from pathlib import Path
@@ -17,6 +19,10 @@ from academic_source.settings import Settings
 from tests.academic_source.helpers import RecordingSource
 
 class NoisySource(RecordingSource):
+    def __init__(self):
+        super().__init__()
+        self.content = Path(sys.argv[2]).read_bytes()
+
     def acquire(self, *args):
         print("PROVIDER_DIAGNOSTIC")
         return super().acquire(*args)
@@ -31,9 +37,12 @@ finally:
 
 def test_stdio_acquisition_routes_provider_prints_to_stderr(tmp_path):
     root = Path(__file__).resolve().parents[2]
+    original = paper_bytes()
+    fixture = tmp_path / "original.pdf"
+    fixture.write_bytes(original)
     parameters = StdioServerParameters(
         command=sys.executable,
-        args=["-c", SCRIPT, str(tmp_path / "data")],
+        args=["-c", SCRIPT, str(tmp_path / "data"), str(fixture)],
         env={
             **os.environ,
             "PYTHONPATH": os.pathsep.join((str(root / "src"), str(root))),
@@ -57,7 +66,28 @@ def test_stdio_acquisition_routes_provider_prints_to_stderr(tmp_path):
                 )
                 assert not result.isError
                 assert result.structuredContent["status"] == "succeeded"
-                assert result.structuredContent["artifacts"][0]["kind"] == "pdf"
+                artifact = result.structuredContent["artifacts"][0]
+                assert artifact["kind"] == "pdf"
+                assert "download_url" not in artifact
+                status = await session.call_tool(
+                    "job_status", {"job_id": result.structuredContent["id"]}
+                )
+                assert (
+                    "download_url"
+                    not in status.structuredContent["results"][0]["artifacts"][0]
+                )
+                exported = await session.call_tool(
+                    "export_artifacts",
+                    {
+                        "artifact_ids": [artifact["id"]],
+                        "output_dir": str(tmp_path / "export"),
+                    },
+                )
+                assert not exported.isError
+                item = exported.structuredContent["result"][0]
+                assert item["id"] == artifact["id"]
+                assert Path(item["path"]).read_bytes() == original
+                assert item["size"] == len(original)
 
     asyncio.run(exchange())
     assert "PROVIDER_DIAGNOSTIC" in log.read_text(encoding="utf-8")
