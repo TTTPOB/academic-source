@@ -108,6 +108,7 @@ ACS_PROFILE = PublisherProfile(
         "OpenAthens",
         "Identity",
         "Login",
+        "Sign In",
     ),
     sso_text_markers=(
         "access through",
