@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pymupdf
 
+from academic_source.sources.models import SourceFailure, SourceSuccess
+
 
 def paper_bytes() -> bytes:
     with pymupdf.open() as document:
@@ -17,17 +19,23 @@ class RecordingSource:
         self.content = paper_bytes()
         self.calls: list[str] = []
 
+    def prepare(self, config):
+        pass
+
+    def close(self):
+        pass
+
     def supports(self, identifier, request):
         return identifier.startswith("10.")
 
     def acquire(self, identifier, request, work_dir: Path, config):
         self.calls.append(identifier)
         if identifier.endswith("missing"):
-            return {"success": False, "reason": "not_found"}
+            return SourceFailure(reason="not_found")
         path = work_dir / "paper.pdf"
         path.write_bytes(self.content)
-        return {
-            "path": path,
-            "source": "offline-fixture",
-            "metadata": {"title": "Offline paper", "file": str(path)},
-        }
+        return SourceSuccess(
+            path=path,
+            source="offline-fixture",
+            metadata={"title": "Offline paper", "file": str(path)},
+        )

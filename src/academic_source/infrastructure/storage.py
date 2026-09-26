@@ -5,7 +5,7 @@ import shutil
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import BinaryIO
 from uuid import uuid4
@@ -165,12 +165,99 @@ class Store:
             )
         return exported
 
+    def prune(self, *, apply: bool = False) -> dict[str, list[str]]:
+        """Report or remove stale uploads, empty work dirs and unreferenced files."""
+        cutoff = datetime.now(UTC) - timedelta(days=30)
+        with self._connect() as db:
+            uploads = db.execute("SELECT id, filename FROM uploads").fetchall()
+            artifact_rows = db.execute("SELECT id, record FROM artifacts").fetchall()
+            cache_rows = db.execute("SELECT key, record FROM result_cache").fetchall()
+            jobs = [
+                Job.model_validate_json(row[0])
+                for row in db.execute("SELECT record FROM jobs")
+            ]
+            artifacts = {
+                key: Artifact.model_validate_json(record)
+                for key, record in artifact_rows
+            }
+            valid_cache = {}
+            stale_cache = []
+            for key, record in cache_rows:
+                cached = AcquisitionResult.model_validate_json(record)
+                if all(
+                    item.id in artifacts
+                    and (
+                        self.root / "artifacts" / item.id / artifacts[item.id].filename
+                    ).is_file()
+                    for item in cached.artifacts
+                ):
+                    valid_cache[key] = cached
+                else:
+                    stale_cache.append(key)
+            referenced = {item.id for job in jobs for item in job.artifacts} | {
+                item.id for result in valid_cache.values() for item in result.artifacts
+            }
+            # Preserve the parent PDF of every referenced derived artifact.
+            pending = list(referenced)
+            while pending:
+                artifact = artifacts.get(pending.pop())
+                parent = artifact.provenance.derived_from if artifact else None
+                if parent and parent not in referenced:
+                    referenced.add(parent)
+                    pending.append(parent)
+            orphaned = sorted(artifacts.keys() - referenced)
+            expired = [
+                key
+                for key, filename in uploads
+                if (path := self.root / "uploads" / key / filename).is_file()
+                and datetime.fromtimestamp(path.stat().st_mtime, UTC) < cutoff
+                and all(job.request.upload_id != key for job in jobs)
+            ]
+            empty_work = sorted(
+                (
+                    path
+                    for path in (self.root / "work").rglob("*")
+                    if path.is_dir() and not any(path.iterdir())
+                ),
+                key=lambda path: len(path.parts),
+                reverse=True,
+            )
+            report = {
+                "expired_uploads": sorted(expired),
+                "invalid_cache": sorted(stale_cache),
+                "unreferenced_artifacts": orphaned,
+                "empty_work_dirs": [str(path) for path in empty_work],
+            }
+            if apply:
+                for key in stale_cache:
+                    db.execute("DELETE FROM result_cache WHERE key = ?", (key,))
+                for key in orphaned:
+                    artifact = artifacts[key]
+                    (self.root / "artifacts" / key / artifact.filename).unlink(
+                        missing_ok=True
+                    )
+                    folder = self.root / "artifacts" / key
+                    if folder.is_dir() and not any(folder.iterdir()):
+                        folder.rmdir()
+                    db.execute("DELETE FROM artifacts WHERE id = ?", (key,))
+                for key in expired:
+                    filename = next(
+                        name for upload_id, name in uploads if upload_id == key
+                    )
+                    (self.root / "uploads" / key / filename).unlink(missing_ok=True)
+                    (self.root / "uploads" / key).rmdir()
+                    db.execute("DELETE FROM uploads WHERE id = ?", (key,))
+                for path in empty_work:
+                    if not any(path.iterdir()):
+                        path.rmdir()
+            return report
+
     def save_job(self, job: Job) -> None:
         with self._connect() as db:
             db.execute(
                 "INSERT INTO jobs (id, record, status) VALUES (?, ?, ?) "
                 "ON CONFLICT(id) DO UPDATE SET record=excluded.record, status=excluded.status",
-                (job.id, job.model_dump_json(), job.status),
+                (job.id, job.model_dump_json(exclude={"artifacts"}), job.status),
             )
 
     def get_job(self, job_id: str) -> Job:
@@ -193,7 +280,7 @@ class Store:
                 job.updated_at = datetime.now(UTC).isoformat()
                 db.execute(
                     "UPDATE jobs SET record = ?, status = ? WHERE id = ?",
-                    (job.model_dump_json(), job.status, job_id),
+                    (job.model_dump_json(exclude={"artifacts"}), job.status, job_id),
                 )
 
     def get_cached(self, key: str) -> AcquisitionResult | None:

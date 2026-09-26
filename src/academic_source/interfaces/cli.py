@@ -2,9 +2,11 @@
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,7 @@ import uvicorn
 
 from academic_source.domain import AcquisitionRequest
 from academic_source.interfaces.presentation import job_data
+from academic_source.interfaces.signals import graceful_signals
 from academic_source.settings import Settings
 
 
@@ -23,6 +26,8 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
     commands.add_parser("mcp", help="Run an MCP stdio server")
+    prune = commands.add_parser("prune", help="Preview unused local files and records")
+    prune.add_argument("--apply", action="store_true", help="Delete the reported items")
     get = commands.add_parser("get", help="Get one paper")
     get.add_argument("identifier")
     batch = commands.add_parser("batch", help="Acquire a local literature list")
@@ -89,26 +94,29 @@ def _local(args: argparse.Namespace) -> dict[str, Any]:
 
     application = Application(Settings.load())
     try:
-        if args.command == "batch":
-            with args.file.open("rb") as stream:
-                upload = application.store.put_upload(args.file.name, stream)
-            request = AcquisitionRequest(upload_id=upload.id, policy=args.policy)
-        else:
-            request = AcquisitionRequest(
-                identifiers=[args.identifier], policy=args.policy
-            )
-        request.markdown = args.markdown
-        request.supplementary = args.supplementary
-        request.bibtex = args.bibtex
-        job = application.submit(request)
-        while job.status in ("queued", "running"):
-            job = application.wait(job.id, timeout=0.5)
-        for item in job.artifacts:
-            destination = _save_path(args.output, item.model_dump(mode="json"))
-            shutil.copyfile(application.store.artifact_path(item.id), destination)
-        return job_data(job)
+        with graceful_signals(application.close):
+            return _local_job(args, application)
     finally:
         application.close()
+
+
+def _local_job(args: argparse.Namespace, application: Any) -> dict[str, Any]:
+    if args.command == "batch":
+        with args.file.open("rb") as stream:
+            upload = application.store.put_upload(args.file.name, stream)
+        request = AcquisitionRequest(upload_id=upload.id, policy=args.policy)
+    else:
+        request = AcquisitionRequest(identifiers=[args.identifier], policy=args.policy)
+    request.markdown = args.markdown
+    request.supplementary = args.supplementary
+    request.bibtex = args.bibtex
+    job = application.submit(request)
+    while job.status in ("queued", "running"):
+        job = application.wait(job.id, timeout=0.5)
+    for item in job.artifacts:
+        destination = _save_path(args.output, item.model_dump(mode="json"))
+        shutil.copyfile(application.store.artifact_path(item.id), destination)
+    return job_data(job)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -116,20 +124,54 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "serve":
         from academic_source.app import create_app
 
-        uvicorn.run(create_app(), host=args.host, port=args.port)
+        class DrainServer(uvicorn.Server):
+            # The CLI owns signals; Uvicorn otherwise replays them on exit.
+            capture_signals = staticmethod(nullcontext)
+
+        app = create_app()
+        server = DrainServer(uvicorn.Config(app, host=args.host, port=args.port))
+        with graceful_signals(lambda: setattr(server, "should_exit", True)):
+            server.run()
         return 0
     if args.command == "mcp":
         from academic_source.interfaces.mcp import create_mcp
         from academic_source.services.application import Application
 
         application = Application(Settings.load())
+
+        def stop_stdio() -> None:
+            # The SDK's stdin worker cannot exit while the client keeps stdin open.
+            application.close()
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(0)
+
         try:
-            create_mcp(application, stdio=True).run(transport="stdio")
+            with graceful_signals(stop_stdio):
+                create_mcp(application, stdio=True).run(transport="stdio")
         finally:
             application.close()
         return 0
+    if args.command == "prune":
+        from academic_source.services.application import Application
+
+        try:
+            application = Application(Settings.load())
+            try:
+                report = application.store.prune(apply=args.apply)
+            finally:
+                application.close()
+        except (OSError, RuntimeError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(json.dumps({"applied": args.apply, **report}, indent=2))
+        return 0
     try:
-        job = _remote(args) if args.server else _local(args)
+        if args.server:
+            with graceful_signals(lambda: None):
+                job = _remote(args)
+        else:
+            job = _local(args)
     except (
         OSError,
         httpx.HTTPError,

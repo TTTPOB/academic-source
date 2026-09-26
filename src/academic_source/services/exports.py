@@ -17,10 +17,13 @@ def add_exports(
     work: Path,
     config: dict[str, Any],
     store: Store,
-) -> None:
+    cached_kinds: set[str] | None = None,
+) -> dict[str, list[str]]:
+    successful: dict[str, list[str]] = {}
+    cached_kinds = cached_kinds or set()
     identifier = result.identifier
     source = result.artifacts[0].provenance.source
-    if request.markdown:
+    if request.markdown and "markdown" not in cached_kinds:
         try:
             from scansci_pdf.md_export import pdf_to_markdown_detailed
 
@@ -37,10 +40,11 @@ def add_exports(
                     derived_from=result.artifacts[0].id,
                 )
             )
+            successful["markdown"] = warnings
         except Exception:
             log.exception("Markdown export failed for %s", identifier)
             result.warnings.append("Markdown unavailable; see server logs")
-    if request.bibtex:
+    if request.bibtex and "bibtex" not in cached_kinds:
         if not identifier.startswith("10."):
             result.warnings.append("BibTeX unavailable for this identifier")
         else:
@@ -59,12 +63,13 @@ def add_exports(
                             source="Crossref",
                         )
                     )
+                    successful["bibtex"] = []
                 else:
                     result.warnings.append("BibTeX unavailable")
             except Exception:
                 log.exception("Citation export failed for %s", identifier)
                 result.warnings.append("BibTeX unavailable; see server logs")
-    if request.supplementary:
+    if request.supplementary and "supplementary" not in cached_kinds:
         if not identifier.startswith("10."):
             result.warnings.append(
                 "Supplementary material unavailable for this identifier"
@@ -85,6 +90,9 @@ def add_exports(
                     )
                 if not files:
                     result.warnings.append("No supplementary material retrieved")
+                else:
+                    successful["supplementary"] = []
             except Exception:
                 log.exception("Supplementary retrieval failed for %s", identifier)
                 result.warnings.append("Supplementary unavailable; see server logs")
+    return successful

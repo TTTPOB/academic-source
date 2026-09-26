@@ -233,27 +233,48 @@ def test_remote_cli_uploads_and_exports_over_real_http(tmp_path, monkeypatch):
     assert listing.read_text(encoding="utf-8").startswith("doi,title")
 
 
-def test_mcp_transport_is_stateless_across_restarts(tmp_path):
-    """A stale session id from a previous process must not lock a client out."""
-    service, source = service_at(tmp_path)
-    with TestClient(create_app(application=service)) as client:
-        headers = {
-            "Accept": "application/json, text/event-stream",
-            "Content-Type": "application/json",
-            "mcp-session-id": "session-issued-before-the-restart",
-        }
+def test_mcp_transport_is_stateless_across_real_restart(tmp_path):
+    headers = {
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+        "mcp-session-id": "session-issued-before-the-restart",
+    }
+    first, source = service_at(tmp_path)
+    with TestClient(create_app(application=first)) as client:
+        submitted = client.post(
+            "/mcp",
+            headers=headers,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "acquire",
+                    "arguments": {
+                        "request": {"identifiers": ["10.1234/example"]},
+                        "wait_seconds": 5,
+                    },
+                },
+            },
+        )
+        assert submitted.status_code == 200, submitted.text
+        job_id = submitted.json()["result"]["structuredContent"]["id"]
+        first.wait(job_id, 5)
+        original = source.content
+    second, _ = service_at(tmp_path)
+    with TestClient(create_app(application=second)) as client:
         response = client.post(
             "/mcp",
             headers=headers,
-            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+            json={
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "job_status", "arguments": {"job_id": job_id}},
+            },
         )
         assert response.status_code == 200, response.text
         assert "mcp-session-id" not in response.headers
-        assert {tool["name"] for tool in response.json()["result"]["tools"]} == {
-            "search",
-            "resolve",
-            "parse_list",
-            "acquire",
-            "job_status",
-        }
-        assert source.calls == []
+        job = response.json()["result"]["structuredContent"]
+        assert job["status"] == "succeeded"
+        assert client.get(job["artifacts"][0]["download_url"]).content == original

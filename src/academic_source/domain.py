@@ -2,7 +2,7 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 Policy = Literal[
     "fastest", "oa_first", "legal_only", "scihub_first", "grey_only", "scihub_only"
@@ -40,6 +40,7 @@ class Attempt(BaseModel):
     status: str
     reason: str = ""
     message: str = ""
+    action: str = ""
 
 
 class AcquisitionRequest(BaseModel):
@@ -80,6 +81,7 @@ class AcquisitionResult(BaseModel):
     attempts: list[Attempt] = Field(default_factory=list)
     reason: str = ""
     message: str = ""
+    action: str = ""
     warnings: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     cached: bool = False
@@ -92,7 +94,11 @@ class Job(BaseModel):
     total: int = 0
     completed: int = 0
     results: list[AcquisitionResult] = Field(default_factory=list)
-    artifacts: list[Artifact] = Field(default_factory=list)
     error: str = ""
     created_at: str
     updated_at: str
+
+    @computed_field
+    @property
+    def artifacts(self) -> list[Artifact]:
+        return [artifact for result in self.results for artifact in result.artifacts]

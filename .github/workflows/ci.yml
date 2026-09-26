@@ -27,9 +27,11 @@ jobs:
       - run: >-
           uv run --frozen ruff check --select E4,E7,E9,F
           src/scansci_pdf/identifiers.py
+          src/scansci_pdf/queue.py
           src/scansci_pdf/publisher_strategies/registry.py
           src/scansci_pdf/publisher_profiles.py
           src/scansci_pdf/publisher_pdf_router.py
+          src/scansci_pdf/sources/publishers.py
       - run: uv run --frozen pyrefly check
       - run: uv run --frozen pytest -q --tb=short
 

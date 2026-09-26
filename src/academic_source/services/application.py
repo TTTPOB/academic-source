@@ -6,7 +6,6 @@ import hashlib
 import json
 import logging
 import os
-import sys
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -20,6 +19,7 @@ from academic_source.infrastructure.documents import is_readable_pdf
 from academic_source.infrastructure.storage import Store
 from academic_source.settings import Settings
 from academic_source.sources import LegacySources, Source
+from academic_source.sources.models import SourceFailure
 
 from . import discovery, lists
 from .exports import add_exports
@@ -52,11 +52,7 @@ class Application:
             )
             self._futures: dict[str, Future[None]] = {}
             self._closed = False
-            if (
-                str(settings.source_config.get("browser_backend", "")).strip().lower()
-                == "cdp"
-            ):
-                self._executor.submit(self._preflight_cdp, self._config())
+            self._executor.submit(self.source.prepare, self._config())
         except BaseException:
             if hasattr(self, "_executor"):
                 self._executor.shutdown(wait=True, cancel_futures=True)
@@ -79,25 +75,6 @@ class Application:
                 f"Data directory {self.store.root} is already in use; "
                 "use --server to connect to the running service"
             ) from exc
-
-    @staticmethod
-    def _preflight_cdp(config: dict[str, Any]) -> None:
-        from scansci_pdf.browser_backend import CDPSetupError, probe_cdp
-
-        try:
-            probe_cdp(config)
-        except Exception as exc:  # noqa: BLE001 - optional check must not block jobs
-            # Only CDPSetupError carries a known-safe message; Playwright errors may leak URLs.
-            if isinstance(exc, CDPSetupError):
-                reason = str(exc)
-            elif isinstance(exc, TimeoutError) or type(exc).__name__ == "TimeoutError":
-                reason = "connection timeout"
-            else:
-                reason = "connection unavailable"
-            log.warning(
-                "CDP startup preflight failed (%s); browser requests will retry on demand",
-                reason,
-            )
 
     def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         return discovery.search(query, limit)
@@ -156,7 +133,10 @@ class Application:
             return
         self._closed = True
         try:
-            self._executor.shutdown(wait=True, cancel_futures=True)
+            try:
+                self._executor.submit(self.source.close).result()
+            finally:
+                self._executor.shutdown(wait=True)
             self.store.interrupt_jobs()
         finally:
             self._lock.close()
@@ -203,7 +183,6 @@ class Application:
                     )
                 job.results.append(result)
                 job.completed += 1
-                job.artifacts.extend(result.artifacts)
                 self._save(job)
             successes = sum(item.status == "succeeded" for item in job.results)
             job.status = (
@@ -218,13 +197,10 @@ class Application:
             job.status = "failed"
             job.error = "Job execution failed; see server logs"
         finally:
-            # Browser instances must be closed on the thread that created them.
-            browser = sys.modules.get("scansci_pdf.browser_engine")
-            if browser is not None:
-                try:
-                    browser.close_shared_browser()
-                except Exception:
-                    log.exception("Browser cleanup failed for job %s", job.id)
+            try:
+                self.source.close()
+            except Exception:
+                log.exception("Source cleanup failed for job %s", job.id)
         self._save(job)
 
     def _save(self, job: Job) -> None:
@@ -251,25 +227,17 @@ class Application:
         key_data = {
             "identifier": identifier.lower(),
             "policy": request.policy,
-            "config": config,
+            "config": self._cache_config(config),
             "source": f"{type(self.source).__module__}.{type(self.source).__qualname__}",
         }
         base_key = self._cache_key(key_data)
-        requested = {
+        requested = [
             kind
             for kind in ("markdown", "supplementary", "bibtex")
             if getattr(request, kind)
-        }
-        result_key = (
-            self._cache_key({**key_data, "exports": sorted(requested)})
-            if requested
-            else base_key
-        )
-        cached = self.store.get_cached(result_key)
-        if cached:
-            return cached.model_copy(deep=True, update={"cached": True})
-        supports = getattr(self.source, "supports", None)
-        if supports is not None and not supports(identifier, request):
+        ]
+        cached_pdf = self.store.get_cached(base_key)
+        if not cached_pdf and not self.source.supports(identifier, request):
             return AcquisitionResult(
                 identifier=identifier, status="failed", reason="unsupported"
             )
@@ -277,7 +245,6 @@ class Application:
         parent.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(dir=parent, ignore_cleanup_errors=True) as directory:
             work = Path(directory)
-            cached_pdf = self.store.get_cached(base_key) if requested else None
             if cached_pdf:
                 result = cached_pdf.model_copy(deep=True, update={"cached": True})
                 pdf = self.store.artifact_path(result.artifacts[0].id)
@@ -285,50 +252,96 @@ class Application:
                 outcome = self.source.acquire(
                     identifier, request, work, deepcopy(config)
                 )
-                attempts = [
-                    Attempt.model_validate(item)
-                    for item in (outcome or {}).get("attempts", [])
-                ]
-                if not outcome or outcome.get("success") is False:
+                if isinstance(outcome, SourceFailure):
                     return AcquisitionResult(
                         identifier=identifier,
                         status="failed",
-                        reason=(outcome or {}).get("reason", "not_found"),
-                        message=str((outcome or {}).get("message", "")),
-                        attempts=attempts,
+                        reason=outcome.reason,
+                        message=outcome.message,
+                        action=outcome.action,
+                        attempts=outcome.attempts,
                     )
-                path_value = outcome.get("path") or outcome.get("file")
-                pdf = Path(path_value) if path_value else work / "missing.pdf"
+                pdf = outcome.path
                 if not is_readable_pdf(pdf):
                     return AcquisitionResult(
                         identifier=identifier,
                         status="failed",
                         reason="invalid_document",
-                        attempts=attempts,
+                        attempts=outcome.attempts,
                     )
-                source = str(outcome.get("source") or "unknown")
                 artifact = self.store.import_artifact(
                     pdf,
                     kind="pdf",
                     identifier=identifier,
-                    source=source,
-                    url=outcome.get("url"),
+                    source=outcome.source,
+                    url=outcome.url,
                 )
                 result = AcquisitionResult(
                     identifier=identifier,
                     status="succeeded",
                     artifacts=[artifact],
-                    attempts=attempts or [Attempt(source=source, status="succeeded")],
-                    metadata=self._public_metadata(outcome.get("metadata")),
+                    attempts=outcome.attempts
+                    or [Attempt(source=outcome.source, status="succeeded")],
+                    metadata=self._public_metadata(outcome.metadata),
                 )
-                # Keep the PDF independently of optional conversion availability.
                 self.store.put_cached(base_key, result)
+            cached_kinds = set()
+            for kind in requested:
+                key = self._export_key(result.artifacts[0].id, kind, config)
+                cached = self.store.get_cached(key)
+                if cached:
+                    result.artifacts.extend(cached.artifacts)
+                    result.warnings.extend(cached.warnings)
+                    cached_kinds.add(kind)
             if requested:
-                add_exports(result, pdf, request, work, config, self.store)
-                present = {artifact.kind for artifact in result.artifacts}
-                if requested <= present:
-                    self.store.put_cached(result_key, result)
+                successful = add_exports(
+                    result, pdf, request, work, config, self.store, cached_kinds
+                )
+                for kind in successful:
+                    artifacts = [item for item in result.artifacts if item.kind == kind]
+                    self.store.put_cached(
+                        self._export_key(result.artifacts[0].id, kind, config),
+                        AcquisitionResult(
+                            identifier=identifier,
+                            status="succeeded",
+                            artifacts=artifacts,
+                            warnings=successful[kind],
+                        ),
+                    )
+                result.cached = result.cached and set(requested) <= cached_kinds
             return result
+
+    @staticmethod
+    def _cache_config(config: dict[str, Any]) -> dict[str, Any]:
+        # Exclude only values that cannot influence source selection or access.
+        ignored = {
+            "output_dir",
+            "cache_dir",
+            "parallel_sources",
+            "science_reader_grace",
+            "science_reader_timeout",
+        }
+        return {key: value for key, value in config.items() if key not in ignored}
+
+    def _export_key(self, pdf_id: str, kind: str, config: dict[str, Any]) -> str:
+        # BibTeX uses Crossref HTTP; supplements may require publisher sessions.
+        if kind == "markdown":
+            options = {}
+        elif kind == "bibtex":
+            options = {
+                key: config.get(key)
+                for key in (
+                    "network_proxy",
+                    "direct_domains",
+                    "connect_timeout",
+                    "read_timeout",
+                )
+            }
+        else:
+            options = self._cache_config(config)
+        return self._cache_key(
+            {"export_version": 1, "pdf": pdf_id, "kind": kind, "config": options}
+        )
 
     @staticmethod
     def _cache_key(data: dict[str, Any]) -> str:

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from academic_source.domain import AcquisitionRequest
+from academic_source.domain import AcquisitionRequest, Attempt
 from academic_source.services.application import Application
 from academic_source.settings import Settings
+from academic_source.sources.models import SourceFailure, SourceSuccess
 from tests.academic_source.helpers import paper_bytes
 
 
@@ -12,22 +13,26 @@ class FixtureSource:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
+    def prepare(self, config):
+        pass
+
+    def close(self):
+        pass
+
+    def supports(self, identifier, request):
+        return True
+
     def acquire(self, identifier, request, work_dir, config):
         self.calls.append((identifier, request.policy))
         if identifier.endswith("missing"):
-            return None
+            return SourceFailure(reason="not_found")
         if identifier.endswith("paywall"):
-            return {
-                "success": False,
-                "reason": "auth_required",
-                "attempts": [
-                    {
-                        "source": "publisher",
-                        "status": "failed",
-                        "reason": "auth_required",
-                    }
+            return SourceFailure(
+                reason="auth_required",
+                attempts=[
+                    Attempt(source="publisher", status="failed", reason="auth_required")
                 ],
-            }
+            )
         paper = work_dir / "paper.pdf"
         paper.write_bytes(
             b"<html>not a paper</html>"
@@ -36,16 +41,16 @@ class FixtureSource:
             if identifier.endswith("truncated")
             else paper_bytes()
         )
-        return {
-            "path": paper,
-            "source": "fixture",
-            "url": "https://example.org/article",
-            "metadata": {
+        return SourceSuccess(
+            path=paper,
+            source="fixture",
+            url="https://example.org/article",
+            metadata={
                 "title": "A paper",
                 "file": str(paper),
                 "output_dir": str(work_dir),
             },
-        }
+        )
 
 
 def test_batch_persists_each_result_and_rejects_failure_dict_and_html(tmp_path):
@@ -187,9 +192,10 @@ def test_source_adapter_preserves_failed_attempts_and_publisher_order(
         tmp_path,
         {"vpnsci_enabled": False},
     )
-    assert outcome["source"] == "publisher"
-    assert [item["reason"] for item in outcome["attempts"][:1]] == ["auth_required"]
-    assert [item["source"] for item in outcome["attempts"]] == ["Direct", "Publisher"]
+    assert isinstance(outcome, SourceSuccess)
+    assert outcome.source == "publisher"
+    assert [item.reason for item in outcome.attempts[:1]] == ["auth_required"]
+    assert [item.source for item in outcome.attempts] == ["Direct", "Publisher"]
 
 
 def test_noninteractive_legacy_login_fallback_does_not_open_windows(

@@ -12,8 +12,14 @@ from typing import Any
 
 import requests
 
+from ..log import get_logger
 from ..science_transport import _SCIENCE_DOI_PREFIX
 from .crossref import try_crossref
+from .nature import try_nature_direct
+from .openalex import try_openalex_oa
+from .semantic_scholar import try_semanticscholar
+from .springer_tdm import try_springer_tdm
+from .unpaywall import try_unpaywall
 
 
 def _load_publisher_cookies(session: requests.Session, config: dict[str, Any]) -> None:
@@ -41,11 +47,7 @@ def _load_publisher_cookies(session: requests.Session, config: dict[str, Any]) -
                     pass
     except Exception:
         pass
-from .nature import try_nature_direct
-from .openalex import try_openalex_oa
-from .semantic_scholar import try_semanticscholar
-from .springer_tdm import try_springer_tdm
-from .unpaywall import try_unpaywall
+
 
 # ============================================================
 # Publisher URL templates: (name, pdf_template, match_patterns, gdpr, bibtex_template)
@@ -62,32 +64,15 @@ PUBLISHERS: list[tuple[str, str | None, list[str], bool, str | None]] = [
 ]
 
 DOI_PREFIX_TO_PUBLISHER: dict[str, str] = {
-    "10.1038/": "Nature",
-    "10.1016/": "Elsevier",
-    "10.1002/": "Wiley",
-    _SCIENCE_DOI_PREFIX: "Science",
     "10.1073/": "PNAS",
-    "10.1093/": "Oxford",
-    "10.1021/": "ACS",
-    "10.1007/": "Springer",
-    "10.1103/": "APS",
-    "10.1088/": "IOP",
     "10.1101/": "bioRxiv",
     "10.3390/": "MDPI",
     "10.1371/": "PLOS",
     "10.3389/": "Frontiers",
     "10.1186/": "BMC",
     "10.15252/": "EMBO",
-    "10.1039/": "RSC",
-    "10.1063/": "AIP",
-    "10.1111/": "Wiley",
-    "10.1145/": "ACM",
-    "10.1109/": "IEEE",
     "10.1364/": "OSA",
-    "10.1080/": "Tandfonline",
     "10.1116/": "AIP",  # AVS (pubs.aip.org)
-    "10.1177/": "SAGE",
-    "10.1061/": "ASCE",
     "10.1146/": "AnnualReviews",
     "10.31219/": "Research Square",
     "10.21203/": "Research Square",
@@ -108,10 +93,12 @@ PREPRINT_PREFIXES: dict[str, str] = {
     "10.20944/": "Preprints.org",
 }
 
-# Fast sources per publisher (used by tiered racing)
+# Ordered publisher candidates for DOI acquisition.
 # Browser strategies (ElsevierBrowser, etc.) use camofox for anti-bot bypass
 PUBLISHER_TOOL_MAP: dict[str, list[str]] = {
     "Nature": ["NatureDirect", "PublisherDirect", "NatureBrowser", "Crossref", "Unpaywall"],
+    "Royal Society": ["RoyalSocietyBrowser", "Crossref", "Unpaywall"],
+    "Copernicus": ["CopernicusDirect", "Crossref", "Unpaywall"],
     "MDPI": ["MDPIDirect", "Crossref", "Unpaywall"],
     "arXiv": ["arXiv"],
     "bioRxiv": ["arXiv", "Unpaywall"],
@@ -147,7 +134,6 @@ PUBLISHER_TOOL_MAP: dict[str, list[str]] = {
 
 _FN_MAP: dict[str, Any] = {}
 
-from ..log import get_logger
 log = get_logger()
 
 
@@ -220,7 +206,7 @@ def resolve_doi(doi: str, config: dict[str, Any]) -> str | None:
 # ============================================================
 
 def try_publisher_direct(doi: str, output_path: Path, config: dict[str, Any]) -> dict[str, Any] | None:
-    """Try publisher direct download with HTTP first, then browser fallback."""
+    """Try publisher PDF URLs over HTTP; browsers are separate source candidates."""
     from ..network import USER_AGENT, polite_delay
     from ..pdf_utils import is_pdf_file, success, _response_looks_pdf
 
@@ -267,21 +253,6 @@ def try_publisher_direct(doi: str, output_path: Path, config: dict[str, Any]) ->
 
         except Exception as e:
             log.info(f"   [Publisher] {name}: {e}")
-
-    # Phase 2: Browser-based download via camofox (handles anti-bot)
-    publisher = get_publisher(doi)
-    if publisher and config.get("camofox_enabled", True):
-        from ..camofox import is_available as _camofox_avail
-        if _camofox_avail(config):
-            log.info(f"   [PublisherDirect] Trying browser strategy for {publisher}")
-            fn = _FN_MAP.get(f"{publisher}Browser") or _FN_MAP.get("GenericBrowser")
-            if fn:
-                try:
-                    result = fn(doi, output_path, config)
-                    if result:
-                        return result
-                except Exception as e:
-                    log.info(f"   [PublisherDirect] Browser strategy failed: {e}")
 
     return None
 
@@ -424,7 +395,6 @@ def try_pnas_direct(doi: str, output_path: Path, config: dict[str, Any]) -> dict
     from ..network import USER_AGENT, polite_delay
     from ..pdf_utils import is_pdf_file, success, _response_looks_pdf
 
-    doi_suffix = doi.split("10.1073/")[-1]
     pdf_url = f"https://www.pnas.org/doi/epdf/{doi}"
 
     try:
@@ -476,7 +446,6 @@ def try_plos_direct(doi: str, output_path: Path, config: dict[str, Any]) -> dict
         "journal.ppat": "plospathogens",
         "journal.pcbi": "ploscompbiol",
         "journal.pntd": "plosntds",
-        "journal.pone": "plosone",
         "journal.pclm": "plosclimate",
         "journal.pdig": "plosdigitalhealth",
     }
@@ -604,6 +573,11 @@ def try_bmc_direct(doi: str, output_path: Path, config: dict[str, Any]) -> dict[
 # ============================================================
 
 def get_publisher(doi: str) -> str:
+    from ..publisher_strategies import StrategyRegistry
+
+    strategy = StrategyRegistry.get_for_doi(doi)
+    if strategy is not None and strategy.name != "Generic":
+        return strategy.name
     for prefix, publisher in DOI_PREFIX_TO_PUBLISHER.items():
         if doi.startswith(prefix):
             return publisher
@@ -614,6 +588,12 @@ def _elsevier_api_fn() -> Any:
     """Lazy import of the Elsevier API download function."""
     from ..publisher_strategies import try_elsevier_api
     return try_elsevier_api
+
+
+def _copernicus_direct_fn() -> Any:
+    from .._publisher_strategies_core import try_copernicus_direct
+
+    return try_copernicus_direct
 
 
 def _browser_strategy(publisher: str) -> Any:
@@ -632,7 +612,7 @@ def _browser_strategy(publisher: str) -> Any:
     # Resolve the legacy function name from the strategy's data
     # Standard naming: try_{publisher.lower()}_browser
     # Special cases handled by the strategy's aliases
-    fn_name = f"try_{strategy.name.lower().replace(' ', '_')}_browser"
+    fn_name = f"try_{strategy.name.lower().replace(' ', '')}_browser"
     from .. import _publisher_strategies_core as _core
     return getattr(_core, fn_name, try_generic_browser)
 
@@ -688,6 +668,8 @@ _FN_MAP.update({
     "OxfordBrowser": _browser_strategy("Oxford"),
     "ACMBrowser": _browser_strategy("ACM"),
     "NatureBrowser": _browser_strategy("Nature"),
+    "RoyalSocietyBrowser": _browser_strategy("Royal Society"),
+    "CopernicusDirect": _copernicus_direct_fn(),
     "ScienceBrowser": _browser_strategy("Science"),
     "SAGEBrowser": _browser_strategy("SAGE"),
     "ASCEBrowser": _browser_strategy("ASCE"),

@@ -52,6 +52,8 @@ academic-source get '10.1234/example' \
 
 这些标识符仅为命令示例，不是可下载论文。
 
+运行 `serve`、`mcp` 或本地获取时，第一次 Ctrl+C 会停止接收新任务并排空已接受的队列；再次 Ctrl+C 立即强退，未完成任务在下次启动时标为 `interrupted`。SIGTERM 也请求优雅退出，但不计入 Ctrl+C 次数。远端 CLI 退出不会取消服务器上的任务。
+
 ## 服务器：Docker / GHCR
 
 代码推送到个人仓库 `TTTPOB/academic-source` 的 `main` 后，Actions 构建并推送 `ghcr.io/tttpob/academic-source:main` 和对应的 `sha-<完整提交 SHA>`；推送与 `pyproject.toml` 版本一致的 `vX.Y.Z` tag 后，再发布同名 `:vX.Y.Z` 与 `:sha-...`。PR 和其他 fork 仅构建，不推送；没有 `latest` 标签，也不发布 PyPI。以下示例跟随 `main`，生产部署请将 `:main` 替换为构建产出的不可变 `:sha-<完整提交 SHA>`：
@@ -88,7 +90,6 @@ curl -o paper.pdf http://SERVER:8000/api/v1/artifacts/ARTIFACT_ID/content
 ```json
 {
   "interactive": false,
-  "job_workers": 1,
   "max_upload_bytes": 20971520,
   "source_config": {
     "email": "your-real-email@example.org",
@@ -102,7 +103,9 @@ Unpaywall 需要真实联系邮箱。机构凭据、代理等放在 `source_conf
 
 来源实验、可选浏览器依赖与外部 Chrome (CDP) 部署见 [专题文档](docs/SOURCES_AND_CDP.md)。
 
-SQLite 保存上传、任务和产物记录，文件保存在同一数据目录。一个数据目录由一个运行实例使用；服务已运行时，CLI 使用 `--server` 连接它。重启将未完成任务标记为 interrupted，已完成产物仍可取回，不承诺恢复浏览器执行现场。
+SQLite 保存上传、任务和产物记录，文件保存在同一数据目录。一个数据目录由一个运行实例使用；服务已运行时，本地 CLI 使用 `--server` 连接它。重启将未完成任务标记为 interrupted，已完成产物仍可取回，不承诺恢复浏览器执行现场。旧配置中的 `job_workers: 1` 可读取但已不再需要，其他值报错。
+
+`academic-source prune` 默认只预览；停服务后执行 `academic-source prune --apply` 才删除超过 30 天且无任务引用的上传、无效缓存、无任务或有效缓存引用的产物及空工作目录。现有任务及有效缓存引用始终保留；服务占用数据目录时拒绝本地清理。
 
 ## 开发者：源码与检查
 

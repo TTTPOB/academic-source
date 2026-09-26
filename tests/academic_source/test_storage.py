@@ -1,5 +1,6 @@
 """Exercise persisted uploads, artifacts, jobs, and cache invalidation."""
 
+import json
 from io import BytesIO
 from pathlib import Path
 
@@ -73,6 +74,37 @@ def test_restart_interrupts_only_unfinished_jobs(tmp_path):
     assert restarted.get_job("running").status == "interrupted"
     assert restarted.get_job("succeeded").status == "succeeded"
     assert restarted.get_job("running").updated_at != "2026-01-01"
+
+
+def test_job_storage_derives_artifacts_and_reads_old_redundant_json(tmp_path):
+    store = Store(Settings(data_dir=tmp_path))
+    source = tmp_path / "paper.pdf"
+    source.write_bytes(b"pdf")
+    artifact = store.import_artifact(
+        source, kind="pdf", identifier=None, source="fixture"
+    )
+    job = Job(
+        id="derived",
+        request=AcquisitionRequest(identifiers=["10.1/example"]),
+        results=[
+            AcquisitionResult(
+                identifier="10.1/example", status="succeeded", artifacts=[artifact]
+            )
+        ],
+        created_at="2026-01-01",
+        updated_at="2026-01-01",
+    )
+    store.save_job(job)
+    with store._connect() as db:
+        record = json.loads(
+            db.execute("SELECT record FROM jobs WHERE id = ?", (job.id,)).fetchone()[0]
+        )
+        assert "artifacts" not in record
+        record["artifacts"] = [artifact.model_dump(mode="json")]
+        db.execute(
+            "UPDATE jobs SET record = ? WHERE id = ?", (json.dumps(record), job.id)
+        )
+    assert store.get_job(job.id).artifacts == [artifact]
 
 
 def test_cache_miss_when_artifact_file_disappears(tmp_path):

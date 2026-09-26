@@ -9,6 +9,7 @@ import pytest
 
 from academic_source.domain import AcquisitionRequest
 from academic_source.sources import LegacySources
+from academic_source.sources.models import SourceFailure
 
 
 def _pdf(path):
@@ -80,7 +81,7 @@ def test_explicit_arxiv_version_reaches_download_url(monkeypatch, tmp_path):
         {},
     )
     assert requested == ["https://arxiv.org/pdf/2401.01234v2.pdf"]
-    assert result["source"] == "arXiv"
+    assert result.source == "arXiv"
 
 
 def _get(tmp_path, policy, config):
@@ -96,29 +97,29 @@ def test_legal_only_exhausts_legal_sources_without_grey(monkeypatch, tmp_path):
     visited = []
     _patch_handlers(monkeypatch, visited)
     result = _get(tmp_path, "legal_only", {"scihub_enabled": True})
-    assert result["success"] is False
+    assert isinstance(result, SourceFailure)
     assert {"SemanticScholar", "OpenAIRE", "CORE", "CrossrefPage", "PMC"} <= set(
         visited
     )
     assert set(visited).isdisjoint({"SciBban", "LibGen", "Sci-Hub"})
-    assert len(result["attempts"]) == len(visited)
+    assert len(result.attempts) == len(visited)
 
 
 def test_disable_grey_respected_even_for_scihub_first(monkeypatch, tmp_path):
     visited = []
     _patch_handlers(monkeypatch, visited)
     result = _get(tmp_path, "scihub_first", {"scihub_enabled": False})
-    assert result["success"] is False
+    assert isinstance(result, SourceFailure)
     assert "Unpaywall" in visited and "PublisherDirect" in visited
     assert set(visited).isdisjoint({"SciBban", "LibGen", "Sci-Hub"})
-    assert _get(tmp_path, "scihub_only", {"scihub_enabled": False})["attempts"] == []
+    assert _get(tmp_path, "scihub_only", {"scihub_enabled": False}).attempts == []
 
 
 def test_oa_first_reaches_grey_after_all_legal_fail(monkeypatch, tmp_path):
     visited = []
     _patch_handlers(monkeypatch, visited, win="SciBban")
     result = _get(tmp_path, "oa_first", {"scihub_enabled": True})
-    assert result["source"] == "SciBban"
+    assert result.source == "SciBban"
     assert (
         visited.index("Unpaywall")
         < visited.index("PublisherDirect")
@@ -148,7 +149,7 @@ def test_configured_institution_channels_reachable_after_failed_legal(
         "elsevier_api_key": "test",
     }
     result = _get(tmp_path, "legal_only", config)
-    assert result["source"] == "SessionBroker"
+    assert result.source == "SessionBroker"
     assert visited[-4:] == ["CARSI", "WebVPN", "EZProxy", "SessionBroker"]
     assert "InstitutionalBrowser" not in visited
 
@@ -185,9 +186,9 @@ def test_elsevier_api_short_circuits_other_sources(
         tmp_path,
         config,
     )
-    assert result["source"] == "ElsevierAPI"
+    assert result.source == "ElsevierAPI"
     assert visited == ["ElsevierAPI"]
-    assert [attempt["source"] for attempt in result["attempts"]] == ["ElsevierAPI"]
+    assert [attempt.source for attempt in result.attempts] == ["ElsevierAPI"]
 
 
 @pytest.mark.parametrize(
@@ -226,44 +227,28 @@ def test_elsevier_shortcut_respects_key_policy_and_doi(
         tmp_path,
         {"scihub_enabled": True, "elsevier_api_key": "example-only" if has_key else ""},
     )
-    assert result["source"] == first
+    assert result.source == first
     assert visited == [first]
 
 
-def test_fastest_parallelizes_http_and_keeps_publisher_on_owner_thread(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize("parallel_sources", [True, False])
+def test_fastest_tries_sources_in_order_and_stops_at_first_pdf(
+    monkeypatch, tmp_path, parallel_sources
 ):
-    import threading
-
-    from scansci_pdf.sources import openalex, publishers, semantic_scholar, unpaywall
+    from scansci_pdf.sources import publishers
 
     visited = []
-    _patch_handlers(monkeypatch, visited)
-    owner = threading.current_thread().name
-    publisher_threads = []
-    monkeypatch.setattr(
-        publishers,
-        "get_publisher_fast_sources",
-        lambda doi: [
-            (
-                lambda *args: publisher_threads.append(threading.current_thread().name),
-                "PublisherDirect",
-            )
-        ],
+    _patch_handlers(monkeypatch, visited, win="OpenAlexOA")
+    monkeypatch.setattr(publishers, "get_publisher_fast_sources", lambda doi: [])
+
+    result = _get(
+        tmp_path,
+        "fastest",
+        {"scihub_enabled": False, "parallel_sources": parallel_sources},
     )
-    barrier = threading.Barrier(3)
-    racing_threads = set()
-
-    def http_handler(*args):
-        racing_threads.add(threading.current_thread().name)
-        barrier.wait(timeout=3)
-
-    monkeypatch.setattr(unpaywall, "try_unpaywall", http_handler)
-    monkeypatch.setattr(openalex, "try_openalex_oa", http_handler)
-    monkeypatch.setattr(semantic_scholar, "try_semanticscholar", http_handler)
-    _get(tmp_path, "fastest", {"scihub_enabled": False})
-    assert publisher_threads == [owner]
-    assert len(racing_threads) == 3
+    assert result.source == "OpenAlexOA"
+    assert visited == ["Unpaywall", "OpenAlexOA"]
+    assert [attempt.source for attempt in result.attempts] == visited
 
 
 def test_webvpn_saved_session_headless_and_login_page_exits(monkeypatch, tmp_path):
@@ -402,7 +387,8 @@ def test_science_challenge_is_not_a_paywall(monkeypatch, tmp_path):
         "10.1126/test",
         "https://www.science.org/doi/test",
         tmp_path / "paper.pdf",
-        {"interactive": False},
+        # This test classifies a challenge; reader timing has separate coverage.
+        {"interactive": False, "science_reader_timeout": 0},
         "Science",
     )
     assert publisher.get_last_error()[0] == "cloudflare_blocked"
@@ -438,11 +424,85 @@ def test_challenge_reason_survives_later_source_failures(monkeypatch, tmp_path):
         tmp_path,
         {"scihub_enabled": False},
     )
-    assert result["reason"] == "network_error"
-    assert [(item["source"], item["reason"]) for item in result["attempts"][:2]] == [
+    assert result.reason == "network_error"
+    assert [(item.source, item.reason) for item in result.attempts[:2]] == [
         ("ScienceBrowser", "cloudflare_blocked"),
         ("OtherBrowser", "browser_unavailable"),
     ]
+
+
+def test_elsevier_key_alone_does_not_enable_institutional_sources(
+    monkeypatch, tmp_path
+):
+    from academic_source import sources
+
+    visited = []
+    _patch_handlers(monkeypatch, visited)
+    monkeypatch.setattr(
+        sources, "_broker_source", lambda *args: pytest.fail("broker called")
+    )
+    monkeypatch.setattr(
+        sources, "_publisher_batch_source", lambda *args: pytest.fail("browser called")
+    )
+    result = _get(
+        tmp_path, "legal_only", {"scihub_enabled": False, "elsevier_api_key": "key"}
+    )
+    assert isinstance(result, SourceFailure)
+    assert all(
+        item.source not in {"SessionBroker", "InstitutionalBrowser"}
+        for item in result.attempts
+    )
+
+
+def test_registered_publisher_prefixes_keep_real_download_candidates():
+    from scansci_pdf.sources.publishers import get_publisher_fast_sources
+
+    assert [label for _, label in get_publisher_fast_sources("10.1098/rspa.2019.0567")][
+        :1
+    ] == ["RoyalSocietyBrowser"]
+    assert [
+        label for _, label in get_publisher_fast_sources("10.5194/hess-22-3433-2018")
+    ][:1] == ["CopernicusDirect"]
+    assert [label for _, label in get_publisher_fast_sources("10.1038/nature14539")][
+        :3
+    ] == ["NatureDirect", "PublisherDirect", "NatureBrowser"]
+
+
+def test_unpaywall_missing_email_retains_action_and_message(monkeypatch, tmp_path):
+    from scansci_pdf.sources import publishers, unpaywall
+
+    real_unpaywall = unpaywall.try_unpaywall
+    visited = []
+    _patch_handlers(monkeypatch, visited)
+    monkeypatch.setattr(publishers, "get_publisher_fast_sources", lambda doi: [])
+    monkeypatch.setattr(unpaywall, "try_unpaywall", real_unpaywall)
+    result = _get(
+        tmp_path,
+        "legal_only",
+        {"scihub_enabled": False, "email": "user@example.invalid"},
+    )
+    assert isinstance(result, SourceFailure)
+    assert result.reason == "config_needed"
+    assert result.action == "ask_user_email"
+    assert "real email" in result.message
+    assert result.attempts[0].reason == "config_needed"
+    assert result.attempts[0].action == result.action
+    assert result.attempts[0].message == result.message
+
+
+def test_publisher_direct_does_not_launch_browser(monkeypatch, tmp_path):
+    from scansci_pdf.sources import publishers
+
+    monkeypatch.setattr(publishers, "resolve_doi", lambda *args: None)
+    monkeypatch.setitem(
+        publishers._FN_MAP,
+        "GenericBrowser",
+        lambda *args: pytest.fail("browser called"),
+    )
+    assert (
+        publishers.try_publisher_direct("10.1234/unknown", tmp_path / "paper.pdf", {})
+        is None
+    )
 
 
 def test_readable_pdf_required_before_source_wins(monkeypatch, tmp_path):
@@ -462,5 +522,5 @@ def test_readable_pdf_required_before_source_wins(monkeypatch, tmp_path):
         lambda doi: [(truncated, "Truncated"), (readable, "Readable")],
     )
     result = _get(tmp_path, "legal_only", {"scihub_enabled": False})
-    assert result["source"] == "Readable"
-    assert [item["source"] for item in result["attempts"]] == ["Truncated", "Readable"]
+    assert result.source == "Readable"
+    assert [item.source for item in result.attempts] == ["Truncated", "Readable"]

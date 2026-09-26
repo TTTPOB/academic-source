@@ -2,32 +2,24 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Callable
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any, Protocol
 
-from ..domain import AcquisitionRequest
+from ..domain import AcquisitionRequest, Attempt
 from ..infrastructure.documents import is_readable_pdf
+from .models import SourceFailure, SourceSuccess
 
 Handler = tuple[str, Callable[[str, Path, dict[str, Any]], dict[str, Any] | None]]
-_HTTP_RACE = frozenset(
-    {
-        "Unpaywall",
-        "OpenAlexOA",
-        "SemanticScholar",
-        "OpenAIRE",
-        "DOAJ",
-        "EuropePMC",
-        "CORE",
-        "PMC",
-        "OpenAlexContent",
-    }
-)
 
 
 class Source(Protocol):
+    def prepare(self, config: dict[str, Any]) -> None: ...
+
+    def close(self) -> None: ...
+
     def supports(self, identifier: str, request: AcquisitionRequest) -> bool: ...
 
     def acquire(
@@ -36,7 +28,7 @@ class Source(Protocol):
         request: AcquisitionRequest,
         work_dir: Path,
         config: dict[str, Any],
-    ) -> dict[str, Any] | None: ...
+    ) -> SourceSuccess | SourceFailure: ...
 
 
 def _broker_source(
@@ -133,7 +125,7 @@ def _plan(
         institutional.append(("WebVPN", try_vpnsci))
     if config.get("ezproxy_enabled"):
         institutional.append(("EZProxy", try_ezproxy))
-    if institutional or config.get("elsevier_api_key"):
+    if institutional:
         institutional.extend(
             [
                 ("SessionBroker", _broker_source),
@@ -158,7 +150,7 @@ def _attempt(
     work_dir: Path,
     config: dict[str, Any],
     index: int,
-) -> tuple[dict[str, Any] | None, dict[str, str]]:
+) -> tuple[SourceSuccess | None, Attempt]:
     path = work_dir / f"source-{index}.pdf"
     browser_diagnostics = None
     if label.endswith("Browser") and label != "InstitutionalBrowser":
@@ -169,48 +161,90 @@ def _attempt(
     try:
         outcome = fn(doi, path, dict(config))
     except Exception as exc:  # noqa: BLE001 - site failures must not prevent the next source
-        return None, {
-            "source": label,
-            "status": "failed",
-            "reason": "network_error",
-            "message": str(exc),
-        }
+        import httpx
+        import requests
+
+        network_error = isinstance(
+            exc,
+            (
+                httpx.RequestError,
+                requests.RequestException,
+                TimeoutError,
+                ConnectionError,
+            ),
+        )
+        return None, Attempt(
+            source=label,
+            status="failed",
+            reason="network_error" if network_error else "internal_error",
+            message=str(exc),
+        )
     if isinstance(outcome, dict) and outcome.get("success") is not False:
         candidate = Path(outcome.get("file") or outcome.get("path") or path)
         if is_readable_pdf(candidate):
             return (
-                {
-                    "path": candidate,
-                    "source": outcome.get("source") or label,
-                    "url": outcome.get("url"),
-                    "metadata": outcome.get("metadata") or {},
-                },
-                {"source": label, "status": "succeeded"},
+                SourceSuccess(
+                    path=candidate,
+                    source=outcome.get("source") or label,
+                    url=outcome.get("url"),
+                    metadata=outcome.get("metadata") or {},
+                ),
+                Attempt(source=label, status="succeeded"),
             )
     if outcome is None and browser_diagnostics is not None:
         error_type, action = browser_diagnostics.get_last_error()
         if error_type:
-            outcome = {"success": False, "error_type": error_type, "message": action}
+            outcome = {"success": False, "error_type": error_type, "action": action}
     reason = (
         outcome.get("error_type") or outcome.get("reason") or "not_found"
         if isinstance(outcome, dict)
         else "not_found"
     )
     message = (
-        str(outcome.get("error") or outcome.get("message") or "")
+        str(
+            outcome.get("error")
+            or outcome.get("message")
+            or (outcome.get("reason") if outcome.get("error_type") else "")
+            or ""
+        )
         if isinstance(outcome, dict)
         else ""
     )
-    return None, {
-        "source": label,
-        "status": "failed",
-        "reason": str(reason),
-        "message": message,
-    }
+    return None, Attempt(
+        source=label,
+        status="failed",
+        reason=str(reason),
+        message=message,
+        action=str(outcome.get("action") or "") if isinstance(outcome, dict) else "",
+    )
 
 
 class LegacySources:
-    """One scheduler for source handlers; browser operations remain on the job thread."""
+    """Try source handlers in policy order until a readable PDF is found."""
+
+    def prepare(self, config: dict[str, Any]) -> None:
+        if str(config.get("browser_backend", "")).strip().lower() != "cdp":
+            return
+        from scansci_pdf.browser_backend import CDPSetupError, probe_cdp
+
+        try:
+            probe_cdp(config)
+        except Exception as exc:  # noqa: BLE001 - optional preflight must not block jobs
+            if isinstance(exc, CDPSetupError):
+                reason = str(exc)
+            elif isinstance(exc, TimeoutError) or type(exc).__name__ == "TimeoutError":
+                reason = "connection timeout"
+            else:
+                reason = "connection unavailable"
+            logging.getLogger(__name__).warning(
+                "CDP startup preflight failed (%s); browser requests will retry on demand",
+                reason,
+            )
+
+    def close(self) -> None:
+        from scansci_pdf.browser_engine import close_shared_browser
+
+        close_shared_browser()
 
     def supports(self, identifier: str, request: AcquisitionRequest) -> bool:
         return identifier.startswith("10.") or bool(self._arxiv(identifier))
@@ -227,7 +261,7 @@ class LegacySources:
         request: AcquisitionRequest,
         work_dir: Path,
         config: dict[str, Any],
-    ) -> dict[str, Any] | None:
+    ) -> SourceSuccess | SourceFailure:
         if self._arxiv(identifier):
             from scansci_pdf.sources.arxiv import download_arxiv_pdf
 
@@ -241,89 +275,35 @@ class LegacySources:
             handlers = [("arXiv", arxiv)]
         else:
             handlers = _plan(identifier, request, config)
-        attempts: list[dict[str, str]] = []
-        i = 0
-        while i < len(handlers):
-            label, fn = handlers[i]
-            # Only HTTP-only OA handlers may race; all browser/session handlers
-            # run on this owning worker thread, including publisher strategies.
-            if (
-                request.policy == "fastest"
-                and config.get("parallel_sources", True)
-                and label in _HTTP_RACE
-            ):
-                lane: list[tuple[int, Handler]] = []
-                while i < len(handlers) and handlers[i][0] in _HTTP_RACE:
-                    lane.append((i, handlers[i]))
-                    i += 1
-                if len(lane) > 1:
-                    with ThreadPoolExecutor(max_workers=min(3, len(lane))) as pool:
-                        remaining = iter(lane)
-
-                        def start(entry):
-                            pos, (name, handler) = entry
-                            return pool.submit(
-                                _attempt,
-                                name,
-                                handler,
-                                identifier,
-                                work_dir,
-                                config,
-                                pos,
-                            )
-
-                        tasks = {
-                            start(next(remaining)) for _ in range(min(3, len(lane)))
-                        }
-                        found = None
-                        while tasks:
-                            done, tasks = wait(tasks, return_when=FIRST_COMPLETED)
-                            for future in done:
-                                result, attempt = future.result()
-                                attempts.append(attempt)
-                                if result and found is None:
-                                    found = result
-                            if found:
-                                # Do not start more providers after success. In-flight HTTP
-                                # calls finish before their temporary work directory is removed.
-                                for future in tasks:
-                                    future.cancel()
-                                for future in tasks:
-                                    if not future.cancelled():
-                                        _, attempt = future.result()
-                                        attempts.append(attempt)
-                                return {**found, "attempts": attempts}
-                            for _ in done:
-                                entry = next(remaining, None)
-                                if entry is not None:
-                                    tasks.add(start(entry))
-                    continue
-                label, fn = lane[0][1]
-                index = lane[0][0]
-            else:
-                index = i
-                i += 1
+        attempts: list[Attempt] = []
+        for index, (label, fn) in enumerate(handlers):
             result, attempt = _attempt(label, fn, identifier, work_dir, config, index)
             attempts.append(attempt)
             if result:
-                return {**result, "attempts": attempts}
-        reason = (
-            "cloudflare_blocked"
-            if any(item["reason"] == "cloudflare_blocked" for item in attempts)
-            else next(
-                (
-                    item["reason"]
-                    for item in reversed(attempts)
-                    if item["reason"] not in ("not_found", "")
-                ),
-                "not_found",
-            )
+                result.attempts = attempts
+                return result
+        selected = next(
+            (item for item in attempts if item.reason == "cloudflare_blocked"), None
         )
+        if selected is None:
+            selected = next(
+                (
+                    item
+                    for item in reversed(attempts)
+                    if item.reason not in ("not_found", "")
+                ),
+                None,
+            )
+        reason = selected.reason if selected else "not_found"
         reason = {
             "paywall": "auth_required",
             "login_required": "auth_required",
             "cloudflare_blocked": "network_error",
             "browser_unavailable": "unsupported",
-            "config_needed": "unsupported",
         }.get(reason, reason)
-        return {"success": False, "attempts": attempts, "reason": reason}
+        return SourceFailure(
+            reason=reason,
+            message=selected.message if selected else "",
+            action=selected.action if selected else "",
+            attempts=attempts,
+        )

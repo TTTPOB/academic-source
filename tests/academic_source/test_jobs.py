@@ -1,6 +1,6 @@
 """User-visible progress, bounded waiting, and optional-export retry semantics."""
 
-from threading import Event, get_ident
+from threading import Event, Thread, get_ident
 
 from academic_source.domain import AcquisitionRequest
 from academic_source.services.application import Application
@@ -8,47 +8,32 @@ from academic_source.settings import Settings
 from tests.academic_source.helpers import RecordingSource
 
 
-def test_cdp_preflight_once_offline_does_not_block_http_job(
-    tmp_path, monkeypatch, caplog
-):
-    from scansci_pdf import browser_backend
+def test_source_lifecycle_stays_on_worker_thread(tmp_path):
+    class TrackedSource(RecordingSource):
+        def __init__(self):
+            super().__init__()
+            self.threads = []
 
-    calls = []
-    main_thread = get_ident()
+        def prepare(self, config):
+            self.threads.append(get_ident())
 
-    def offline(config):
-        calls.append(get_ident())
-        raise ConnectionError("endpoint-token=secret")
+        def acquire(self, *args):
+            self.threads.append(get_ident())
+            return super().acquire(*args)
 
-    monkeypatch.setattr(browser_backend, "probe_cdp", offline)
-    source = RecordingSource()
-    application = Application(
-        Settings(data_dir=tmp_path, source_config={"browser_backend": "cdp"}),
-        source=source,
+        def close(self):
+            self.threads.append(get_ident())
+
+    source = TrackedSource()
+    application = Application(Settings(data_dir=tmp_path), source=source)
+    job = application.wait(
+        application.submit(AcquisitionRequest(identifiers=["10.1234/test"])).id, 5
     )
-    try:
-        request = AcquisitionRequest(identifiers=["10.1234/first", "10.1234/second"])
-        job = application.wait(application.submit(request).id, 5)
-        assert job.status == "succeeded"
-        assert source.calls == ["10.1234/first", "10.1234/second"]
-        assert len(calls) == 1 and calls[0] != main_thread
-        assert "CDP startup preflight failed" in caplog.text
-        assert "endpoint-token" not in caplog.text
-    finally:
-        application.close()
-
-
-def test_cdp_preflight_reports_actionable_configuration_error(monkeypatch, caplog):
-    from scansci_pdf import browser_backend
-
-    def invalid(config):
-        raise browser_backend.CDPSetupError(
-            "browser_backend=cdp requires source_config.browser_cdp_url"
-        )
-
-    monkeypatch.setattr(browser_backend, "probe_cdp", invalid)
-    Application._preflight_cdp({})
-    assert "requires source_config.browser_cdp_url" in caplog.text
+    application.close()
+    assert job.status == "succeeded"
+    assert len(source.threads) >= 3
+    assert set(source.threads) == {source.threads[0]}
+    assert source.threads[0] != get_ident()
 
 
 def test_running_batch_exposes_completed_items_before_final_result(tmp_path):
@@ -77,6 +62,35 @@ def test_running_batch_exposes_completed_items_before_final_result(tmp_path):
     finally:
         release.set()
         application.close()
+
+
+def test_close_drains_accepted_jobs_before_worker_cleanup(tmp_path):
+    started, release = Event(), Event()
+
+    class BlockingSource(RecordingSource):
+        def acquire(self, identifier, request, work_dir, config):
+            if identifier.endswith("first"):
+                started.set()
+                assert release.wait(5)
+            return super().acquire(identifier, request, work_dir, config)
+
+    source = BlockingSource()
+    application = Application(Settings(data_dir=tmp_path), source=source)
+    first = application.submit(AcquisitionRequest(identifiers=["10.1234/first"]))
+    assert started.wait(5)
+    second = application.submit(AcquisitionRequest(identifiers=["10.1234/second"]))
+    closed = Thread(target=application.close)
+    closed.start()
+    try:
+        release.set()
+        closed.join(timeout=5)
+        assert not closed.is_alive()
+        assert application.job(first.id).status == "succeeded"
+        assert application.job(second.id).status == "succeeded"
+        assert source.calls == ["10.1234/first", "10.1234/second"]
+    finally:
+        release.set()
+        closed.join(timeout=5)
 
 
 def test_failed_optional_export_retries_without_redownloading_pdf(
