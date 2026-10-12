@@ -59,8 +59,15 @@ def search(query: str, limit: int = 10) -> list[dict[str, Any]]:
         "abstract",
         "url",
         "source",
+        "type",
+        "is_retracted",
+        "publication_date",
     )
     return [
-        {key: item[key] for key in fields if key in item}
+        {
+            key: item[key]
+            for key in fields
+            if key in item and item[key] not in (None, "", [], {})
+        }
         for item in search_papers(query.strip(), limit=limit)
     ]

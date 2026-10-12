@@ -5,7 +5,7 @@ from io import BytesIO
 import pytest
 
 from academic_source.infrastructure.storage import Store
-from academic_source.services.discovery import normalize_identifier, resolve, search
+from academic_source.services.discovery import normalize_identifier, search
 from academic_source.services.lists import parse_list
 from academic_source.settings import Settings
 
@@ -110,4 +110,3 @@ def test_discovery_validates_before_search_and_keeps_public_abstract(monkeypatch
         normalize_identifier("https://arxiv.org/pdf/math-ph/9901001v4.pdf")
         == "arxiv:math-ph/9901001v4"
     )
-    assert resolve("doi: 10.1234/known", {})["identifier"] == "10.1234/known"

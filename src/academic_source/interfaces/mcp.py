@@ -60,7 +60,7 @@ def create_mcp(application: Application, *, stdio: bool = False) -> FastMCP:
 
     @mcp.tool()
     async def search(query: str, limit: int = 10) -> list[dict[str, Any]]:
-        """Search for scholarly publications."""
+        """Search OpenAlex for papers, excluding explicit non-paper types and retracted works."""
         return await to_thread.run_sync(partial(application.search, query, limit))
 
     @mcp.tool()

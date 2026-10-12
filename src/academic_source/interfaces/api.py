@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from academic_source.domain import AcquisitionRequest
 from academic_source.interfaces.presentation import job_data
+from scansci_pdf.search import DiscoveryError
 
 if TYPE_CHECKING:
     from academic_source.services.application import Application
@@ -37,6 +38,8 @@ def create_router(application: Application) -> APIRouter:
             return application.search(query, limit)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except DiscoveryError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @api.post("/resolve")
     def resolve(payload: ResolveInput) -> dict[str, Any]:
@@ -44,6 +47,8 @@ def create_router(application: Application) -> APIRouter:
             return application.resolve(payload.identifier)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except DiscoveryError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @api.post("/uploads", status_code=201)
     def upload(file: Annotated[UploadFile, File()]) -> dict[str, Any]:

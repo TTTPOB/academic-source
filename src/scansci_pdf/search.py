@@ -1,251 +1,248 @@
-"""Paper search via OpenAlex, Semantic Scholar, and Crossref."""
+"""Paper search and title matching through OpenAlex."""
 
 from __future__ import annotations
 
-import logging
-import tempfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import json
+import re
+import unicodedata
+from contextlib import nullcontext
+from datetime import date
+from difflib import SequenceMatcher
 from typing import Any
 
 import requests
 
-from .config import load_config
+from .identifiers import normalize_doi
 
-logger = logging.getLogger(__name__)
+_SEARCH_TIMEOUT = 30
+_USER_AGENT = "academic-source/0.1 (https://github.com/TTTPOB/academic-source)"
+_MAX_LIMIT = 100
+_MAX_CANDIDATES = 200  # OpenAlex's per-page maximum; never paginate to fill a limit.
+_NON_PAPER_TYPES = {
+    "peer-review",
+    "component",
+    "supplementary-materials",
+    "paratext",
+    "reference-entry",
+    "dataset",
+    "erratum",
+    "correction",
+    "retraction",
+    "conference-abstract",
+    "book",
+    "book-chapter",
+    "book-section",
+    "book-part",
+    "book-series",
+    "book-set",
+    "reference-book",
+    "monograph",
+    "edited-book",
+    "proceedings",
+    "standard",
+    "grant",
+}
+_PARATEXT_TITLES = {
+    "foreword",
+    "manuscript submission guideline",
+    "manuscript submission guidelines",
+    "instructions for authors",
+    "author guidelines",
+    "editorial board",
+    "organizing committee",
+}
 
-_SEARCH_TIMEOUT = 30  # seconds, longer than default because these are public APIs
-_USER_AGENT = "scansci-pdf/1.5 (https://github.com/Rimagination/scansci-pdf)"
+
+class DiscoveryError(RuntimeError):
+    """An upstream discovery request failed, rather than returning no matches."""
 
 
 def _plain_session() -> requests.Session:
-    """A requests session without proxy, for public academic APIs."""
-    s = requests.Session()
-    s.headers.update({"User-Agent": _USER_AGENT, "mailto": "scansci-pdf@example.invalid"})
-    return s
+    session = requests.Session()
+    session.headers.update({"User-Agent": _USER_AGENT})
+    return session
+
+
+def _openalex_get(
+    entity: str,
+    params: dict[str, Any],
+    config: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Close owned sessions/responses, but leave the shared configured session alive."""
+    if config is not None:
+        from .network import _get_session, request_timeout
+
+        context = nullcontext(_get_session(config))
+        timeout = request_timeout(config)
+        if config.get("openalex_api_key"):
+            params = {**params, "api_key": config["openalex_api_key"]}
+    else:
+        context = _plain_session()
+        timeout = _SEARCH_TIMEOUT
+    try:
+        with (
+            context as session,
+            session.get(
+                f"https://api.openalex.org/{entity}",
+                params=params,
+                timeout=timeout,
+            ) as response,
+        ):
+            response.raise_for_status()
+            data = response.json()
+    except json.JSONDecodeError as exc:
+        raise DiscoveryError("OpenAlex returned invalid JSON") from exc
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else "unknown"
+        raise DiscoveryError(f"OpenAlex request failed (HTTP {status})") from exc
+    except requests.RequestException as exc:
+        raise DiscoveryError("OpenAlex request failed (network error)") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("results"), list):
+        raise DiscoveryError("OpenAlex returned an invalid results payload")
+    return data["results"]
 
 
 def _reconstruct_abstract(inverted_index: dict | None) -> str:
     if not isinstance(inverted_index, dict):
         return ""
-    word_positions = []
-    for word, positions in inverted_index.items():
-        if isinstance(positions, list):
-            for pos in positions:
-                if isinstance(pos, int):
-                    word_positions.append((pos, word))
+    word_positions = [
+        (position, word)
+        for word, positions in inverted_index.items()
+        if isinstance(positions, list)
+        for position in positions
+        if isinstance(position, int)
+    ]
     word_positions.sort()
-    return " ".join(w for _, w in word_positions)[:500]
+    return " ".join(word for _, word in word_positions)[:500]
 
 
-def _search_openalex(
-    query: str, limit: int = 10,
-    year_from: int | None = None, year_to: int | None = None,
-    sort: str | None = None,
-) -> list[dict[str, Any]]:
-    try:
-        session = _plain_session()
-        params: dict[str, Any] = {"search": query, "per_page": limit}
-        filters = []
-        if year_from or year_to:
-            y_from = year_from or 1900
-            y_to = year_to or 2026
-            filters.append(f"publication_year:{y_from}-{y_to}")
-        if filters:
-            params["filter"] = ",".join(filters)
-        if sort:
-            sort_key = sort if ":" in sort else f"{sort}:desc"
-            params["sort"] = sort_key
-        resp = session.get(
-            "https://api.openalex.org/works",
-            params=params,
-            timeout=_SEARCH_TIMEOUT,
-        )
-        if resp.status_code != 200:
-            return []
-        data = resp.json()
-    except Exception:
-        return []
-    return _parse_openalex_works(data.get("results", []))
+def _normalized_title(title: str) -> str:
+    return " ".join(re.findall(r"\w+", unicodedata.normalize("NFKC", title).casefold()))
 
 
 def _parse_openalex_works(works: list[dict]) -> list[dict[str, Any]]:
-    """Parse OpenAlex works into unified result format."""
+    """Keep source order and useful evidence; missing dates have one representation."""
     results = []
     for work in works:
-        doi_raw = work.get("doi", "") or ""
-        doi = doi_raw.replace("https://doi.org/", "") if doi_raw else ""
+        doi = normalize_doi(work.get("doi") or "")
         if not doi:
             continue
-        authors = [
-            a.get("author", {}).get("display_name", "")
-            for a in (work.get("authorships") or [])[:5]
-        ]
+        raw_date = work.get("publication_date")
+        publication_date = None
+        if raw_date:
+            try:
+                publication_date = date.fromisoformat(raw_date).isoformat()
+            except ValueError:
+                pass
+        year = work.get("publication_year")
+        if not isinstance(year, int):
+            year = int(year) if isinstance(year, str) and year.isdigit() else None
         oa = work.get("open_access") or {}
         best_oa = work.get("best_oa_location") or {}
-        is_oa = oa.get("is_oa", False)
-        oa_url = best_oa.get("pdf_url") or best_oa.get("landing_page_url") or oa.get("oa_url") or ""
-        results.append({
-            "title": work.get("title", ""),
-            "doi": doi,
-            "url": work.get("id", ""),
-            "authors": authors,
-            "year": work.get("publication_year", ""),
-            "cited_by_count": work.get("cited_by_count", 0),
-            "abstract": _reconstruct_abstract(work.get("abstract_inverted_index")),
-            "is_oa": is_oa,
-            "oa_url": oa_url,
-            "source": "openalex",
-        })
+        results.append(
+            {
+                "title": work.get("title") or "",
+                "doi": doi,
+                "url": work.get("id") or "",
+                "authors": [
+                    entry["author"]["display_name"]
+                    for entry in (work.get("authorships") or [])[:5]
+                    if (entry.get("author") or {}).get("display_name")
+                ],
+                "year": year,
+                "publication_date": publication_date,
+                "cited_by_count": work.get("cited_by_count") or 0,
+                "abstract": _reconstruct_abstract(work.get("abstract_inverted_index")),
+                "is_oa": oa.get("is_oa", False),
+                "oa_url": best_oa.get("pdf_url")
+                or best_oa.get("landing_page_url")
+                or oa.get("oa_url")
+                or "",
+                "source": "openalex",
+                "type": work.get("type"),
+                "is_retracted": work.get("is_retracted"),
+            }
+        )
     return results
 
 
+def _paper_results(works: list[dict], limit: int) -> list[dict[str, Any]]:
+    results = []
+    seen = set()
+    for item in _parse_openalex_works(works):
+        if item["type"] in _NON_PAPER_TYPES or item["is_retracted"] is True:
+            continue
+        if _normalized_title(item["title"]) in _PARATEXT_TITLES:
+            continue
+        doi_key = item["doi"].casefold()
+        if doi_key in seen:
+            continue
+        seen.add(doi_key)
+        results.append(item)
+        if len(results) == limit:
+            break
+    return results
+
+
+def _work_params(
+    limit: int,
+    year_from: int | None,
+    year_to: int | None,
+    sort: str | None,
+) -> dict[str, Any]:
+    if not 1 <= limit <= _MAX_LIMIT:
+        raise ValueError("Search limit must be between 1 and 100")
+    if year_from is not None and year_to is not None and year_from > year_to:
+        raise ValueError("year_from must not exceed year_to")
+    params: dict[str, Any] = {"per_page": min(_MAX_CANDIDATES, max(30, limit * 3))}
+    filters = []
+    if year_from is not None:
+        filters.append(f"from_publication_date:{year_from:04d}-01-01")
+    if year_to is not None:
+        filters.append(f"to_publication_date:{year_to:04d}-12-31")
+    if filters:
+        params["filter"] = ",".join(filters)
+    if sort:
+        key, _, direction = sort.partition(":")
+        direction = direction or "desc"
+        if key not in {"cited_by_count", "publication_date"} or direction not in {
+            "asc",
+            "desc",
+        }:
+            raise ValueError(
+                "Sort must be cited_by_count or publication_date, optionally :asc or :desc"
+            )
+        params["sort"] = f"{key}:{direction}"
+    return params
+
+
 def _lookup_author_id(name: str) -> tuple[str | None, str, int, int]:
-    """Resolve an author name to an OpenAlex author ID.
-
-    Returns (author_id, display_name, works_count, cited_by_count).
-    author_id is None if no match found.
-
-    Matching strategy:
-    1. Exact case-insensitive name match
-    2. If none, pick by highest works_count
-    """
-    try:
-        session = _plain_session()
-        resp = session.get(
-            "https://api.openalex.org/authors",
-            params={"search": name, "per_page": 10},
-            timeout=_SEARCH_TIMEOUT,
-        )
-        if resp.status_code != 200:
-            return None, "", 0, 0
-        data = resp.json()
-    except Exception:
-        return None, "", 0, 0
-
-    candidates = data.get("results", [])
+    candidates = _openalex_get("authors", {"search": name, "per_page": 10})
     if not candidates:
         return None, "", 0, 0
-
-    name_lower = name.lower().strip()
-    # Generate name variants (handle Chinese/Western name order)
-    name_parts = name_lower.split()
-    name_variants = {name_lower}
-    if len(name_parts) == 2:
-        # "Fang Jingyun" ↔ "Jingyun Fang"
-        name_variants.add(f"{name_parts[1]} {name_parts[0]}")
-    elif len(name_parts) >= 3:
-        # Try last-name-first ordering for 3+ word names
-        name_variants.add(f"{name_parts[-1]} {' '.join(name_parts[:-1])}")
-
-    # First: try exact case-insensitive name match (including variants)
-    exact_matches = [
-        a for a in candidates
-        if (a.get("display_name") or "").lower().strip() in name_variants
+    parts = name.casefold().split()
+    variants = {" ".join(parts)}
+    if len(parts) >= 2:
+        variants.add(f"{parts[-1]} {' '.join(parts[:-1])}")
+    matches = [
+        author
+        for author in candidates
+        if (author.get("display_name") or "").casefold().strip() in variants
     ]
-    if exact_matches:
-        best = max(
-            exact_matches,
-            key=lambda a: (a.get("cited_by_count", 0), a.get("works_count", 0)),
-        )
-    else:
-        # Fallback: highest cited_by_count (prefer authoritative consolidated profiles)
-        best = max(
-            candidates,
-            key=lambda a: (a.get("cited_by_count", 0), a.get("works_count", 0)),
-        )
-
-    author_id = best.get("id", "").split("/")[-1] if best.get("id") else ""
-    display = best.get("display_name", name)
-    works = best.get("works_count", 0)
-    cited = best.get("cited_by_count", 0)
-    return (author_id if author_id else None, display, works, cited)
-
-
-def _search_openalex_by_author(
-    author_id: str,
-    limit: int = 10,
-    year_from: int | None = None,
-    year_to: int | None = None,
-    sort: str | None = None,
-) -> list[dict[str, Any]]:
-    """Search OpenAlex works by author ID."""
-    try:
-        session = _plain_session()
-        filters = [f"authorships.author.id:{author_id}"]
-        if year_from or year_to:
-            y_from = year_from or 1900
-            y_to = year_to or 2026
-            filters.append(f"publication_year:{y_from}-{y_to}")
-
-        params: dict[str, Any] = {
-            "filter": ",".join(filters),
-            "per_page": limit,
-        }
-        if sort:
-            sort_key = sort if ":" in sort else f"{sort}:desc"
-            params["sort"] = sort_key
-
-        resp = session.get(
-            "https://api.openalex.org/works",
-            params=params,
-            timeout=_SEARCH_TIMEOUT,
-        )
-        if resp.status_code != 200:
-            return []
-        data = resp.json()
-    except Exception:
-        return []
-    return _parse_openalex_works(data.get("results", []))
-
-
-def search_papers_v2(
-    query: str = "",
-    limit: int = 10,
-    year_from: int | None = None,
-    year_to: int | None = None,
-    sort: str | None = None,
-    *,
-    author: str | None = None,
-    author_id: str | None = None,
-) -> list[dict[str, Any]]:
-    """Keyword search via ScanSci Find's 13-source discovery when available.
-
-    Falls back transparently to the built-in three-source ``search_papers``
-    when the scansci-find CLI is missing or the discovery call fails. Author
-    search always stays on the built-in OpenAlex path (ScanSci Find exposes
-    no author-specific endpoint through its CLI).
-
-    Result fields are unchanged (doi/title/authors/year/cited_by_count/is_oa/
-    oa_url/source) so existing callers are unaffected.
-    """
-    if author_id or author:
-        return search_papers(
-            query, limit=limit, year_from=year_from, year_to=year_to, sort=sort,
-            author=author, author_id=author_id,
-        )
-    if not query:
-        return []
-
-    try:
-        from .discovery import find_cli_available, search as discovery_search, to_legacy_results
-        if not find_cli_available():
-            return search_papers(query, limit=limit, year_from=year_from, year_to=year_to, sort=sort)
-        with tempfile.TemporaryDirectory(prefix="scansci_find_") as tmp:
-            payload = discovery_search(
-                query, tmp, depth="quick", limit=max(limit * 3, 30),
-                year_from=year_from, year_to=year_to,
-            )
-            results = to_legacy_results(payload.get("candidates") or [], limit=limit * 3)
-        logger.info("search: discovery engine returned %d results", len(results))
-    except Exception as exc:  # noqa: BLE001 - degrade gracefully to 3-source search
-        logger.warning("search: discovery engine failed (%s), falling back to 3-source", exc)
-        return search_papers(query, limit=limit, year_from=year_from, year_to=year_to, sort=sort)
-
-    if sort == "cited_by_count":
-        results.sort(key=lambda x: x.get("cited_by_count", 0), reverse=True)
-    elif sort == "publication_date":
-        results.sort(key=lambda x: x.get("year", 0), reverse=True)
-    return results[:limit]
+    best = max(
+        matches or candidates,
+        key=lambda author: (
+            author.get("cited_by_count") or 0,
+            author.get("works_count") or 0,
+        ),
+    )
+    author_id = (best.get("id") or "").rsplit("/", 1)[-1]
+    return (
+        author_id or None,
+        best.get("display_name") or name,
+        best.get("works_count") or 0,
+        best.get("cited_by_count") or 0,
+    )
 
 
 def search_papers(
@@ -258,267 +255,65 @@ def search_papers(
     author: str | None = None,
     author_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Search papers from OpenAlex + Semantic Scholar + Crossref in parallel.
+    """Search one bounded OpenAlex page, filter non-papers, then apply limit.
 
-    When `author` or `author_id` is provided, searches by author instead of keyword.
-    - `author`: resolves author name → OpenAlex author ID → works
-    - `author_id`: directly searches works by OpenAlex author ID
+    Default order is OpenAlex relevance; explicit date/citation sort stays upstream.
+    Author searches retain the existing name-to-profile matching behavior.
     """
-    # --- Author-based search (fast path) ---
-    if author_id or author:
-        matched_name = None
-        matched_works = 0
-        matched_cited = 0
-        if author and not author_id:
-            resolved, matched_name, matched_works, matched_cited = _lookup_author_id(author)
-            if not resolved:
-                return []
-            author_id = resolved
-
-        if author_id:
-            results = _search_openalex_by_author(
-                author_id, limit=limit,
-                year_from=year_from, year_to=year_to, sort=sort,
-            )
-            # Attach author match metadata to first result
-            if results and (matched_name or author):
-                results[0]["_author_match"] = {
-                    "name": matched_name or author or "",
-                    "id": author_id,
-                    "works_count": matched_works,
-                    "cited_by_count": matched_cited,
-                }
-            return results
-
-    # --- Keyword-based search (existing parallel path) ---
-    if not query:
-        return []
-
-    all_results: list[dict[str, Any]] = []
-    per_source = max(5, limit)
-
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        futures = {
-            pool.submit(_search_openalex, query, per_source, year_from, year_to, sort): "openalex",
-            pool.submit(_search_semantic_scholar, query, per_source, year_from, year_to): "semantic_scholar",
-            pool.submit(_search_crossref, query, per_source, year_from, year_to): "crossref",
-        }
-        for future in as_completed(futures, timeout=30):
-            try:
-                all_results.extend(future.result())
-            except Exception:
-                pass
-
-    # Deduplicate by DOI (prefer entry with more info)
-    seen: dict[str, dict[str, Any]] = {}
-    for r in all_results:
-        doi = r.get("doi", "").lower()
-        if not doi:
-            continue
-        if doi not in seen:
-            seen[doi] = r
-        else:
-            existing = seen[doi]
-            # Merge: keep fields from whichever entry has more data
-            if not existing.get("abstract") and r.get("abstract"):
-                existing["abstract"] = r["abstract"]
-            if not existing.get("is_oa") and r.get("is_oa"):
-                existing["is_oa"] = True
-                existing["oa_url"] = r.get("oa_url", "")
-            if r.get("cited_by_count", 0) > existing.get("cited_by_count", 0):
-                existing["cited_by_count"] = r["cited_by_count"]
-            existing["source"] = existing.get("source", "") + "+" + r.get("source", "")
-
-    # Sort by relevance or citations
-    merged = list(seen.values())
-    if sort == "cited_by_count":
-        merged.sort(key=lambda x: x.get("cited_by_count", 0), reverse=True)
-    elif sort == "publication_date":
-        merged.sort(key=lambda x: x.get("year", 0), reverse=True)
-
-    return merged[:limit]
-
-
-def _search_semantic_scholar(
-    query: str, limit: int = 10,
-    year_from: int | None = None, year_to: int | None = None,
-) -> list[dict[str, Any]]:
-    import time
-    try:
-        session = _plain_session()
-        params: dict[str, Any] = {
-            "query": query,
-            "limit": limit,
-            "fields": "title,externalIds,authors,year,citationCount,abstract,isOpenAccess,openAccessPdf",
-        }
-        year_filter = []
-        if year_from:
-            year_filter.append(str(year_from))
-        if year_to:
-            year_filter.append(str(year_to))
-        if year_filter:
-            params["year"] = "-".join(year_filter) if len(year_filter) == 2 else year_filter[0]
-
-        for attempt in range(3):
-            resp = session.get(
-                "https://api.semanticscholar.org/graph/v1/paper/search",
-                params=params,
-                timeout=_SEARCH_TIMEOUT,
-            )
-            if resp.status_code == 200:
-                break
-            if resp.status_code == 429:
-                time.sleep(2 * (attempt + 1))
-                continue
+    params = _work_params(limit, year_from, year_to, sort)
+    author_match = None
+    if author and not author_id:
+        author_id, name, works, cited = _lookup_author_id(author)
+        if not author_id:
             return []
-        else:
-            return []
-        data = resp.json()
-    except Exception:
+        author_match = {
+            "name": name,
+            "id": author_id,
+            "works_count": works,
+            "cited_by_count": cited,
+        }
+    if author_id:
+        author_filter = f"authorships.author.id:{author_id}"
+        params["filter"] = ",".join(filter(None, [params.get("filter"), author_filter]))
+    elif query.strip():
+        params["search"] = query.strip()
+    else:
         return []
-
-    results = []
-    for paper in data.get("data", []):
-        ext_ids = paper.get("externalIds") or {}
-        doi = (ext_ids.get("DOI") or "").strip()
-        if not doi:
-            continue
-        authors = [a.get("name", "") for a in (paper.get("authors") or [])[:5]]
-        oa_info = paper.get("openAccessPdf") or {}
-        results.append({
-            "title": paper.get("title", ""),
-            "doi": doi,
-            "url": f"https://api.semanticscholar.org/DOI:{doi}",
-            "authors": authors,
-            "year": paper.get("year", ""),
-            "cited_by_count": paper.get("citationCount", 0),
-            "abstract": (paper.get("abstract") or "")[:500],
-            "is_oa": paper.get("isOpenAccess", False),
-            "oa_url": oa_info.get("url", ""),
-        })
+    results = _paper_results(_openalex_get("works", params), limit)
+    if results and author_match:
+        results[0]["_author_match"] = author_match
     return results
 
 
-def _search_crossref(
-    query: str, limit: int = 10,
-    year_from: int | None = None, year_to: int | None = None,
-) -> list[dict[str, Any]]:
-    try:
-        session = _plain_session()
-        params: dict[str, Any] = {
-            "query": query,
-            "rows": limit,
-            "select": "DOI,title,author,published-print,is-referenced-by-count,abstract,link,container-title",
-        }
-        filters = []
-        if year_from:
-            filters.append(f"from-pub-date:{year_from}")
-        if year_to:
-            filters.append(f"until-pub-date:{year_to}")
-        if filters:
-            params["filter"] = ",".join(filters)
-
-        resp = session.get(
-            "https://api.crossref.org/works",
-            params=params,
-            timeout=_SEARCH_TIMEOUT,
-        )
-        if resp.status_code != 200:
-            return []
-        data = resp.json()
-    except Exception:
-        return []
-
-    results = []
-    for item in data.get("message", {}).get("items", []):
-        doi = item.get("DOI", "")
-        if not doi:
-            continue
-        titles = item.get("title", [])
-        title = titles[0] if titles else ""
-        authors = []
-        for a in (item.get("author") or [])[:5]:
-            name = " ".join(filter(None, [a.get("given"), a.get("family")]))
-            if name:
-                authors.append(name)
-        # Year from published-print
-        pub_date = item.get("published-print", {}).get("date-parts", [[]])
-        year = pub_date[0][0] if pub_date and pub_date[0] else ""
-        # OA links
-        links = item.get("link", [])
-        oa_url = ""
-        for link in links:
-            if link.get("content-type") == "application/pdf":
-                oa_url = link.get("URL", "")
-                break
-        # Abstract (may contain HTML tags)
-        abstract = (item.get("abstract") or "")[:500]
-        if abstract:
-            import re
-            abstract = re.sub(r"<[^>]+>", "", abstract)
-        results.append({
-            "title": title,
-            "doi": doi,
-            "url": f"https://doi.org/{doi}",
-            "authors": authors,
-            "year": year,
-            "cited_by_count": item.get("is-referenced-by-count", 0),
-            "abstract": abstract,
-            "is_oa": bool(oa_url),
-            "oa_url": oa_url,
-        })
-    return results
+# Both Python entrypoints use the same source and error semantics.
+search_papers_v2 = search_papers
 
 
-def search_by_title(title: str, config: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    """Search OpenAlex by title and return best match with DOI."""
-    from difflib import SequenceMatcher
-    from .network import _get_session, request_timeout
-
-    if not title or len(title) < 10:
+def search_by_title(
+    title: str, config: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
+    """Return a sufficiently similar, unambiguous OpenAlex title match with a DOI."""
+    if not title or len(title.strip()) < 10:
         return None
-
-    if config is None:
-        config = load_config()
-
-    try:
-        session = _get_session(config)
-        resp = session.get(
-            "https://api.openalex.org/works",
-            params={"search": title, "per_page": 5},
-            timeout=request_timeout(config),
-        )
-        if resp.status_code != 200:
-            return None
-        data = resp.json()
-    except Exception:
-        return None
-
-    title_lower = title.lower().strip()
-    best = None
-    best_score = 0.0
-
-    for work in data.get("results", []):
-        result_title = (work.get("title") or "").lower().strip()
-        if not result_title:
+    works = _openalex_get("works", {"search": title, "per_page": 5}, config)
+    normalized = _normalized_title(title)
+    matches = []
+    for item in _parse_openalex_works(works):
+        if not item["title"]:
             continue
-        score = SequenceMatcher(None, title_lower, result_title).ratio()
-        if score > best_score:
-            best_score = score
-            doi_raw = work.get("doi", "") or ""
-            doi = doi_raw.replace("https://doi.org/", "") if doi_raw else ""
-            authors = [
-                a.get("author", {}).get("display_name", "")
-                for a in (work.get("authorships") or [])[:5]
-            ]
-            best = {
-                "title": work.get("title", ""),
-                "doi": doi,
-                "authors": authors,
-                "year": work.get("publication_year", ""),
-                "score": round(score, 3),
-            }
-
-    if best_score >= 0.75 and best and best.get("doi"):
-        return best
-    return None
+        score = SequenceMatcher(
+            None, normalized, _normalized_title(item["title"])
+        ).ratio()
+        matches.append((score, item))
+    if not matches:
+        return None
+    matches.sort(key=lambda match: match[0], reverse=True)
+    score, best = matches[0]
+    if score < 0.75:
+        return None
+    if any(
+        other_score == score and other["doi"].casefold() != best["doi"].casefold()
+        for other_score, other in matches[1:]
+    ):
+        return None
+    return {**best, "score": round(score, 3)}
