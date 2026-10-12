@@ -26,7 +26,7 @@ stdio MCP / CLI ────────────┴─> Application ─> Sou
 
 ## 检索与标识解析
 
-HTTP/MCP 的 search 通过 Application → services.discovery → scansci_pdf.search，只使用 OpenAlex。Python 的 search_papers 与 search_papers_v2 共用同一实现。默认源内相关性顺序不做本地重排；现有 Python 引用数/发布日期排序（可选 asc/desc）和单边/双边年份范围直接传给 OpenAlex。公开 HTTP/MCP 参数仍为 query、limit。
+HTTP/MCP 的 search 通过 Application → services.discovery → scansci_pdf.search，只使用 OpenAlex。Python 入口为 search_papers，与公开服务共用本项目的单一检索实现。默认源内相关性顺序不做本地重排；现有 Python 引用数/发布日期排序（可选 asc/desc）和单边/双边年份范围直接传给 OpenAlex。公开 HTTP/MCP 参数仍为 query、limit。
 
 每次获取 min(200, max(30, limit × 3)) 条候选，不翻页；沿用带 DOI 的结果边界，按明确类型、撤稿状态和少量完整泛标题过滤后应用 limit（1–100）。保留综述、预印本、完整会议论文及未知类型，排除明确非论文对象和 is_retracted=true 的原文。结果投影保留 type、撤稿状态和有效 ISO 发布日期，缺值省略。空结果与来源故障分开：真实无命中为列表，预期网络/HTTP/JSON 故障为 DiscoveryError，HTTP 翻译为 502，MCP 使用 SDK 工具错误机制。
 

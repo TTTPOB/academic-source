@@ -285,10 +285,6 @@ def search_papers(
     return results
 
 
-# Both Python entrypoints use the same source and error semantics.
-search_papers_v2 = search_papers
-
-
 def search_by_title(
     title: str, config: dict[str, Any] | None = None
 ) -> dict[str, Any] | None:

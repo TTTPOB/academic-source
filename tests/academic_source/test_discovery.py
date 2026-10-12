@@ -57,7 +57,7 @@ def transport(monkeypatch):
 
 @pytest.mark.parametrize(
     "search",
-    [paper_search.search_papers, paper_search.search_papers_v2, discovery.search],
+    [paper_search.search_papers, discovery.search],
 )
 def test_order_type_filter_and_limit_are_observable_for_each_search_entrypoint(
     search,
