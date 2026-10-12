@@ -451,3 +451,136 @@ def test_openalex_content_reuses_metadata_without_another_query(monkeypatch, tmp
     assert isinstance(result, SourceSuccess)
     assert result.source == "OpenAlexContent"
     assert len(visited) == 2
+
+
+@pytest.mark.parametrize("source", ["Unpaywall", "OpenAlexOA", "EuropePMC"])
+def test_cdp_navigates_metadata_landing_and_reads_real_article_snapshot(
+    monkeypatch, tmp_path, source
+):
+    from academic_source.sources.oa_candidates import (
+        europepmc_candidates,
+        openalex_candidates,
+        unpaywall_candidates,
+    )
+    from scansci_pdf import browser_engine
+
+    landing = "https://repository.example/articles/42"
+    pdf = "https://repository.example/download?token=article-only"
+    if source == "Unpaywall":
+        candidates = unpaywall_candidates(
+            {
+                "best_oa_location": {
+                    "url_for_pdf": None,
+                    "url_for_landing_page": landing,
+                }
+            }
+        )
+    elif source == "OpenAlexOA":
+        candidates = openalex_candidates(
+            {"locations": [{"is_oa": True, "landing_page_url": landing}]}
+        )
+    else:
+        candidates = europepmc_candidates(
+            {
+                "resultList": {
+                    "result": [
+                        {
+                            "fullTextUrlList": {
+                                "fullTextUrl": [
+                                    {
+                                        "url": landing,
+                                        "documentStyle": "html",
+                                        "availability": "Free",
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            }
+        )
+
+    navigated = []
+    closed = []
+
+    class Page:
+        url = "about:blank"
+
+        def goto(self, url, **kwargs):
+            self.url = url
+            navigated.append(url)
+
+        def content(self):
+            if self.url == landing:
+                return '<html><meta name="citation_pdf_url" content="/download?token=article-only"></html>'
+            return "<html>Repository homepage</html>"
+
+    page = Page()
+    monkeypatch.setattr(
+        oa,
+        "discover",
+        lambda *args: iter([(candidates, Attempt(source=source, status="discovered"))]),
+    )
+    monkeypatch.setattr(
+        oa,
+        "fetch",
+        lambda *args, **kwargs: Response(landing, body=b"<html>reCAPTCHA</html>"),
+    )
+    monkeypatch.setattr(browser_engine, "create_tab", lambda *args, **kwargs: "owned")
+    monkeypatch.setattr(
+        browser_engine, "_resolve_tab", lambda tab: page if tab == "owned" else None
+    )
+    monkeypatch.setattr(
+        browser_engine, "close_tab", lambda tab, config: closed.append(tab)
+    )
+
+    def fetch_pdf(tab, url, path, config):
+        if url != pdf or page.url != landing:
+            return False
+        path.write_bytes(pdf_bytes())
+        return True
+
+    monkeypatch.setattr(browser_engine, "fetch_pdf_in_tab", fetch_pdf)
+    result = oa.acquire_oa("10.1234/paper", tmp_path, {"browser_backend": "cdp"})
+    assert isinstance(result, SourceSuccess)
+    assert result.url == pdf
+    assert landing in navigated
+    assert set(closed) == {"owned"}
+
+
+def test_landing_pdf_link_decodes_html_entities_without_changing_signed_query(
+    monkeypatch, tmp_path
+):
+    from academic_source.sources.oa_candidates import unpaywall_candidates
+
+    landing = "https://repository.example/articles/42"
+    pdf = (
+        "https://repository.example/article/file?type=printable&id=42&token=a%2Bb%2F%3D"
+    )
+    visited = []
+    candidates = unpaywall_candidates(
+        {"best_oa_location": {"url_for_landing_page": landing}}
+    )
+    monkeypatch.setattr(
+        oa,
+        "discover",
+        lambda *args: iter(
+            [(candidates, Attempt(source="Unpaywall", status="discovered"))]
+        ),
+    )
+
+    def fetch(url, config, **kwargs):
+        visited.append(url)
+        if url == landing:
+            return Response(
+                url,
+                body=b'<html><a href="/article/file?type=printable&amp;id=42&amp;token=a%2Bb%2F%3D">PDF</a></html>',
+            )
+        assert url == pdf
+        return Response(url, body=pdf_bytes())
+
+    monkeypatch.setattr(oa, "fetch", fetch)
+    result = oa.acquire_oa("10.1234/paper", tmp_path, {})
+    assert isinstance(result, SourceSuccess)
+    assert result.url == pdf
+    assert pdf in visited

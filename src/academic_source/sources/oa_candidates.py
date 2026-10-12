@@ -60,7 +60,7 @@ def expand_candidate(candidate: Candidate) -> list[Candidate]:
         landing = f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/"
         return [
             direct,
-            Candidate(direct.landing_url, candidate.source),
+            Candidate(direct.landing_url, candidate.source, direct.landing_url),
             Candidate(landing + "pdf/", candidate.source, landing),
         ]
     parsed = urlsplit(candidate.url)
@@ -84,7 +84,7 @@ def _location(pdf: Any, landing: Any, source: str) -> list[Candidate]:
     if isinstance(pdf, str) and pdf:
         candidates.append(Candidate(pdf, source, landing or ""))
     if isinstance(landing, str) and landing:
-        candidates.append(Candidate(landing, source))
+        candidates.append(Candidate(landing, source, landing))
     return candidates
 
 
@@ -176,7 +176,10 @@ def europepmc_candidates(payload: dict[str, Any]) -> list[Candidate]:
                 in {"free", "freepdf", "open access"}
                 or pmcid_from_location(url)
             ):
-                candidates.append(Candidate(url, "EuropePMC"))
+                landing = (
+                    url if str(entry.get("documentStyle", "")).lower() == "html" else ""
+                )
+                candidates.append(Candidate(url, "EuropePMC", landing))
     return candidates
 
 

@@ -137,6 +137,7 @@ def discover(doi: str, config: dict[str, Any]):
 
 
 def _html_candidates(html: str, base_url: str, source: str) -> list[Candidate]:
+    from html import unescape
     from urllib.parse import urljoin
 
     from bs4 import BeautifulSoup
@@ -151,7 +152,7 @@ def _html_candidates(html: str, base_url: str, source: str) -> list[Candidate]:
         )
     ]
     urls = [urljoin(base_url, url) for url in declared if url]
-    urls.extend(_extract_pdf_urls(html, base_url))
+    urls.extend(unescape(url) for url in _extract_pdf_urls(html, base_url))
     return [Candidate(url, source, base_url) for url in dict.fromkeys(urls)]
 
 
