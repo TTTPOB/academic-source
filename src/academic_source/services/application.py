@@ -11,7 +11,7 @@ from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from academic_source.domain import AcquisitionRequest, AcquisitionResult, Attempt, Job
@@ -79,8 +79,15 @@ class Application:
     def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         return discovery.search(query, limit, config=self._config())
 
-    def get_metadata(self, doi: str) -> dict[str, Any]:
-        return discovery.get_metadata(doi, self._config())
+    def get_metadata(
+        self,
+        id_type: Literal["doi", "arxiv"],
+        doi: str | None = None,
+        arxiv_id: str | None = None,
+    ) -> dict[str, Any]:
+        return discovery.get_metadata(
+            id_type, self._config(), doi=doi, arxiv_id=arxiv_id
+        )
 
     def parse_list(
         self, *, upload_id: str | None = None, text: str | None = None

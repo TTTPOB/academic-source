@@ -42,15 +42,28 @@ HTTP `GET /api/v1/search?query=...&limit=10` 与 MCP `search(query, limit)` 只�
 
 结果保留已有书目信息，以及可用的 OpenAlex `type`、`is_retracted` 和 ISO `publication_date`；缺失字段省略，false/0 仍保留。不承诺上游类型准确、覆盖所有编辑材料或消除短词/基因名称歧义。真实无命中返回 `[]`；OpenAlex 网络、HTTP 或 JSON 错误通过 HTTP 502 或 MCP 工具错误返回，不伪装无命中。
 
-HTTP `POST /api/v1/metadata`（`{"doi":"10.1234/example"}`）与 MCP `get_metadata(doi: str)` 只向 **Crossref** 查询一个 DOI 的书目、类型及关系元数据。输入接受裸 DOI、`doi:` 前缀和 `doi.org` URL，响应以规范化后的 `doi` 标识所查记录。所有状态均带 `metadata_source="crossref"`，说明本次查询来源。
+HTTP `POST /api/v1/metadata` 与 MCP `get_metadata(id_type="doi", doi="...")` / `get_metadata(id_type="arxiv", arxiv_id="...")` 按必填的 `id_type` 选择元数据来源：`doi` 查询 **Crossref**，`arxiv` 查询 **arXiv 原生 API**。请求示例：
 
-- `metadata_status=found`：找到对应 DOI 的 Crossref 注册记录，返回非空 `title/authors/year/type`，以及可用的 `relations/review_type/updates`。找到记录不保证字段齐全，也不保证 Crossref 覆盖所有 DOI 注册机构。关系中的父 DOI 不会取代当前 DOI。
-- `metadata_status=not_found`：Crossref 返回 404。`metadata_status=unavailable`：限流、网络、HTTP、JSON 或记录不匹配等失败，附简短 `metadata_error`。两者仍保留规范 DOI，但不能视为已取得元数据；意外内部错误不伪装成上游不可用。
-- 这不是通用标识解析器：标题、PMID、PMCID、ISBN 和普通 arXiv 标识不受支持（HTTP 400 / MCP 工具错误）。`10.48550/...` 等 arXiv DOI 仍按 DOI 查询 Crossref，可能返回 404，不自动转换成 arXiv 标识。
+```json
+{"id_type":"doi","doi":"10.1234/example"}
+```
+
+```json
+{"id_type":"arxiv","arxiv_id":"1706.03762v1"}
+```
+
+请求只提供与 `id_type` 对应的 `doi` 或 `arxiv_id`；缺失、错配或同时提供两种 ID 会被拒绝。所有响应均返回 `id_type`、`metadata_source`（`crossref/arxiv`）、`metadata_status`，以及规范化的请求 `doi` 或 `arxiv_id`。DOI 接受裸 DOI、`doi:` 前缀和 `doi.org` URL；arXiv 接受新旧 ID、`arxiv:` 前缀、`arxiv.org/abs/` 或 `pdf/` URL，以及 `10.48550/arXiv.` DOI 形式。来源由声明类型决定：同一个 arXiv DOI 在 `id_type="doi"` 时仍查 Crossref。
+
+- `metadata_status=found`：找到匹配记录，返回可用的 `title/authors/year`。Crossref 另保留 `type/relations/review_type/updates`；arXiv 另保留 `abstract/published/updated/version`。缺失字段省略，找到记录不保证字段齐全或覆盖所有 DOI 注册机构。arXiv feed 的真实发表 DOI 单列为 `published_doi`，不会替换预印本的请求身份。
+- `metadata_status=not_found`：Crossref 返回 404，或 arXiv 返回合法空 Atom feed。`metadata_status=unavailable`：网络、HTTP、JSON/XML、错误 entry 或记录不匹配等失败，附简短 `metadata_error`。这些状态仍保留请求身份；意外内部错误直接传播。
+
+arXiv 的响应 `arxiv_id` 不带 `arxiv:` 前缀，并保留请求版本（如 `1706.03762v1`）。[arXiv API 版本规则](https://info.arxiv.org/help/api/user-manual.html#_a_note_on_article_versions)：未指定版本查询 latest，`version` 是返回记录 ID 中的实际版本（若缺失则省略）；指定 `vN` 必须得到该版本；返回记录缺失版本或版本不匹配时为 `unavailable`，不会改查 latest。`published` 是首版提交日期，`updated` 是返回版本提交日期。
+
+标题、PMID、PMCID、ISBN 及与声明类型不符的输入返回 HTTP 400 / MCP 工具错误；缺失或错误 `id_type` 由请求 schema 拒绝。
 
 标题使用 `search` 查 OpenAlex 候选；`get_metadata` 不做标题推断。获取请求中的标题继续通过 OpenAlex 相似度匹配（0.75 阈值，拒绝不同 DOI 同分最佳匹配），不依赖 Crossref 元数据查询成功。直接 DOI 或 arXiv 获取也无需先调用 `get_metadata`；内部 DOI→PMC 标识转换和 PDF 候选发现保持原链路。
 
-Crossref 不参与关键词召回，不逐条补全搜索结果，也不重排结果。需要某个 DOI 的补充元数据时，单独调用 `get_metadata`。
+元数据查询不参与关键词召回，不逐条补全搜索结果，也不重排结果。需要某个 DOI 或 arXiv 记录的补充元数据时，单独调用 `get_metadata`。
 
 ## 本地与远端 CLI
 

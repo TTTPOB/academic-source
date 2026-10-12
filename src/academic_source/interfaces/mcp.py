@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from contextlib import asynccontextmanager, nullcontext, redirect_stdout
 from functools import partial
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from anyio import to_thread
 from mcp.server.fastmcp import FastMCP
@@ -64,16 +64,18 @@ def create_mcp(application: Application, *, stdio: bool = False) -> FastMCP:
         return await to_thread.run_sync(partial(application.search, query, limit))
 
     @mcp.tool()
-    async def get_metadata(doi: str) -> dict[str, Any]:
-        """Query Crossref only for a DOI's bibliographic, type and relationship metadata.
+    async def get_metadata(
+        id_type: Literal["doi", "arxiv"],
+        doi: str | None = None,
+        arxiv_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetch bibliographic metadata for a DOI or arXiv ID.
 
-        Accept DOI strings, doi: prefixes or doi.org URLs. This is not a general ID
-        resolver: titles, PMID, PMCID, ISBN and non-DOI arXiv IDs are unsupported.
-        metadata_status is found, not_found or unavailable. Found means a matching
-        Crossref record, not complete fields or coverage of every DOI registry.
-        Use search for titles; acquisition matches titles internally.
+        Sources: Crossref for DOIs; arXiv for arXiv records.
         """
-        return await to_thread.run_sync(partial(application.get_metadata, doi))
+        return await to_thread.run_sync(
+            partial(application.get_metadata, id_type, doi=doi, arxiv_id=arxiv_id)
+        )
 
     @mcp.tool()
     async def parse_list(

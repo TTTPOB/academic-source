@@ -3,12 +3,18 @@
 import json
 import re
 from html import unescape
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote, urlsplit
+from xml.etree import ElementTree
 
 import requests
 
-from scansci_pdf.identifiers import normalize_arxiv_id, normalize_doi
+from scansci_pdf.identifiers import (
+    ARXIV_RE,
+    OLD_ARXIV_RE,
+    normalize_arxiv_id,
+    normalize_doi,
+)
 
 
 def normalize_identifier(value: str) -> str:
@@ -26,12 +32,34 @@ def normalize_identifier(value: str) -> str:
     return normalize_doi(raw)
 
 
-def get_metadata(doi: str, config: dict[str, Any]) -> dict[str, Any]:
-    """Look up one DOI's bibliographic, type and relationship metadata in Crossref."""
+def get_metadata(
+    id_type: Literal["doi", "arxiv"],
+    config: dict[str, Any],
+    *,
+    doi: str | None = None,
+    arxiv_id: str | None = None,
+) -> dict[str, Any]:
+    """Fetch bibliographic metadata from the explicitly selected identifier source."""
+    if id_type == "doi":
+        if doi is None or arxiv_id is not None:
+            raise ValueError("DOI metadata requires doi only")
+        return _doi_metadata(doi, config)
+    if id_type == "arxiv":
+        if arxiv_id is None or doi is not None:
+            raise ValueError("arXiv metadata requires arxiv_id only")
+        return _arxiv_metadata(_metadata_arxiv_id(arxiv_id), config)
+    raise ValueError("Metadata id_type must be doi or arxiv")
+
+
+def _doi_metadata(doi: str, config: dict[str, Any]) -> dict[str, Any]:
     doi = normalize_doi(doi)
     if not re.fullmatch(r"10\.\d+/\S+", doi):
         raise ValueError("Metadata requires a DOI")
-    result = {"doi": doi, "metadata_source": "crossref"}
+    result = {
+        "id_type": "doi",
+        "doi": doi,
+        "metadata_source": "crossref",
+    }
     from scansci_pdf.network import _get_session, request_timeout
 
     session = _get_session(config)
@@ -81,6 +109,124 @@ def get_metadata(doi: str, config: dict[str, Any]) -> dict[str, Any]:
         **result,
         "metadata_status": "found",
         **_crossref_fields(message),
+    }
+
+
+def _metadata_arxiv_id(value: str) -> str:
+    """Normalize an entire arXiv reference while preserving its requested version."""
+    raw = re.sub(r"^arxiv:\s*", "", normalize_doi(value), flags=re.IGNORECASE)
+    parsed = urlsplit(raw)
+    if parsed.scheme or parsed.netloc:
+        if parsed.hostname not in {
+            "arxiv.org",
+            "www.arxiv.org",
+        } or not parsed.path.startswith(("/abs/", "/pdf/")):
+            raise ValueError("Metadata requires an arXiv ID")
+        raw = parsed.path.split("/", 2)[2].removesuffix(".pdf")
+    raw = re.sub(r"^10\.48550/arxiv\.", "", raw, flags=re.IGNORECASE)
+    if not (ARXIV_RE.fullmatch(raw) or OLD_ARXIV_RE.fullmatch(raw)):
+        raise ValueError("Metadata requires an arXiv ID")
+    base = normalize_arxiv_id(raw)
+    version = re.search(r"v(\d+)$", raw, flags=re.IGNORECASE)
+    if version and int(version[1]) < 1:
+        raise ValueError("Metadata requires an arXiv ID with a positive version")
+    return f"{base}{version.group().lower() if version else ''}"
+
+
+def _arxiv_metadata(arxiv_id: str, config: dict[str, Any]) -> dict[str, Any]:
+    from scansci_pdf.network import _get_session, request_timeout
+
+    result = {
+        "id_type": "arxiv",
+        "arxiv_id": arxiv_id,
+        "metadata_source": "arxiv",
+    }
+    session = _get_session(config)
+    try:
+        with session.get(
+            "https://export.arxiv.org/api/query",
+            params={"id_list": arxiv_id},
+            headers={"Accept": "application/atom+xml"},
+            timeout=request_timeout(config),
+        ) as response:
+            response.raise_for_status()
+            feed = ElementTree.fromstring(response.content)
+    except ElementTree.ParseError:
+        return {
+            **result,
+            "metadata_status": "unavailable",
+            "metadata_error": "arXiv returned invalid XML",
+        }
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else "unknown"
+        return {
+            **result,
+            "metadata_status": "unavailable",
+            "metadata_error": f"arXiv metadata request failed (HTTP {status})",
+        }
+    except requests.RequestException:
+        return {
+            **result,
+            "metadata_status": "unavailable",
+            "metadata_error": "arXiv metadata request failed (network error)",
+        }
+    atom = "{http://www.w3.org/2005/Atom}"
+    invalid = {
+        **result,
+        "metadata_status": "unavailable",
+        "metadata_error": "arXiv returned an invalid or mismatched record",
+    }
+    if feed.tag != f"{atom}feed":
+        return invalid
+    entries = feed.findall(f"{atom}entry")
+    if not entries:
+        return {**result, "metadata_status": "not_found"}
+    if len(entries) != 1:
+        return invalid
+    entry = entries[0]
+    record_url = entry.findtext(f"{atom}id", "").strip()
+    try:
+        parsed = urlsplit(record_url)
+        if parsed.hostname not in {
+            "arxiv.org",
+            "www.arxiv.org",
+        } or not parsed.path.startswith("/abs/"):
+            return invalid
+        record_id = _metadata_arxiv_id(record_url)
+    except ValueError:
+        return invalid
+    version = re.search(r"v(\d+)$", record_id)
+    requested_version = re.search(r"v\d+$", arxiv_id)
+    if (
+        re.sub(r"v\d+$", "", record_id).casefold()
+        != re.sub(r"v\d+$", "", arxiv_id).casefold()
+    ):
+        return invalid
+    if requested_version and record_id.casefold() != arxiv_id.casefold():
+        return invalid
+
+    def text(tag: str) -> str:
+        return " ".join(entry.findtext(tag, "").split())
+
+    published = text(f"{atom}published")
+    fields = {
+        "title": text(f"{atom}title"),
+        "authors": [
+            name
+            for author in entry.findall(f"{atom}author")
+            if (name := " ".join(author.findtext(f"{atom}name", "").split()))
+        ],
+        "year": int(published[:4]) if re.match(r"^\d{4}-", published) else None,
+        "abstract": text(f"{atom}summary"),
+        "published": published,
+        "updated": text(f"{atom}updated"),
+        "version": int(version[1]) if version else None,
+        "published_doi": normalize_doi(text("{http://arxiv.org/schemas/atom}doi")),
+    }
+    return {
+        **result,
+        "metadata_status": "found",
+        **{key: value for key, value in fields.items() if value not in (None, "", [])},
     }
 
 

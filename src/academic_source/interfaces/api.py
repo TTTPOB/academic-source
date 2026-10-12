@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from academic_source.domain import AcquisitionRequest
 from academic_source.interfaces.presentation import job_data
@@ -17,7 +17,11 @@ if TYPE_CHECKING:
 
 
 class MetadataInput(BaseModel):
-    doi: str
+    model_config = ConfigDict(extra="forbid")
+
+    id_type: Literal["doi", "arxiv"]
+    doi: str | None = None
+    arxiv_id: str | None = None
 
 
 class ParseInput(BaseModel):
@@ -43,9 +47,11 @@ def create_router(application: Application) -> APIRouter:
 
     @api.post("/metadata")
     def get_metadata(payload: MetadataInput) -> dict[str, Any]:
-        """Look up DOI bibliographic, type and relationship metadata in Crossref."""
+        """Fetch bibliographic metadata for a DOI or arXiv ID."""
         try:
-            return application.get_metadata(payload.doi)
+            return application.get_metadata(
+                payload.id_type, doi=payload.doi, arxiv_id=payload.arxiv_id
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

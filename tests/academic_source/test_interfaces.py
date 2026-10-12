@@ -130,6 +130,35 @@ def test_mcp_and_http_share_one_real_job_and_artifact_store(tmp_path):
             "acquire",
             "job_status",
         }
+        metadata_tool = next(
+            tool
+            for tool in tools.json()["result"]["tools"]
+            if tool["name"] == "get_metadata"
+        )
+        schema = metadata_tool["inputSchema"]
+        assert set(schema["required"]) == {"id_type"}
+        assert schema["properties"]["id_type"]["enum"] == ["doi", "arxiv"]
+        http_schema = client.get("/openapi.json").json()["components"]["schemas"][
+            "MetadataInput"
+        ]
+        assert set(http_schema["required"]) == {"id_type"}
+        assert http_schema["properties"]["id_type"]["enum"] == ["doi", "arxiv"]
+        for arguments in (
+            {"arxiv_id": "1706.03762"},
+            {"arxiv_id": "1706.03762", "id_type": "auto"},
+        ):
+            assert client.post("/api/v1/metadata", json=arguments).status_code == 422
+            rejected = client.post(
+                "/mcp",
+                headers=headers,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 30,
+                    "method": "tools/call",
+                    "params": {"name": "get_metadata", "arguments": arguments},
+                },
+            ).json()["result"]
+            assert rejected["isError"] is True
         response = client.post(
             "/mcp",
             headers=headers,
