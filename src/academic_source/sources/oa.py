@@ -159,12 +159,15 @@ def _html_candidates(html: str, base_url: str, source: str) -> list[Candidate]:
     return [Candidate(url, source, base_url) for url in dict.fromkeys(urls)]
 
 
+def _public_candidate_url(candidate: Candidate, resolved_url: str | None = None) -> str:
+    """Use a credential-free Content endpoint as provenance across download paths."""
+    if candidate.source == "OpenAlexContent":
+        return urlsplit(candidate.url)._replace(query="", fragment="").geturl()
+    return resolved_url if resolved_url is not None else candidate.url
+
+
 def _http_candidate(candidate: Candidate, path: Path, config: dict[str, Any]):
-    public_url = (
-        urlsplit(candidate.url)._replace(query="", fragment="").geturl()
-        if candidate.source == "OpenAlexContent"
-        else candidate.url
-    )
+    public_url = _public_candidate_url(candidate)
     response = None
     partial = path.with_suffix(".pdf.part")
     try:
@@ -335,7 +338,9 @@ def _browser_candidate(candidate: Candidate, path: Path, config: dict[str, Any])
                 tab, url, path, browser_config
             ) and is_readable_pdf(path):
                 return SourceSuccess(
-                    path=path, source=candidate.source, url=url
+                    path=path,
+                    source=candidate.source,
+                    url=_public_candidate_url(candidate, url),
                 ), Attempt(source="OACDP", status="succeeded")
         return None, _failed(
             "OACDP",

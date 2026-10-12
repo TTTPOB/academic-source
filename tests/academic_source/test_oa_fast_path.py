@@ -961,3 +961,99 @@ def test_legacy_openalex_lookup_limit_reaches_safe_source_failure(
     assert "retry at" in outcome.message
     assert key not in outcome.message + str(outcome.attempts)
     assert "private raw body" not in outcome.message + str(outcome.attempts)
+
+
+def test_content_cdp_success_keeps_credentials_out_of_public_and_cached_provenance(
+    monkeypatch, tmp_path
+):
+    import json
+    from urllib.parse import urlencode
+
+    from fastapi.testclient import TestClient
+
+    from academic_source.app import create_app
+    from academic_source.services.application import Application
+    from academic_source.settings import Settings
+    from scansci_pdf import browser_backend, browser_engine
+    from tests.providers.test_cdp_browser import FakePage
+
+    key = "fake-cdp-key+with/reserved="
+    encoded_key = urlencode({"api_key": key}).split("=", 1)[1]
+    public_url = "https://content.openalex.org/works/W42.pdf"
+    pdf = pdf_bytes()
+
+    class ContentPage(FakePage):
+        def goto(self, url, **kwargs):
+            self.url = url
+
+        def content(self):
+            return "<html>OpenAlex Content</html>"
+
+        def evaluate_handle(self, script, argument):
+            self.result_url = argument["url"]
+            assert parse_qs(urlsplit(self.result_url).query)["api_key"] == [key]
+            return super().evaluate_handle(script, argument)
+
+    page = ContentPage()
+    page.payload = pdf
+
+    def send(_adapter, request, **kwargs):
+        parsed = urlsplit(request.url)
+        result = requests.Response()
+        result.request = request
+        result.url = request.url
+        result._content_consumed = True
+        if parsed.hostname == "api.openalex.org":
+            result.status_code = 200
+            result._content = json.dumps(
+                {"id": "https://openalex.org/W42", "open_access": {"is_oa": True}}
+            ).encode()
+        else:
+            result.status_code = (
+                403 if parsed.hostname == "content.openalex.org" else 404
+            )
+            if parsed.hostname == "content.openalex.org":
+                assert parse_qs(parsed.query)["api_key"] == [key]
+            result._content = b"{}"
+        return result
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
+    monkeypatch.setattr(browser_backend, "probe_cdp", lambda config: None)
+    monkeypatch.setattr(browser_engine, "create_tab", lambda *args, **kwargs: "owned")
+    monkeypatch.setattr(
+        browser_engine, "_resolve_tab", lambda tab: page if tab == "owned" else None
+    )
+    monkeypatch.setattr(
+        browser_engine, "close_tab", lambda *args, **kwargs: page.close()
+    )
+    application = Application(
+        Settings(
+            data_dir=tmp_path,
+            auth_mode="off",
+            source_config={"browser_backend": "cdp", "openalex_api_key": key},
+        )
+    )
+    with TestClient(create_app(application=application)) as client:
+        request = AcquisitionRequest(
+            identifiers=["10.1234/content"], policy="legal_only"
+        )
+        job = application.wait(application.submit(request).id, 10)
+        assert job.status == "succeeded"
+        artifact = job.results[0].artifacts[0]
+        assert artifact.provenance.source == "OpenAlexContent"
+        assert artifact.provenance.url == public_url
+        assert application.store.artifact_path(artifact.id).read_bytes() == pdf
+        assert any(
+            item.source == "OACDP" and item.status == "succeeded"
+            for item in job.results[0].attempts
+        )
+        http = client.get(f"/api/v1/jobs/{job.id}")
+        assert http.json()["artifacts"][0]["provenance"]["url"] == public_url
+        assert key not in http.text and encoded_key not in http.text
+        persisted = application.job(job.id).model_dump_json()
+        assert key not in persisted and encoded_key not in persisted
+        cached = application.wait(application.submit(request).id, 10)
+        assert cached.results[0].cached is True
+        assert cached.results[0].artifacts[0].provenance == artifact.provenance
+        cached_record = application.job(cached.id).model_dump_json()
+        assert key not in cached_record and encoded_key not in cached_record
