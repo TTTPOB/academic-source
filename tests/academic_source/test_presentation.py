@@ -196,7 +196,18 @@ def test_projection_does_not_mutate_internal_or_persisted_record(
 
 
 def test_http_and_mcp_status_share_projection(tmp_path, successful_result):
-    service = Application(Settings(data_dir=tmp_path), source=RecordingSource())
+    source = RecordingSource()
+    service = Application(Settings(data_dir=tmp_path, auth_mode="off"), source=source)
+    original = tmp_path / "paper.pdf"
+    original.write_bytes(source.content)
+    successful_result.artifacts = [
+        service.store.import_artifact(
+            original,
+            kind="pdf",
+            identifier=successful_result.identifier,
+            source="repository",
+        )
+    ]
     job = make_job(
         successful_result,
         AcquisitionResult(
@@ -218,9 +229,38 @@ def test_http_and_mcp_status_share_projection(tmp_path, successful_result):
             },
         )
         assert mcp.status_code == 200, mcp.text
-        assert mcp.json()["result"]["structuredContent"] == http.json() == job_data(job)
+        projected = mcp.json()["result"]["structuredContent"]
+        assert projected["artifacts"] == projected["results"][0]["artifacts"]
+        for artifact in [
+            *projected["artifacts"],
+            *projected["results"][0]["artifacts"],
+        ]:
+            assert artifact.pop("download_url").startswith(
+                "http://testserver/downloads/"
+            )
+            assert artifact.pop("download_single_use") is True
+            assert artifact.pop("download_expires_at")
+            artifact["download_url"] = f"/api/v1/artifacts/{artifact['id']}/content"
+        assert projected == http.json() == job_data(job)
         assert "attempts" not in str(http.json())
         assert len(service.job(job.id).results[0].attempts) == 4
+
+
+def test_download_factory_runs_once_for_repeated_artifact(successful_result):
+    calls = []
+
+    def issue(artifact_id):
+        calls.append(artifact_id)
+        return {"download_url": f"https://example.org/downloads/ticket-{len(calls)}"}
+
+    job = make_job(successful_result, successful_result.model_copy(deep=True))
+    data = job_data(job, download_factory=issue)
+    assert calls == ["paper-artifact"]
+    assert data["artifacts"][0] == data["artifacts"][1]
+    assert all(
+        result["artifacts"] == [data["artifacts"][0]] for result in data["results"]
+    )
+    assert "download_url" not in job.model_dump_json()
 
 
 def test_stdio_projection_omits_download_urls_but_keeps_artifact_ids(successful_result):

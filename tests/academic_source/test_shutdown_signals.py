@@ -150,6 +150,7 @@ def test_uvicorn_first_interrupt_is_not_replayed(tmp_path: Path) -> None:
         stderr=subprocess.PIPE,
         env={
             **os.environ,
+            "ACADEMIC_SOURCE_AUTH_MODE": "off",
             "ACADEMIC_SOURCE_DATA_DIR": str(tmp_path),
             "STARTED": str(started),
             "RELEASE": str(release),
@@ -159,7 +160,7 @@ def test_uvicorn_first_interrupt_is_not_replayed(tmp_path: Path) -> None:
         url = f"http://127.0.0.1:{port}/api/v1/jobs/unknown"
         for _ in range(100):
             try:
-                httpx.get(url, timeout=0.15)
+                httpx.get(url, timeout=0.15, trust_env=False)
                 break
             except httpx.ConnectError:
                 time.sleep(0.05)
@@ -171,6 +172,7 @@ def test_uvicorn_first_interrupt_is_not_replayed(tmp_path: Path) -> None:
                 base + "/api/v1/acquisitions",
                 json={"identifiers": [f"10.test/{number}"]},
                 timeout=3,
+                trust_env=False,
             ).json()["id"]
             for number in range(2)
         ]

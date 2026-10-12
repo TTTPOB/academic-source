@@ -22,6 +22,7 @@ from academic_source.sources import LegacySources, Source
 from academic_source.sources.models import SourceFailure
 
 from . import discovery, lists
+from .downloads import DownloadCapabilities
 from .exports import add_exports
 
 log = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ class Application:
         self.settings = settings
         self.store = store if store is not None else Store(settings)
         self.source = source if source is not None else LegacySources()
+        self.downloads = DownloadCapabilities(self.store)
         self._lock = (self.store.root / ".application.lock").open("a+b")
         try:
             self._acquire_lock()
@@ -139,6 +141,7 @@ class Application:
         if self._closed:
             return
         self._closed = True
+        self.downloads.clear()
         try:
             try:
                 self._executor.submit(self.source.close).result()

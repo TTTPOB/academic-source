@@ -271,7 +271,9 @@ def test_http_mcp_metadata_share_metadata_and_failure_statuses(tmp_path, transpo
         )
 
     transport(upstream)
-    application = Application(Settings(data_dir=tmp_path), source=RecordingSource())
+    application = Application(
+        Settings(data_dir=tmp_path, auth_mode="off"), source=RecordingSource()
+    )
     with TestClient(create_app(application=application)) as client:
         http = client.post(
             "/api/v1/metadata",
@@ -306,7 +308,9 @@ def test_unexpected_programming_errors_are_not_metadata_unavailable(
         discovery.get_metadata(
             id_type, {}, **{"doi" if id_type == "doi" else "arxiv_id": identifier}
         )
-    application = Application(Settings(data_dir=tmp_path), source=RecordingSource())
+    application = Application(
+        Settings(data_dir=tmp_path, auth_mode="off"), source=RecordingSource()
+    )
     with TestClient(
         create_app(application=application), raise_server_exceptions=False
     ) as client:
@@ -341,7 +345,9 @@ def test_non_doi_metadata_input_is_rejected_before_network(tmp_path, transport, 
     transport(unexpected)
     with pytest.raises(ValueError, match="requires a DOI"):
         discovery.get_metadata("doi", {}, doi=value)
-    application = Application(Settings(data_dir=tmp_path), source=RecordingSource())
+    application = Application(
+        Settings(data_dir=tmp_path, auth_mode="off"), source=RecordingSource()
+    )
     with TestClient(create_app(application=application)) as client:
         http = client.post("/api/v1/metadata", json={"doi": value, "id_type": "doi"})
         assert http.status_code == 400
@@ -513,7 +519,9 @@ def test_invalid_arxiv_reference_is_rejected_before_network(tmp_path, transport,
     transport(unexpected)
     with pytest.raises(ValueError, match="requires an arXiv ID"):
         discovery.get_metadata("arxiv", {}, arxiv_id=value)
-    application = Application(Settings(data_dir=tmp_path), source=RecordingSource())
+    application = Application(
+        Settings(data_dir=tmp_path, auth_mode="off"), source=RecordingSource()
+    )
     with TestClient(create_app(application=application)) as client:
         http = client.post(
             "/api/v1/metadata", json={"arxiv_id": value, "id_type": "arxiv"}
@@ -541,6 +549,7 @@ def test_arxiv_http_and_mcp_use_application_network_settings(tmp_path, monkeypat
     application = Application(
         Settings(
             data_dir=tmp_path,
+            auth_mode="off",
             source_config={
                 "network_proxy": proxy,
                 "connect_timeout": 4,
@@ -587,7 +596,9 @@ def test_metadata_requires_only_the_selected_type_field(tmp_path, transport, arg
     transport(unexpected)
     with pytest.raises(ValueError, match="requires .* only"):
         discovery.get_metadata(config={}, **arguments)
-    application = Application(Settings(data_dir=tmp_path), source=RecordingSource())
+    application = Application(
+        Settings(data_dir=tmp_path, auth_mode="off"), source=RecordingSource()
+    )
     with TestClient(create_app(application=application)) as client:
         http = client.post("/api/v1/metadata", json=arguments)
         assert http.status_code == 400

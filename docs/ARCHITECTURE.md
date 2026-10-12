@@ -44,6 +44,18 @@ get_metadata 不做标题推断，来源只由 id_type 决定。标题搜索使�
 
 PDF 是获取成功的基础产物；可选 Markdown、补充材料和 BibTeX 结果单独报告，不因可选转换失败而丢弃已取得的 PDF。只登记经过校验且可读取的 PDF，不以文件头或正文长度单独判成功。
 
+## HTTP 认证与一次性下载
+
+HTTP 控制面默认要求静态 Bearer 服务 key，可同时配置多个 key 以支持轮换；显式 `auth_mode=off` 适用于由部署者选择的可信环境。此认证覆盖普通 API、MCP、永久产物下载和页面入口。stdio 属于本地进程入口，不要求 HTTP key。服务 key 只用于入站认证，不进入上游请求、下载 URL 或任务元数据。
+
+HTTP MCP 的 `acquire`、`job_status` 为已登记产物返回绝对 `download_url`、UTC `download_expires_at` 与 `download_single_use=true`。默认基址取自本次 MCP HTTP 请求的 ASGI scheme、host 和应用 root path，agent 无需另传 host；`public_base_url` 可覆盖为实际公网基址。反代须保留正确 Host，并只从受信代理接收 forwarded 信息；应用不自行解释任意 `X-Forwarded-*` 头。普通 HTTP API 保持 `/api/v1/artifacts/{id}/content` 永久受保护路径，远程 CLI 对其携带服务 key；stdio 仅保留产物元数据和本机导出。
+
+`Application.downloads` 持有单进程内存能力表。每个产物至多保留一个尚有效的 32 随机字节 URL-safe token；同一结果的嵌套/顶层产物与连续轮询复用它。token 绑定一个产物及最多六小时的到期时间，消费或到期后，下次 `job_status` 签发新链接。关闭或重启应用清除全部 token；任务、产物、SQLite 与结果缓存均不保存这些链接。签发和消费用一把小锁串行化，防止并发 GET 重复领取；部署维持单服务进程。
+
+独立 `GET /downloads/{token}` 无需 Bearer 或 Cloudflare headers，直接以 attachment 发送登记文件，不复制或删除原产物。首次有效 GET 在开始传输前消费 token；中途断线也已消费，客户端须重新调用 MCP 取链接。不存在、到期和已消费 token 统一返回 404。HEAD/POST 返回 405，Range 返回 400，均不消费；只支持整文件响应，不提供 206、续传或 304。永久产物路径继续支持原有 Range 行为和认证。
+
+独立响应头中间件为 MCP 与下载响应（含拒绝及错误）设置 `Cache-Control: no-store`，下载另设 `Referrer-Policy: no-referrer`。Uvicorn 的常规 access log 将下载路径 token 及 query 隐去，包含 root path 前缀的部署也适用。URL 本身是秘密：转发就转交该文件的一次读取权，预取/安全扫描若发 GET 也会消费。外部代理须对下载 namespace 单独绕过控制面认证和缓存，并自行避免记录完整能力 URL；本地日志过滤不能控制代理日志。
+
 ## 来源与获取策略
 
 `LegacySources` 在新的统一来源边界中调度保留的站点实现，包括开放获取服务、出版商 URL/HTML/浏览器规则、arXiv，以及配置后可用的机构访问通道（如 CARSI、WebVPN、EZProxy、机构会话和浏览器批量路径）。这保留有效站点知识，不代表所有来源、浏览器依赖或订阅能力在每个环境均可用。

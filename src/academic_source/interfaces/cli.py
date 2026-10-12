@@ -51,8 +51,13 @@ def _save_path(output: Path, item: dict[str, Any]) -> Path:
 
 
 def _remote(args: argparse.Namespace) -> dict[str, Any]:
+    key = os.environ.get("ACADEMIC_SOURCE_API_KEY")
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
     with httpx.Client(
-        base_url=args.server.rstrip("/") + "/", timeout=30.0, follow_redirects=True
+        base_url=args.server.rstrip("/") + "/",
+        timeout=30.0,
+        follow_redirects=True,
+        headers=headers,
     ) as client:
         if args.command == "batch":
             with args.file.open("rb") as stream:
@@ -128,7 +133,11 @@ def main(argv: list[str] | None = None) -> int:
             # The CLI owns signals; Uvicorn otherwise replays them on exit.
             capture_signals = staticmethod(nullcontext)
 
-        app = create_app()
+        try:
+            app = create_app()
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
         server = DrainServer(uvicorn.Config(app, host=args.host, port=args.port))
         with graceful_signals(lambda: setattr(server, "should_exit", True)):
             server.run()

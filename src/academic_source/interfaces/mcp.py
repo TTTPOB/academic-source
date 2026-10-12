@@ -8,10 +8,10 @@ from functools import partial
 from typing import TYPE_CHECKING, Any, Literal
 
 from anyio import to_thread
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 from academic_source.domain import AcquisitionRequest
-from academic_source.interfaces.presentation import job_data
+from academic_source.interfaces.presentation import DownloadFactory, job_data
 
 if TYPE_CHECKING:
     from academic_source.services.application import Application
@@ -41,7 +41,10 @@ def create_mcp(application: Application, *, stdio: bool = False) -> FastMCP:
         )
     else:
         instructions += (
-            "Retrieve download_url through HTTP using the server base URL. "
+            "GET the absolute download_url directly without authentication headers. "
+            "Each link allows one full-file GET for at most six hours. "
+            "Interrupted downloads consume the link; call job_status for another. "
+            "HEAD and Range downloads are not supported. "
             "Upload lists through POST /api/v1/uploads; client-local paths are not remote inputs."
         )
     mcp = FastMCP(
@@ -57,6 +60,19 @@ def create_mcp(application: Application, *, stdio: bool = False) -> FastMCP:
         stateless_http=True,
         lifespan=lifespan,
     )
+
+    def downloads(ctx: Context) -> DownloadFactory | None:
+        if stdio:
+            return None
+        base_url = application.settings.public_base_url
+        if not base_url:
+            request = ctx.request_context.request
+            if request is None:
+                raise ValueError(
+                    "HTTP download links require an HTTP request or public_base_url"
+                )
+            base_url = str(request.base_url)
+        return partial(application.downloads.issue, base_url=base_url)
 
     @mcp.tool()
     async def search(query: str, limit: int = 10) -> list[dict[str, Any]]:
@@ -88,24 +104,26 @@ def create_mcp(application: Application, *, stdio: bool = False) -> FastMCP:
 
     @mcp.tool()
     async def acquire(
-        request: AcquisitionRequest, wait_seconds: float = 2.0
+        request: AcquisitionRequest, ctx: Context, wait_seconds: float = 2.0
     ) -> dict[str, Any]:
         """Submit one acquisition job and briefly wait for completion."""
+        factory = downloads(ctx)
 
         def submit_and_wait() -> dict[str, Any]:
             job = application.submit(request)
             return job_data(
                 application.wait(job.id, timeout=max(0.0, min(wait_seconds, 10.0))),
                 downloadable=not stdio,
+                download_factory=factory,
             )
 
         return await to_thread.run_sync(submit_and_wait)
 
     @mcp.tool()
-    async def job_status(job_id: str) -> dict[str, Any]:
+    async def job_status(job_id: str, ctx: Context) -> dict[str, Any]:
         """Inspect a previously submitted job and its artifacts."""
         job = await to_thread.run_sync(partial(application.job, job_id))
-        return job_data(job, downloadable=not stdio)
+        return job_data(job, downloadable=not stdio, download_factory=downloads(ctx))
 
     if stdio:
 

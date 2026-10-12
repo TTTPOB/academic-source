@@ -282,7 +282,7 @@ def test_http_mcp_search_use_application_key_and_proxy_at_http_boundary(
 
     monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
     application = Application(
-        Settings(data_dir=tmp_path, source_config=source_config),
+        Settings(data_dir=tmp_path, auth_mode="off", source_config=source_config),
         source=RecordingSource(),
     )
     with TestClient(create_app(application=application)) as client:
@@ -316,7 +316,9 @@ def test_http_mcp_search_share_type_projection_validation_and_errors(
             },
         )
     )
-    application = Application(Settings(data_dir=tmp_path), source=RecordingSource())
+    application = Application(
+        Settings(data_dir=tmp_path, auth_mode="off"), source=RecordingSource()
+    )
     with TestClient(create_app(application=application)) as client:
         http = client.get("/api/v1/search", params={"query": "papers", "limit": 1})
         assert http.status_code == 200

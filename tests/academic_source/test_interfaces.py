@@ -17,7 +17,7 @@ from tests.academic_source.helpers import RecordingSource
 
 def service_at(path):
     source = RecordingSource()
-    return Application(Settings(data_dir=path), source=source), source
+    return Application(Settings(data_dir=path, auth_mode="off"), source=source), source
 
 
 def test_http_upload_parse_acquire_and_retrieve_without_shared_paths(
