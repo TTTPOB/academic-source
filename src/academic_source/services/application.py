@@ -79,8 +79,8 @@ class Application:
     def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         return discovery.search(query, limit, config=self._config())
 
-    def resolve(self, identifier: str) -> dict[str, Any]:
-        return discovery.resolve(identifier, self._config())
+    def get_metadata(self, doi: str) -> dict[str, Any]:
+        return discovery.get_metadata(doi, self._config())
 
     def parse_list(
         self, *, upload_id: str | None = None, text: str | None = None
@@ -216,7 +216,11 @@ class Application:
     ) -> AcquisitionResult:
         identifier = entry["identifier"]
         if request.resolve_titles and not identifier.startswith(("10.", "arxiv:")):
-            identifier = discovery.resolve(identifier, config)["identifier"]
+            from scansci_pdf.resolver import resolve_title_to_doi
+
+            doi = resolve_title_to_doi(identifier, config)
+            if doi:
+                identifier = discovery.normalize_identifier(doi)
         if not identifier.startswith(("10.", "arxiv:")):
             return AcquisitionResult(
                 identifier=identifier,

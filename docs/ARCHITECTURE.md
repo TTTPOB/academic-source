@@ -18,19 +18,21 @@ stdio MCP / CLI ────────────┴─> Application ─> Sou
 
 - `academic_source.domain`：请求、任务、逐篇结果、获取尝试、产物及来源记录。
 - `academic_source.settings`：运行设置和显式 `source_config`；默认数据目录为 `~/.academic-source`，配置文件为其中的 `settings.json`。
-- `academic_source.app`、`services.application`：组合 HTTP/MCP 生命周期，执行搜索、解析、获取、缓存、任务和导出。
-- `services.discovery`、`lists`、`exports`：标识解析、列表输入和可选产物转换；继续复用所需的上游解析及抓取知识。
+- `academic_source.app`、`services.application`：组合 HTTP/MCP 生命周期，执行搜索、Crossref 元数据查询、获取、缓存、任务和导出。
+- `services.discovery`、`lists`、`exports`：标识规范化、Crossref 元数据、列表输入和可选产物转换；继续复用所需的上游解析及抓取知识。
 - `sources`：统一选源和结果边界，直接调用保留下来的来源函数；不把旧下载编排器作为新的总入口。
 - `infrastructure.storage`、`documents`：SQLite 记录、文件落盘和 PDF 可读性检查。
-- `interfaces.api`、`mcp`、`cli`、`web`：共享应用服务的协议适配；MCP 提供搜索、解析、列表解析、获取和任务状态；仅 stdio 另提供 `export_artifacts`，不代理 HTTP。
+- `interfaces.api`、`mcp`、`cli`、`web`：共享应用服务的协议适配；MCP 提供搜索、Crossref DOI 元数据、列表解析、获取和任务状态；仅 stdio 另提供 `export_artifacts`，不代理 HTTP。
 
-## 检索与标识解析
+## 检索与 Crossref 元数据
 
 HTTP/MCP 的 search 通过 Application → services.discovery → scansci_pdf.search，只使用 OpenAlex。Python 入口为 search_papers，与公开服务共用本项目的单一检索实现。默认源内相关性顺序不做本地重排；现有 Python 引用数/发布日期排序（可选 asc/desc）和单边/双边年份范围直接传给 OpenAlex。公开 HTTP/MCP 参数仍为 query、limit。
 
 每次获取 min(200, max(30, limit × 3)) 条候选，不翻页；沿用带 DOI 的结果边界，按明确类型、撤稿状态和少量完整泛标题过滤后应用 limit（1–100）。保留综述、预印本、完整会议论文及未知类型，排除明确非论文对象和 is_retracted=true 的原文。结果投影保留 type、撤稿状态和有效 ISO 发布日期，缺值省略。空结果与来源故障分开：真实无命中为列表，预期网络/HTTP/JSON 故障为 DiscoveryError，HTTP 翻译为 502，MCP 使用 SDK 工具错误机制。
 
-services.discovery.resolve 对显式 DOI 才执行 Crossref 单 DOI 元数据请求：保留规范化标识，返回精简的书目、类型和有向 DOI 关系/更新证据。metadata_status 区分 found、not_found（404）、unavailable（预期请求/JSON/记录失败）；规范化成功不代表元数据核验成功。标题解析共用 OpenAlex 相似度匹配，不自动查 Crossref，内部获取的标题解析也不新增元数据依赖。arXiv 只规范化。关键词检索与按需元数据补充互不阻塞，Crossref 不参与候选召回或排序。
+MCP get_metadata(doi: str) 和 HTTP POST /api/v1/metadata {doi} 通过 Application → services.discovery.get_metadata，只查询 Crossref 单 DOI 记录，返回精简的书目、类型和有向 DOI 关系/更新证据。输入经 normalize_doi 接受裸 DOI、doi: 前缀及 doi.org URL；输出只用规范 doi 标识记录，各状态均注明 metadata_source=crossref。metadata_status 区分 found、not_found（404）、unavailable（限流、网络、HTTP、JSON 或记录不匹配）；found 表示找到对应注册记录，不保证字段齐全或覆盖所有 DOI 注册机构。意外内部错误直接传播，规范化成功不代表元数据获取成功。
+
+get_metadata 不接受标题、PMID、PMCID、ISBN 或非 DOI 的 arXiv 标识，不做标题推断；arXiv DOI 仍直接查 Crossref。标题搜索使用 OpenAlex；内部获取直接复用现有标题相似度匹配，匹配失败保留原标题，不新增 Crossref 依赖。直接 DOI/arXiv 获取无需先查元数据。内部 DOI→idconv→PMCID 与 Europe PMC/PMC 的 PDF 候选转换保持原链路，不提供公开 PMID/PMCID 输入。关键词检索与按需元数据查询互不阻塞，Crossref 不参与候选召回或排序。
 
 ## 输入与产物
 

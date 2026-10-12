@@ -26,30 +26,12 @@ def normalize_identifier(value: str) -> str:
     return normalize_doi(raw)
 
 
-def resolve(identifier: str, config: dict[str, Any]) -> dict[str, Any]:
-    normalized = normalize_identifier(identifier)
-    if not normalized:
-        raise ValueError("Identifier must not be empty")
-    if normalized.startswith("10."):
-        return {
-            "identifier": normalized,
-            "doi": normalized,
-            **_crossref_metadata(normalized, config),
-        }
-    if normalized.startswith("arxiv:"):
-        return {"identifier": normalized, "doi": None}
-    from scansci_pdf.resolver import resolve_title_to_doi
-
-    doi = resolve_title_to_doi(normalized, config)
-    return {
-        "identifier": normalize_identifier(doi) if doi else normalized,
-        "doi": doi,
-        "title": normalized,
-    }
-
-
-def _crossref_metadata(doi: str, config: dict[str, Any]) -> dict[str, Any]:
-    """Enrich an explicitly supplied DOI without confusing lookup and normalization."""
+def get_metadata(doi: str, config: dict[str, Any]) -> dict[str, Any]:
+    """Look up one DOI's bibliographic, type and relationship metadata in Crossref."""
+    doi = normalize_doi(doi)
+    if not re.fullmatch(r"10\.\d+/\S+", doi):
+        raise ValueError("Metadata requires a DOI")
+    result = {"doi": doi, "metadata_source": "crossref"}
     from scansci_pdf.network import _get_session, request_timeout
 
     session = _get_session(config)
@@ -62,37 +44,42 @@ def _crossref_metadata(doi: str, config: dict[str, Any]) -> dict[str, Any]:
             timeout=request_timeout(config),
         ) as response:
             if response.status_code == 404:
-                return {"metadata_status": "not_found"}
+                return {**result, "metadata_status": "not_found"}
             response.raise_for_status()
             payload = response.json()
     except json.JSONDecodeError:
         return {
+            **result,
             "metadata_status": "unavailable",
             "metadata_error": "Crossref returned invalid JSON",
         }
     except requests.HTTPError as exc:
         status = exc.response.status_code if exc.response is not None else "unknown"
         return {
+            **result,
             "metadata_status": "unavailable",
             "metadata_error": f"Crossref metadata request failed (HTTP {status})",
         }
     except requests.RequestException:
         return {
+            **result,
             "metadata_status": "unavailable",
             "metadata_error": "Crossref metadata request failed (network error)",
         }
     message = payload.get("message") if isinstance(payload, dict) else None
+    record_doi = message.get("DOI") if isinstance(message, dict) else None
     if (
-        not isinstance(message, dict)
-        or normalize_doi(message.get("DOI") or "").casefold() != doi.casefold()
+        not isinstance(record_doi, str)
+        or normalize_doi(record_doi).casefold() != doi.casefold()
     ):
         return {
+            **result,
             "metadata_status": "unavailable",
             "metadata_error": "Crossref returned an invalid or mismatched DOI record",
         }
     return {
+        **result,
         "metadata_status": "found",
-        "metadata_source": "crossref",
         **_crossref_fields(message),
     }
 

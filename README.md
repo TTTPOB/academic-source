@@ -34,7 +34,7 @@ stdio MCP：
 academic-source mcp
 ```
 
-两种 MCP 均提供 `search`、`resolve`、`parse_list`、`acquire`、`job_status`。HTTP MCP 的产物包含 `download_url`，通过 HTTP 下载；独立 stdio 不依赖 HTTP，产物仅返回 ID 等元数据，另有 `export_artifacts(artifact_ids, output_dir)` 将已登记文件复制到 stdio **进程所在机器**的指定目录，返回文件实际路径。若进程在容器中，目录须由容器挂载到所需位置；路径不是客户端机器的远程路径。不同 ID 即使文件同名也不会相互覆盖。
+两种 MCP 均提供 `search`、`get_metadata`、`parse_list`、`acquire`、`job_status`。HTTP MCP 的产物包含 `download_url`，通过 HTTP 下载；独立 stdio 不依赖 HTTP，产物仅返回 ID 等元数据，另有 `export_artifacts(artifact_ids, output_dir)` 将已登记文件复制到 stdio **进程所在机器**的指定目录，返回文件实际路径。若进程在容器中，目录须由容器挂载到所需位置；路径不是客户端机器的远程路径。不同 ID 即使文件同名也不会相互覆盖。
 
 ## 检索与元数据
 
@@ -42,14 +42,15 @@ HTTP `GET /api/v1/search?query=...&limit=10` 与 MCP `search(query, limit)` 只�
 
 结果保留已有书目信息，以及可用的 OpenAlex `type`、`is_retracted` 和 ISO `publication_date`；缺失字段省略，false/0 仍保留。不承诺上游类型准确、覆盖所有编辑材料或消除短词/基因名称歧义。真实无命中返回 `[]`；OpenAlex 网络、HTTP 或 JSON 错误通过 HTTP 502 或 MCP 工具错误返回，不伪装无命中。
 
-HTTP `POST /api/v1/resolve`（`{"identifier":"DOI、标题或 arXiv 标识"}`）与 MCP `resolve(identifier)` 共用以下语义：
+HTTP `POST /api/v1/metadata`（`{"doi":"10.1234/example"}`）与 MCP `get_metadata(doi: str)` 只向 **Crossref** 查询一个 DOI 的书目、类型及关系元数据。输入接受裸 DOI、`doi:` 前缀和 `doi.org` URL，响应以规范化后的 `doi` 标识所查记录。所有状态均带 `metadata_source="crossref"`，说明本次查询来源。
 
-- **显式 DOI**：保留规范化后的 `identifier/doi`，按 DOI 查询 Crossref，补充非空的 `title/authors/year/type`，以及可用的 `relations/review_type/updates`。`metadata_status=found` 表示查到同 DOI 记录，`metadata_source=crossref`；不保证所有书目字段齐全。
-- **元数据未取得**：Crossref 404 返回 `metadata_status=not_found`；网络、HTTP、JSON 或记录不匹配返回 `metadata_status=unavailable` 并附简短 `metadata_error`。两者仍保留规范标识，但不能作为元数据核验成功。关系中的父 DOI 不会取代当前 DOI。
-- **标题**：只用 OpenAlex 候选标题相似度匹配（沿用 0.75 阈值，拒绝不同 DOI 同分最佳匹配），不是首条命中即确认；不匹配则保留原标题并返回 `doi=null`。标题解析及获取过程中的标题解析不自动查询 Crossref；OpenAlex 故障按上面的错误机制返回。
-- **arXiv**：规范化标识，不查询 Crossref。
+- `metadata_status=found`：找到对应 DOI 的 Crossref 注册记录，返回非空 `title/authors/year/type`，以及可用的 `relations/review_type/updates`。找到记录不保证字段齐全，也不保证 Crossref 覆盖所有 DOI 注册机构。关系中的父 DOI 不会取代当前 DOI。
+- `metadata_status=not_found`：Crossref 返回 404。`metadata_status=unavailable`：限流、网络、HTTP、JSON 或记录不匹配等失败，附简短 `metadata_error`。两者仍保留规范 DOI，但不能视为已取得元数据；意外内部错误不伪装成上游不可用。
+- 这不是通用标识解析器：标题、PMID、PMCID、ISBN 和普通 arXiv 标识不受支持（HTTP 400 / MCP 工具错误）。`10.48550/...` 等 arXiv DOI 仍按 DOI 查询 Crossref，可能返回 404，不自动转换成 arXiv 标识。
 
-Crossref 不参与关键词召回，不逐条补全搜索结果，也不重排结果。需要某个 DOI 的补充元数据时，单独调用 `resolve`。
+标题使用 `search` 查 OpenAlex 候选；`get_metadata` 不做标题推断。获取请求中的标题继续通过 OpenAlex 相似度匹配（0.75 阈值，拒绝不同 DOI 同分最佳匹配），不依赖 Crossref 元数据查询成功。直接 DOI 或 arXiv 获取也无需先调用 `get_metadata`；内部 DOI→PMC 标识转换和 PDF 候选发现保持原链路。
+
+Crossref 不参与关键词召回，不逐条补全搜索结果，也不重排结果。需要某个 DOI 的补充元数据时，单独调用 `get_metadata`。
 
 ## 本地与远端 CLI
 

@@ -16,8 +16,8 @@ if TYPE_CHECKING:
     from academic_source.services.application import Application
 
 
-class ResolveInput(BaseModel):
-    identifier: str
+class MetadataInput(BaseModel):
+    doi: str
 
 
 class ParseInput(BaseModel):
@@ -41,14 +41,13 @@ def create_router(application: Application) -> APIRouter:
         except DiscoveryError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    @api.post("/resolve")
-    def resolve(payload: ResolveInput) -> dict[str, Any]:
+    @api.post("/metadata")
+    def get_metadata(payload: MetadataInput) -> dict[str, Any]:
+        """Look up DOI bibliographic, type and relationship metadata in Crossref."""
         try:
-            return application.resolve(payload.identifier)
+            return application.get_metadata(payload.doi)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except DiscoveryError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @api.post("/uploads", status_code=201)
     def upload(file: Annotated[UploadFile, File()]) -> dict[str, Any]:

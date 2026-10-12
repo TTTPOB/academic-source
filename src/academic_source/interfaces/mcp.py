@@ -64,12 +64,16 @@ def create_mcp(application: Application, *, stdio: bool = False) -> FastMCP:
         return await to_thread.run_sync(partial(application.search, query, limit))
 
     @mcp.tool()
-    async def resolve(identifier: str) -> dict[str, Any]:
-        """Normalize identifiers; enrich explicit DOIs via Crossref with metadata_status.
+    async def get_metadata(doi: str) -> dict[str, Any]:
+        """Query Crossref only for a DOI's bibliographic, type and relationship metadata.
 
-        Titles are matched through OpenAlex, without a Crossref metadata lookup.
+        Accept DOI strings, doi: prefixes or doi.org URLs. This is not a general ID
+        resolver: titles, PMID, PMCID, ISBN and non-DOI arXiv IDs are unsupported.
+        metadata_status is found, not_found or unavailable. Found means a matching
+        Crossref record, not complete fields or coverage of every DOI registry.
+        Use search for titles; acquisition matches titles internally.
         """
-        return await to_thread.run_sync(partial(application.resolve, identifier))
+        return await to_thread.run_sync(partial(application.get_metadata, doi))
 
     @mcp.tool()
     async def parse_list(

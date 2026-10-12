@@ -125,7 +125,7 @@ def test_mcp_and_http_share_one_real_job_and_artifact_store(tmp_path):
         )
         assert {tool["name"] for tool in tools.json()["result"]["tools"]} == {
             "search",
-            "resolve",
+            "get_metadata",
             "parse_list",
             "acquire",
             "job_status",
