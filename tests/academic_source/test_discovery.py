@@ -175,23 +175,34 @@ def test_candidate_window_is_bounded_and_does_not_promise_to_fill_limit(transpor
         paper_search.search_papers("paper", sort="made_up")
 
 
-def test_zero_results_and_upstream_failures_are_distinct(transport):
+def test_genuine_zero_results_return_an_empty_list(transport):
     transport(lambda request: response(request, {"results": []}))
     assert discovery.search("nothing here") == []
 
+
+def test_search_network_failure_is_not_a_zero_result(transport):
     def unavailable(_request):
         raise requests.Timeout("test timeout")
 
     transport(unavailable)
     with pytest.raises(DiscoveryError, match="OpenAlex.*network"):
         discovery.search("papers")
+
+
+def test_search_429_without_evidence_is_an_explicit_unknown_limit(transport):
     transport(lambda request: response(request, {}, status=429))
-    with pytest.raises(RateLimited, match="HTTP 429"):
-        discovery.search("papers", config={"openalex_api_key": "fake-unknown-limit"})
+    with pytest.raises(RateLimited, match="HTTP 429") as limited:
+        discovery.search("papers")
+    assert limited.value.kind == "unknown"
+
+
+def test_search_invalid_results_payload_is_not_a_zero_result(transport):
     transport(lambda request: response(request, None))
     with pytest.raises(DiscoveryError, match="invalid results"):
         discovery.search("papers")
 
+
+def test_search_invalid_json_is_not_a_zero_result(transport):
     def invalid_json(request):
         result = response(request, {})
         result._content = b"not JSON"
