@@ -190,6 +190,19 @@ def extract_pdf_url_from_html(html: str, base_url: str) -> str | None:
     return None
 
 
+def claim_download_url(url: str, config: dict[str, Any]) -> bool:
+    """Deduplicate HTTP candidates only within the current acquisition, when enabled."""
+    seen = config.get("_acquisition_attempted_urls")
+    if seen is None:
+        return True
+    parsed = urllib.parse.urlsplit(url.strip())
+    key = parsed._replace(scheme=parsed.scheme.lower(), netloc=parsed.netloc.lower(), fragment="").geturl()
+    if key in seen:
+        return False
+    seen.add(key)
+    return True
+
+
 def download_pdf(
     url: str,
     output_path: Path,
@@ -203,6 +216,8 @@ def download_pdf(
     browser_ua: bool = False,
 ) -> dict[str, Any] | None:
     if require_pdf_like_url and not is_plausible_pdf_url(url):
+        return None
+    if not claim_download_url(url, config):
         return None
 
     try:

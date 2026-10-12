@@ -2,7 +2,13 @@
 
 以下为来源行为、可选浏览器依赖及 Linux CDP 参考部署；返回 [README](../README.md)。
 
-若有 Elsevier API key（配置 `source_config.elsevier_api_key` 或服务进程的 `ELSEVIER_API_KEY` 环境变量），`10.1016/` 的 Cell/Elsevier DOI 在 `fastest`、`legal_only` 策略下先尝试 ElsevierAPI；取得可读 PDF 即停止，不再探测其他来源/浏览器，失败则照常回退。能否取得非 OA 正文取决于 key 的实际订阅权益及请求的网络路径；校园网不保证 API 授权。Nature、Science DOI 和显式的其他来源策略不受此捷径影响。
+`fastest`、`oa_first`、`legal_only` 先用公开元数据渐进发现候选：Unpaywall → OpenAlex → Semantic Scholar → Europe PMC core → PMC 标识转换。每个服务发现候选后马上执行 HTTP 下载与可读 PDF 检查，有可用文件立即停止；API 声明的 PDF、公开落地页、仓储入口不因 URL 缺少 `.pdf` 后缀而丢弃。同一次获取内去重 HTTP 候选，回退阶段不再查询这些服务；没有新增持久失败缓存。
+
+PMC 标识支持旧式 NCBI 数字路径、新式 `PMC...` 路径、大小写及 Europe PMC `?pdf=render` 等形式；识别后先试 `https://europepmc.org/api/getPdf?pmcid=PMC...`。这是 Europe PMC 的网站接口，不保证每个 PMCID 都有 PDF，失败后继续其他候选和既有渠道。Europe PMC 查询使用 `resultType=core`；`isOpenAccess=N` 不会排除明确的 FreePDF。免费访问不代表 CC 许可。
+
+OA HTTP 候选返回 HTML/challenge 不算成功。全部轻量 HTTP 候选未成功后，仅当已经配置 `browser_backend=cdp`，才对最多两个相关 blocked 候选复用已有浏览器函数兜底：每个候选只创建/关闭自己的标签页，同源导航最多 10 秒、每次 PDF 流请求最多 20 秒（不超过配置值），尝试原 URL 和至多一个页面 PDF 链接。不重启浏览器、不处理人工验证码、不承诺跨源文件流或任意网站解析；失败仍进入普通来源策略。
+
+若有 Elsevier API key（配置 `source_config.elsevier_api_key` 或服务进程的 `ELSEVIER_API_KEY` 环境变量），`10.1016/` 的 Cell/Elsevier DOI 在 `fastest`、`legal_only` 的 OA 快路径未成功后优先尝试 ElsevierAPI；取得可读 PDF 即停止，不再探测其他来源/浏览器，失败则照常回退。能否取得非 OA 正文取决于 key 的实际订阅权益及请求的网络路径；校园网不保证 API 授权。Nature、Science DOI 和显式的其他来源策略不受此捷径影响。
 
 ElsevierAPI 先试直接 PDF，失败时 XML 回退使用默认表示寻找 PDF 附件；这不表示 `view=FULL` 在 API 中普遍无效：曾有请求路径返回 400，另一请求路径对默认 XML 与 `FULL` 均返回 200。XML 元数据 200 或 PDF 200 也不等于正文授权（后者可能只是单页图文摘要）；只有经 PDF 内容校验的结果才会被接受。
 

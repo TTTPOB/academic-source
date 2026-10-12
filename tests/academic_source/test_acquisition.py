@@ -171,8 +171,10 @@ def test_optional_exports_fail_without_downgrading_pdf(monkeypatch, tmp_path):
 def test_source_adapter_preserves_failed_attempts_and_publisher_order(
     monkeypatch, tmp_path
 ):
-    from academic_source.sources import LegacySources
+    from academic_source.sources import LegacySources, oa
     from scansci_pdf.sources import publishers
+
+    monkeypatch.setattr(oa, "discover", lambda *args: iter(()))
 
     def rejected(identifier, path, config):
         return {"success": False, "error_type": "auth_required", "error": "paywall"}

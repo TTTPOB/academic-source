@@ -21,6 +21,7 @@ def _pdf(path):
 
 def _patch_handlers(monkeypatch, visited, *, win=None):
     """Replace site I/O, keeping the real planner and execution order in use."""
+    from academic_source import sources
     from scansci_pdf.sources import publishers
 
     def handler(label):
@@ -60,6 +61,20 @@ def _patch_handlers(monkeypatch, visited, *, win=None):
         target = import_module("scansci_pdf.sources." + module)
         for func, label in funcs.items():
             monkeypatch.setattr(target, func, handler(label))
+
+    def fast_oa(doi, work_dir, config):
+        attempts = []
+        for label in ("Unpaywall", "OpenAlexOA", "SemanticScholar", "EuropePMC", "PMC"):
+            result, attempt = sources._attempt(
+                label, handler(label), doi, work_dir, config, len(attempts) + 100
+            )
+            attempts.append(attempt)
+            if result:
+                result.attempts = attempts
+                return result
+        return SourceFailure(reason="not_found", attempts=attempts)
+
+    monkeypatch.setattr(sources, "acquire_oa", fast_oa)
     return handler
 
 
@@ -187,8 +202,15 @@ def test_elsevier_api_short_circuits_other_sources(
         config,
     )
     assert result.source == "ElsevierAPI"
-    assert visited == ["ElsevierAPI"]
-    assert [attempt.source for attempt in result.attempts] == ["ElsevierAPI"]
+    assert visited == [
+        "Unpaywall",
+        "OpenAlexOA",
+        "SemanticScholar",
+        "EuropePMC",
+        "PMC",
+        "ElsevierAPI",
+    ]
+    assert [attempt.source for attempt in result.attempts] == visited
 
 
 @pytest.mark.parametrize(
@@ -228,7 +250,17 @@ def test_elsevier_shortcut_respects_key_policy_and_doi(
         {"scihub_enabled": True, "elsevier_api_key": "example-only" if has_key else ""},
     )
     assert result.source == first
-    assert visited == [first]
+    if policy in ("fastest", "legal_only"):
+        assert visited == [
+            "Unpaywall",
+            "OpenAlexOA",
+            "SemanticScholar",
+            "EuropePMC",
+            "PMC",
+            first,
+        ]
+    else:
+        assert visited == [first]
 
 
 @pytest.mark.parametrize("parallel_sources", [True, False])
@@ -425,7 +457,11 @@ def test_challenge_reason_survives_later_source_failures(monkeypatch, tmp_path):
         {"scihub_enabled": False},
     )
     assert result.reason == "network_error"
-    assert [(item.source, item.reason) for item in result.attempts[:2]] == [
+    assert [
+        (item.source, item.reason)
+        for item in result.attempts
+        if item.source.endswith("Browser")
+    ] == [
         ("ScienceBrowser", "cloudflare_blocked"),
         ("OtherBrowser", "browser_unavailable"),
     ]
@@ -469,13 +505,18 @@ def test_registered_publisher_prefixes_keep_real_download_candidates():
 
 
 def test_unpaywall_missing_email_retains_action_and_message(monkeypatch, tmp_path):
-    from scansci_pdf.sources import publishers, unpaywall
+    from academic_source import sources
+    from academic_source.sources import oa
+    from scansci_pdf.sources import publishers
 
-    real_unpaywall = unpaywall.try_unpaywall
+    real_discover = oa.discover
     visited = []
     _patch_handlers(monkeypatch, visited)
     monkeypatch.setattr(publishers, "get_publisher_fast_sources", lambda doi: [])
-    monkeypatch.setattr(unpaywall, "try_unpaywall", real_unpaywall)
+    monkeypatch.setattr(sources, "acquire_oa", oa.acquire_oa)
+    monkeypatch.setattr(
+        oa, "discover", lambda doi, config: iter([next(real_discover(doi, config))])
+    )
     result = _get(
         tmp_path,
         "legal_only",
@@ -516,6 +557,7 @@ def test_readable_pdf_required_before_source_wins(monkeypatch, tmp_path):
         _pdf(path)
         return {"success": True, "file": str(path)}
 
+    _patch_handlers(monkeypatch, [])
     monkeypatch.setattr(
         publishers,
         "get_publisher_fast_sources",
@@ -523,4 +565,4 @@ def test_readable_pdf_required_before_source_wins(monkeypatch, tmp_path):
     )
     result = _get(tmp_path, "legal_only", {"scihub_enabled": False})
     assert result.source == "Readable"
-    assert [item.source for item in result.attempts] == ["Truncated", "Readable"]
+    assert [item.source for item in result.attempts][-2:] == ["Truncated", "Readable"]

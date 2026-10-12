@@ -11,6 +11,7 @@ from typing import Any, Protocol
 from ..domain import AcquisitionRequest, Attempt
 from ..infrastructure.documents import is_readable_pdf
 from .models import SourceFailure, SourceSuccess
+from .oa import FAST_POLICIES, REPLACED_SOURCES, acquire_oa
 
 Handler = tuple[str, Callable[[str, Path, dict[str, Any]], dict[str, Any] | None]]
 
@@ -98,6 +99,10 @@ def _plan(
     ]
     if config.get("openalex_api_key"):
         oa.append(("OpenAlexContent", try_openalex_content_api))
+    if request.policy in FAST_POLICIES:
+        # These APIs were already queried by progressive discovery, including publisher aliases.
+        oa = [entry for entry in oa if entry[0] not in REPLACED_SOURCES]
+        publisher = [entry for entry in publisher if entry[0] not in REPLACED_SOURCES]
     legal = [*oa, *publisher] if request.policy == "oa_first" else [*publisher, *oa]
 
     grey: list[Handler] = []
@@ -262,6 +267,14 @@ class LegacySources:
         work_dir: Path,
         config: dict[str, Any],
     ) -> SourceSuccess | SourceFailure:
+        config = dict(config)
+        attempts: list[Attempt] = []
+        if not self._arxiv(identifier) and request.policy in FAST_POLICIES:
+            config["_acquisition_attempted_urls"] = set()
+            oa_result = acquire_oa(identifier, work_dir, config)
+            if isinstance(oa_result, SourceSuccess):
+                return oa_result
+            attempts.extend(oa_result.attempts)
         if self._arxiv(identifier):
             from scansci_pdf.sources.arxiv import download_arxiv_pdf
 
@@ -275,16 +288,27 @@ class LegacySources:
             handlers = [("arXiv", arxiv)]
         else:
             handlers = _plan(identifier, request, config)
-        attempts: list[Attempt] = []
         for index, (label, fn) in enumerate(handlers):
             result, attempt = _attempt(label, fn, identifier, work_dir, config, index)
             attempts.append(attempt)
             if result:
                 result.attempts = attempts
                 return result
-        selected = next(
-            (item for item in attempts if item.reason == "cloudflare_blocked"), None
-        )
+        selected = None
+        for reason in (
+            "cloudflare_blocked",
+            "blocked",
+            "auth_required",
+            "login_required",
+            "paywall",
+            "rate_limited",
+            "config_needed",
+            "network_error",
+            "invalid_pdf",
+        ):
+            selected = next((item for item in attempts if item.reason == reason), None)
+            if selected:
+                break
         if selected is None:
             selected = next(
                 (
@@ -299,11 +323,21 @@ class LegacySources:
             "paywall": "auth_required",
             "login_required": "auth_required",
             "cloudflare_blocked": "network_error",
+            "blocked": "network_error",
             "browser_unavailable": "unsupported",
         }.get(reason, reason)
         return SourceFailure(
             reason=reason,
-            message=selected.message if selected else "",
+            message=(
+                {
+                    "blocked": "Public PDF requests were blocked; check the browser session or retry later.",
+                    "network_error": "Public PDF requests failed; check the network or retry later.",
+                    "invalid_pdf": "The available response was not a readable PDF; try another source.",
+                    "no_pdf_found": "Public locations did not return a PDF; try another access channel.",
+                }.get(selected.reason, selected.message)
+                if selected
+                else ""
+            ),
             action=selected.action if selected else "",
             attempts=attempts,
         )
