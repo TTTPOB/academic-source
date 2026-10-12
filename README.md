@@ -83,6 +83,10 @@ curl -o paper.pdf http://SERVER:8000/api/v1/artifacts/ARTIFACT_ID/content
 
 可选请求字段：`markdown`、`supplementary`、`bibtex`。PDF 获取成功与附加转换是否成功分开报告。原生 JATS 与模型清洗尚未实现。
 
+MCP、HTTP 和 CLI 的任务结果使用同一精简投影：成功单篇保留产物、命中的 `artifacts[].provenance.source/url`、非空元数据和警告；不返回逐来源未命中或重复尝试的 `attempts`。失败单篇不会消失，即使任务为 `partial`，仍保留其 `identifier`、`status` 和一个汇总 `reason`；只有配置、鉴权、带明确 `action` 的阻塞及需检查服务日志的内部错误保留非空 `message/action`。转换/导出警告和任务级 `error` 不受影响。空的单篇 `artifacts/metadata/warnings/message/action` 字段省略；顶层 `artifacts` 始终为列表，HTTP 下载地址与 stdio 导出方式不变。
+
+这是响应契约的精简：客户端不要依赖响应中的 `attempts` 或空字段固定存在，应使用产物来源和单篇汇总状态。完整尝试仍存于原有内部任务记录，持久化结构不变；精简响应不能用来覆盖该记录。
+
 ## 配置与存储
 
 默认数据目录 `~/.academic-source`，可用 `ACADEMIC_SOURCE_DATA_DIR` 指定。服务读取该目录的 `settings.json`，例如：
