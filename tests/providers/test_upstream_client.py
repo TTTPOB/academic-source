@@ -255,6 +255,38 @@ def test_daily_429_reuses_reset_without_another_request(upstream, session):
     assert "api.openalex.org" not in serialized
 
 
+@pytest.mark.parametrize(
+    ("kind", "body"),
+    [
+        ("request_rate", b'{"message": "Exceeded 100 requests per second"}'),
+        ("unknown", b'{"message": "Unclassified upstream restriction"}'),
+    ],
+)
+def test_short_service_cooldown_is_shared_across_upstream_keys(
+    upstream, session, kind, body
+):
+    upstream.routes["/works"] = (429, {"Retry-After": "2"}, body)
+    with pytest.raises(RateLimited) as first:
+        get_json(
+            "https://api.openalex.org/works",
+            {},
+            params={"api_key": "account-one"},
+            operation="search",
+        )
+    with pytest.raises(RateLimited) as second:
+        get_json(
+            "https://api.openalex.org/works/free",
+            {},
+            params={"api_key": "account-two"},
+            operation="lookup",
+        )
+    assert first.value.kind == second.value.kind == kind
+    assert first.value.retry_at == second.value.retry_at
+    assert len(upstream.calls) == 1
+    assert get_json("https://api.crossref.org/works/free", {}) == {"ok": True}
+    assert [call[1] for call in upstream.calls] == ["/works", "/works/free"]
+
+
 @pytest.mark.parametrize("retry_header", ["5", "http-date"])
 def test_explicit_rps_429_uses_retry_after_and_free_lookup_cools_down(
     upstream, session, retry_header

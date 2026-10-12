@@ -1,6 +1,6 @@
 """Shared process-local admission and safe JSON/text requests.
 
-Admission is shared by service; OpenAlex budget observations belong to the
+Admission and short cooldowns are shared by service; budget observations belong to the
 credential actually sent (or the anonymous egress), not an application Bearer.
 No automatic retries or long budget-reset sleeps are performed here.
 """
@@ -38,13 +38,13 @@ _HOST_CONCURRENCY = {
 class _Gate:
     active: int = 0
     last_start: float = -math.inf
+    cooldown: RateLimited | None = None
 
 
 @dataclass
 class _Observation:
     remaining: int | None = None
     reset_at: float | None = None
-    cooldown: RateLimited | None = None
 
 
 class _Admission:
@@ -64,7 +64,7 @@ class _Admission:
         with self.condition:
             gate = self.gates.setdefault(source, _Gate())
             while True:
-                self._check_budget(source, identity, cost)
+                self._check_limits(source, identity, cost)
                 delay = interval - (time.monotonic() - gate.last_start)
                 if (concurrency <= 0 or gate.active < concurrency) and delay <= 0:
                     gate.active += 1
@@ -73,14 +73,11 @@ class _Admission:
                 # Condition.wait releases the lock, so other services can proceed.
                 self.condition.wait(max(delay, 0.001) if delay > 0 else None)
 
-    def _check_budget(
+    def _check_limits(
         self, source: str, identity: tuple[str, str, str], cost: int
     ) -> None:
-        observation = self.observations.get(identity)
-        if observation is None:
-            return
         now = time.time()
-        cooldown = observation.cooldown
+        cooldown = self.gates[source].cooldown
         if (
             cooldown is not None
             and cooldown.retry_at is not None
@@ -93,6 +90,9 @@ class _Admission:
                 remaining=cooldown.remaining,
                 required=cost if source == "openalex" else None,
             )
+        observation = self.observations.get(identity)
+        if observation is None:
+            return
         if (
             observation.reset_at is not None
             and observation.reset_at > now
@@ -165,7 +165,7 @@ class _Admission:
             # Daily observations apply only to operations costing more than the
             # remaining budget. In particular a free lookup remains admissible.
             if error is not None and error.kind != "daily_budget":
-                observation.cooldown = error
+                self.gates[source].cooldown = error
             self.condition.notify_all()
         return error
 
