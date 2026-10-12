@@ -21,7 +21,6 @@ from .oa_candidates import (
     expand_candidate,
     openalex_candidates,
     pmc_candidates,
-    semantic_scholar_candidates,
     unpaywall_candidates,
 )
 
@@ -30,7 +29,6 @@ REPLACED_SOURCES = {
     "Unpaywall",
     "OpenAlexOA",
     "OpenAlexContent",
-    "SemanticScholar",
     "EuropePMC",
     "PMC",
 }
@@ -111,13 +109,6 @@ def discover(doi: str, config: dict[str, Any]):
         openalex_candidates(payload, str(config.get("openalex_api_key") or "")),
         attempt,
     )
-
-    payload, attempt = _metadata(
-        "SemanticScholar",
-        f"https://api.semanticscholar.org/graph/v1/paper/DOI:{q}?fields=openAccessPdf,externalIds",
-        config,
-    )
-    yield semantic_scholar_candidates(payload), attempt
 
     params = urlencode(
         {"query": f"DOI:{doi}", "format": "json", "pageSize": 5, "resultType": "core"}

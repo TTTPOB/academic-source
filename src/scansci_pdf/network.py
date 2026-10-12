@@ -287,7 +287,6 @@ _DEFAULT_HOST_CONCURRENCY: dict[str, int] = {
     "api.crossref.org": 5,
     "api.openaire.eu": 3,
     "doaj.org": 3,
-    "api.semanticscholar.org": 3,
     "api.core.ac.uk": 3,
     "europepmc.org": 3,
     "www.ebi.ac.uk": 3,

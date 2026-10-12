@@ -62,59 +62,6 @@ CHECKS = [
 PROBE_DOI = "10.1038/nature14539"
 
 
-def check_s2_batch(failures: list[str], warnings: list[str]) -> None:
-    """S2 batch endpoint: the backbone of batch pretriage (500 DOIs/request).
-
-    S2 rate-limits per IP aggressively (chronic, documented) — after backoff
-    retries a 429/400 is a WARNING, not rot. Broken payloads / connection
-    errors are rot and fail hard.
-    """
-    resp = None
-    last_exc: Exception | None = None
-    try:
-        for attempt in range(4):
-            try:
-                resp = requests.post(
-                    "https://api.semanticscholar.org/graph/v1/paper/batch?fields=isOpenAccess",
-                    json={"ids": [f"DOI:{PROBE_DOI}"]},
-                    headers=UA, timeout=30,
-                )
-                last_exc = None
-            except Exception as exc:  # transient TLS/connect resets
-                last_exc = exc
-                time.sleep(5)
-                continue
-            if resp.status_code not in (429, 400):
-                break
-            time.sleep(10 * (attempt + 1))
-    except Exception as exc:
-        print(f"[FAIL] s2_batch_api: {exc.__class__.__name__}: {exc}")
-        failures.append("s2_batch_api")
-        return
-
-    if last_exc is not None:
-        print(f"[FAIL] s2_batch_api: {last_exc.__class__.__name__}: {last_exc}")
-        failures.append("s2_batch_api")
-        return
-
-    if resp is not None and resp.status_code == 200:
-        data = resp.json()
-        ok = (
-            isinstance(data, list) and len(data) == 1
-            and isinstance(data[0], dict) and "isOpenAccess" in data[0]
-        )
-        print(f"[{'PASS' if ok else 'FAIL'}] s2_batch_api: HTTP 200"
-              f"{'' if ok else ' | unexpected payload'}")
-        if not ok:
-            failures.append("s2_batch_api")
-        return
-
-    status = resp.status_code if resp is not None else "?"
-    print(f"[WARN] s2_batch_api: HTTP {status} after backoff — IP rate-limited "
-          "(chronic); investigate only if repeated across runs")
-    warnings.append("s2_batch_api")
-
-
 def check_unpaywall(failures: list[str]) -> None:
     last_exc: Exception | None = None
     resp = None
@@ -221,7 +168,7 @@ def check_scihub_mirrors(warnings: list[str]) -> None:
 
 
 def _get_with_429_backoff(session, url, **kwargs):
-    """arXiv/S2 429s clear in seconds (documented behavior) — retry twice."""
+    """Retry short-lived HTTP rate limits twice before reporting failure."""
     for attempt in range(3):
         resp = session.get(url, **kwargs)
         if resp.status_code != 429 or attempt == 2:
@@ -254,7 +201,6 @@ def main() -> None:
             print(f"[FAIL] {name}: {exc.__class__.__name__}: {exc}")
             failures.append(name)
 
-    check_s2_batch(failures, warnings)
     check_unpaywall(failures)
     check_libgen_lane(failures, warnings)
     check_scihub_mirrors(warnings)

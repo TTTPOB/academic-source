@@ -111,14 +111,115 @@ def test_core_query_finds_pmc_before_render_and_id_conversion(monkeypatch, tmp_p
             )
         if "api/getPdf" in url:
             return Response(url, body=pdf_bytes())
-        assert "pdf=render" not in url
-        assert "idconv" not in url
-        return Response(url)
+        if "api.openalex.org/works/doi:" in url:
+            return Response(url)
+        pytest.fail(f"Unexpected query/download before Europe PMC success: {url}")
 
     monkeypatch.setattr(oa, "fetch", fetch)
     result = oa.acquire_oa("10.1128/MCB.22.19.6759-6766.2002", tmp_path, {})
     assert isinstance(result, SourceSuccess)
+    assert len(visited) == 3
+    assert [attempt.source for attempt in result.attempts] == [
+        "Unpaywall",
+        "OpenAlexOA",
+        "EuropePMC",
+        "EuropePMC",
+    ]
     assert visited[-1] == "https://europepmc.org/api/getPdf?pmcid=PMC134036"
+
+
+def test_progressive_metadata_chain_reaches_pmc_after_invalid_openalex_pdf(
+    monkeypatch, tmp_path
+):
+    doi = "10.1234/paper"
+    visited = []
+    responses = []
+
+    def fetch(url, config, **kwargs):
+        visited.append(url)
+        parsed = urlsplit(url)
+        if parsed.netloc == "api.unpaywall.org":
+            assert parsed.path == "/v2/10.1234%2Fpaper"
+            assert parse_qs(parsed.query) == {"email": ["reader@university.edu"]}
+            response = Response(url)
+        elif parsed.netloc == "api.openalex.org":
+            assert parsed.path == "/works/doi:10.1234%2Fpaper"
+            response = Response(
+                url, payload={"locations": [{"pdf_url": "https://repo.org/broken"}]}
+            )
+        elif url == "https://repo.org/broken":
+            response = Response(url, body=b"%PDF-1.7\ntruncated")
+        elif parsed.netloc == "www.ebi.ac.uk":
+            assert parse_qs(parsed.query) == {
+                "query": [f"DOI:{doi}"],
+                "format": ["json"],
+                "pageSize": ["5"],
+                "resultType": ["core"],
+            }
+            response = Response(url, payload={"resultList": {"result": []}})
+        elif parsed.netloc == "www.ncbi.nlm.nih.gov":
+            assert parse_qs(parsed.query) == {"ids": [doi], "format": ["json"]}
+            response = Response(url, payload={"records": [{"pmcid": "PMC134036"}]})
+        else:
+            assert url == "https://europepmc.org/api/getPdf?pmcid=PMC134036"
+            response = Response(url, body=pdf_bytes())
+        responses.append(response)
+        return response
+
+    monkeypatch.setattr(oa, "fetch", fetch)
+    result = oa.acquire_oa(doi, tmp_path, {"email": "reader@university.edu"})
+    assert isinstance(result, SourceSuccess)
+    assert [urlsplit(url).netloc for url in visited] == [
+        "api.unpaywall.org",
+        "api.openalex.org",
+        "repo.org",
+        "www.ebi.ac.uk",
+        "www.ncbi.nlm.nih.gov",
+        "europepmc.org",
+    ]
+    assert [attempt.source for attempt in result.attempts] == [
+        "Unpaywall",
+        "OpenAlexOA",
+        "OpenAlexOA",
+        "EuropePMC",
+        "PMC",
+        "EuropePMC",
+    ]
+    assert result.attempts[2].reason == "invalid_pdf"
+    assert all(response.closed for response in responses)
+    assert list(tmp_path.iterdir()) == [result.path]
+
+
+def test_openalex_versioned_arxiv_pdf_stops_before_later_metadata(
+    monkeypatch, tmp_path
+):
+    visited = []
+    pdf = "https://arxiv.org/pdf/2401.01234v2.pdf"
+
+    def fetch(url, config, **kwargs):
+        visited.append(url)
+        if "api.openalex.org" in url:
+            return Response(
+                url,
+                payload={
+                    "locations": [
+                        {
+                            "is_oa": True,
+                            "pdf_url": pdf,
+                            "landing_page_url": "https://arxiv.org/abs/2401.01234v2",
+                        }
+                    ]
+                },
+            )
+        assert url == pdf
+        return Response(url, body=pdf_bytes())
+
+    monkeypatch.setattr(oa, "fetch", fetch)
+    result = oa.acquire_oa("10.1234/paper", tmp_path, {})
+    assert isinstance(result, SourceSuccess)
+    assert result.source == "OpenAlexOA"
+    assert result.url == pdf
+    assert len(visited) == 2
 
 
 def test_duplicate_candidates_and_html_links_download_once_then_early_stop(
@@ -128,32 +229,47 @@ def test_duplicate_candidates_and_html_links_download_once_then_early_stop(
     landing = "https://repo.org/landing"
     api = "https://repo.org/api/file?id=42"
 
-    def discover(doi, config):
-        yield (
-            [Candidate(landing, "First"), Candidate(landing + "#section", "First")],
-            Attempt(source="First", status="discovered"),
-        )
-        yield (
-            [Candidate(api, "Second"), Candidate("https://repo.org/good", "Second")],
-            Attempt(source="Second", status="discovered"),
-        )
-        pytest.fail("Metadata queried after a usable file")
-
     def fetch(url, config, **kwargs):
         visited.append(url)
+        if "api.unpaywall.org" in url:
+            return Response(
+                url,
+                payload={
+                    "best_oa_location": {"url_for_landing_page": landing},
+                    "oa_locations": [{"url_for_landing_page": landing + "#section"}],
+                },
+            )
+        if "api.openalex.org" in url:
+            return Response(
+                url,
+                payload={
+                    "locations": [
+                        {"pdf_url": api},
+                        {"pdf_url": "https://repo.org/good"},
+                    ]
+                },
+            )
         if url == landing:
             return Response(
                 url, body=f'<meta name="citation_pdf_url" content="{api}">'.encode()
             )
         if url == api:
             return Response(url, body=b"<html>Not a PDF</html>", mime="application/pdf")
+        assert url == "https://repo.org/good"
         return Response(url, body=pdf_bytes())
 
-    monkeypatch.setattr(oa, "discover", discover)
     monkeypatch.setattr(oa, "fetch", fetch)
-    result = oa.acquire_oa("10.1234/paper", tmp_path, {})
+    result = oa.acquire_oa(
+        "10.1234/paper", tmp_path, {"email": "reader@university.edu"}
+    )
     assert isinstance(result, SourceSuccess)
-    assert visited == [landing, api, "https://repo.org/good"]
+    assert len(visited) == 5
+    assert [url for url in visited if "repo.org" in url] == [
+        landing,
+        api,
+        "https://repo.org/good",
+    ]
+    assert result.source == "OpenAlexOA"
     assert any(item.reason == "no_pdf_found" for item in result.attempts)
 
 

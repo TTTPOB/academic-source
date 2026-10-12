@@ -73,7 +73,6 @@ def _plan(
     from scansci_pdf.sources.openaire import try_openaire
     from scansci_pdf.sources.openalex import try_openalex_content_api, try_openalex_oa
     from scansci_pdf.sources.publishers import get_publisher_fast_sources
-    from scansci_pdf.sources.semantic_scholar import try_semanticscholar
     from scansci_pdf.sources.unpaywall import try_unpaywall
     from scansci_pdf.sources.vpnsci import try_vpnsci
 
@@ -89,7 +88,6 @@ def _plan(
     oa: list[Handler] = [
         ("Unpaywall", try_unpaywall),
         ("OpenAlexOA", try_openalex_oa),
-        ("SemanticScholar", try_semanticscholar),
         ("OpenAIRE", try_openaire),
         ("DOAJ", try_doaj),
         ("CrossrefPage", try_crossref_page_scrape),

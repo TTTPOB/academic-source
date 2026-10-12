@@ -8,7 +8,6 @@ from academic_source.sources.oa_candidates import (
     expand_candidate,
     openalex_candidates,
     pmcid_from_location,
-    semantic_scholar_candidates,
     unpaywall_candidates,
 )
 
@@ -76,14 +75,40 @@ def test_openalex_includes_public_locations_not_just_primary():
     ]
 
 
-def test_semantic_scholar_retains_external_pmc_and_arxiv_ids():
-    candidates = semantic_scholar_candidates(
-        {"externalIds": {"PubMedCentral": "134036", "ArXiv": "2401.01234v2"}}
+def test_openalex_repository_locations_retain_pmc_and_versioned_arxiv():
+    candidates = openalex_candidates(
+        {
+            "locations": [
+                {
+                    "is_oa": False,
+                    "landing_page_url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC134036/",
+                },
+                {
+                    "is_oa": True,
+                    "pdf_url": "https://arxiv.org/pdf/2401.01234v2.pdf",
+                    "landing_page_url": "https://arxiv.org/abs/2401.01234v2",
+                },
+            ]
+        }
     )
-    assert [item.url for item in candidates] == [
-        "PMC134036",
-        "https://arxiv.org/pdf/2401.01234v2.pdf",
+    assert [item.url for item in expand_candidate(candidates[0])][:1] == [
+        "https://europepmc.org/api/getPdf?pmcid=PMC134036"
     ]
+    assert [item.url for item in candidates[1:]] == [
+        "https://arxiv.org/pdf/2401.01234v2.pdf",
+        "https://arxiv.org/abs/2401.01234v2",
+    ]
+    assert candidates[1].landing_url == candidates[2].url
+
+
+def test_europepmc_retains_pmcid_without_fulltext_urls():
+    candidates = europepmc_candidates(
+        {"resultList": {"result": [{"pmcid": "PMC134036", "isOpenAccess": "N"}]}}
+    )
+    assert candidates == [Candidate("PMC134036", "EuropePMC")]
+    assert expand_candidate(candidates[0])[0].url == (
+        "https://europepmc.org/api/getPdf?pmcid=PMC134036"
+    )
 
 
 def test_europepmc_free_pdf_does_not_require_cc_or_pdf_suffix():

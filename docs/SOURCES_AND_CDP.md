@@ -2,7 +2,9 @@
 
 以下为来源行为、可选浏览器依赖及 Linux CDP 参考部署；返回 [README](../README.md)。
 
-`fastest`、`oa_first`、`legal_only` 先用公开元数据渐进发现候选：Unpaywall → OpenAlex → Semantic Scholar → Europe PMC core → PMC 标识转换。每个服务发现候选后马上执行 HTTP 下载与可读 PDF 检查，有可用文件立即停止；API 声明的 PDF、公开落地页、仓储入口不因 URL 缺少 `.pdf` 后缀而丢弃。同一次获取内去重 HTTP 候选，回退阶段不再查询这些服务；没有新增持久失败缓存。
+`fastest`、`oa_first`、`legal_only` 先用公开元数据渐进发现候选：Unpaywall → OpenAlex → Europe PMC core → PMC 标识转换。每个服务发现候选后马上执行 HTTP 下载与可读 PDF 检查，有可用文件立即停止；API 声明的 PDF、公开落地页、仓储入口不因 URL 缺少 `.pdf` 后缀而丢弃。同一次获取内去重 HTTP 候选，回退阶段不再查询这些服务；没有新增持久失败缓存。
+
+OpenAlex 的公开仓储位置保留 arXiv PDF/落地页（包括版本号）；OpenAlex 的 PMC 落地页与 Europe PMC core 的 `pmcid` 都可转成直接 PDF 候选。直接提交 DOI 或 arXiv 标识的获取路径照常可用，候选发现不保证覆盖每篇论文的预印本。
 
 PMC 标识支持旧式 NCBI 数字路径、新式 `PMC...` 路径、大小写及 Europe PMC `?pdf=render` 等形式；识别后先试 `https://europepmc.org/api/getPdf?pmcid=PMC...`。这是 Europe PMC 的网站接口，不保证每个 PMCID 都有 PDF，失败后继续其他候选和既有渠道。Europe PMC 查询使用 `resultType=core`；`isOpenAccess=N` 不会排除明确的 FreePDF。免费访问不代表 CC 许可。
 

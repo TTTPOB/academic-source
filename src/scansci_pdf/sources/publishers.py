@@ -17,7 +17,6 @@ from ..science_transport import _SCIENCE_DOI_PREFIX
 from .crossref import try_crossref
 from .nature import try_nature_direct
 from .openalex import try_openalex_oa
-from .semantic_scholar import try_semanticscholar
 from .springer_tdm import try_springer_tdm
 from .unpaywall import try_unpaywall
 
@@ -644,7 +643,6 @@ _FN_MAP.update({
     "Crossref": try_crossref,
     "Unpaywall": try_unpaywall,
     "OpenAlexOA": try_openalex_oa,
-    "SemanticScholar": try_semanticscholar,
     "MDPIDirect": try_mdpi_direct,
     "SpringerTDM": try_springer_tdm,
     "ScienceDirect": try_science_direct,

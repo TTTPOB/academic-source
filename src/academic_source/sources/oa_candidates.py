@@ -138,27 +138,6 @@ def openalex_candidates(payload: dict[str, Any], api_key: str = "") -> list[Cand
     return candidates
 
 
-def semantic_scholar_candidates(payload: dict[str, Any]) -> list[Candidate]:
-    candidates = []
-    ids = payload.get("externalIds") or {}
-    for key, value in ids.items():
-        if key.lower() in {"pubmedcentral", "pmcid", "pmc"} and value:
-            pmcid = str(value)
-            if pmcid.isdigit():
-                pmcid = f"PMC{pmcid}"
-            candidates.append(Candidate(pmcid, "SemanticScholar"))
-    pdf = payload.get("openAccessPdf") or {}
-    if pdf.get("url"):
-        candidates.append(Candidate(pdf["url"], "SemanticScholar"))
-    if ids.get("ArXiv"):
-        candidates.append(
-            Candidate(
-                f"https://arxiv.org/pdf/{ids['ArXiv']}.pdf", "SemanticScholar(arXiv)"
-            )
-        )
-    return candidates
-
-
 def europepmc_candidates(payload: dict[str, Any]) -> list[Candidate]:
     candidates = []
     for item in payload.get("resultList", {}).get("result", []):

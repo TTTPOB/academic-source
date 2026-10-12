@@ -45,7 +45,6 @@ def _patch_handlers(monkeypatch, visited, *, win=None):
             "try_openalex_oa": "OpenAlexOA",
             "try_openalex_content_api": "OpenAlexContent",
         },
-        "semantic_scholar": {"try_semanticscholar": "SemanticScholar"},
         "openaire": {"try_openaire": "OpenAIRE"},
         "oa_discovery": {"try_doaj": "DOAJ"},
         "crossref": {"try_crossref_page_scrape": "CrossrefPage"},
