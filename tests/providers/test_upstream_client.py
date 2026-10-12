@@ -99,18 +99,27 @@ def upstream():
 
 @pytest.fixture
 def session(upstream, monkeypatch):
-    class LocalSession(requests.Session):
-        def request(self, method, url, **kwargs):
-            # Only the transport is redirected; admission sees the actual host.
-            parsed = urlsplit(url)
+    class LocalAdapter(requests.adapters.HTTPAdapter):
+        def send(self, request, **kwargs):
+            # Keep logical URLs so requests follows redirects normally; only
+            # the transport destination changes to the local HTTP server.
+            logical_url = request.url
+            parsed = urlsplit(logical_url)
             local = urlsplit(upstream.url)
-            url = urlunsplit(
+            request.url = urlunsplit(
                 (local.scheme, local.netloc, parsed.path, parsed.query, "")
             )
-            return super().request(method, url, **kwargs)
+            try:
+                response = super().send(request, **kwargs)
+            finally:
+                request.url = logical_url
+            response.url = logical_url
+            return response
 
-    with LocalSession() as session:
+    with requests.Session() as session:
         session.trust_env = False
+        session.mount("http://", LocalAdapter())
+        session.mount("https://", LocalAdapter())
         monkeypatch.setattr(network, "_get_session", lambda config: session)
         yield session
 
@@ -221,6 +230,58 @@ def test_success_budget_blocks_search_and_content_but_allows_lookup_and_other_id
         "/works/seed",
         "/works/free",
         "/works",
+    ]
+
+
+def test_content_redirect_updates_budget_without_accepting_cdn_budget(
+    upstream, session
+):
+    upstream.routes["/works/seed"] = (
+        200,
+        {"X-RateLimit-Remaining": "150", "X-RateLimit-Reset": "60"},
+        b'{"id": "W1"}',
+    )
+    upstream.routes["/works/W1.pdf"] = (
+        302,
+        {
+            "Location": "https://signed-cdn.example/full.pdf",
+            "X-RateLimit-Remaining": "50",
+            "X-RateLimit-Reset": "60",
+        },
+        b"",
+    )
+    upstream.routes["/full.pdf"] = (
+        200,
+        {"X-RateLimit-Remaining": "9999", "X-RateLimit-Reset": "600"},
+        b"PDF content",
+    )
+    config = {"openalex_api_key": "content-account"}
+    params = openalex_params(config)
+    assert get_json(
+        "https://api.openalex.org/works/seed",
+        config,
+        params=params,
+        operation="lookup",
+    ) == {"id": "W1"}
+    content_url = openalex_content_url("W1", config)
+    with network.fetch(content_url, config, stream=True) as response:
+        assert response.content == b"PDF content"
+    with pytest.raises(RateLimited) as limited:
+        network.fetch(content_url, config, stream=True)
+    assert limited.value.kind == "daily_budget"
+    assert limited.value.remaining == 50
+    assert limited.value.required == 100
+    assert get_json(
+        "https://api.openalex.org/works/free",
+        config,
+        params=params,
+        operation="lookup",
+    ) == {"ok": True}
+    assert [call[1] for call in upstream.calls] == [
+        "/works/seed",
+        "/works/W1.pdf",
+        "/full.pdf",
+        "/works/free",
     ]
 
 

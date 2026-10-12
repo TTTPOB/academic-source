@@ -118,16 +118,18 @@ class _Admission:
         identity: tuple[str, str, str],
         cost: int,
         response: requests.Response,
+        *,
+        read_budget: bool = True,
     ) -> RateLimited | None:
         now = time.time()
         remaining = (
             _integer_header(response, "X-RateLimit-Remaining")
-            if source == "openalex"
+            if source == "openalex" and read_budget
             else None
         )
         reset_seconds = (
             _seconds(response.headers.get("X-RateLimit-Reset"))
-            if source == "openalex"
+            if source == "openalex" and read_budget
             else None
         )
         reset_at = now + reset_seconds if reset_seconds is not None else None
@@ -337,7 +339,24 @@ def request_response(
             allow_redirects=allow_redirects,
             stream=stream,
         )
-        error = _admission.observe(source, identity, cost, response)
+        read_budget = True
+        if source == "openalex" and response.history:
+            # Content charges can be reported on its redirect, not the signed
+            # CDN response. Only OpenAlex itself can update its daily budget.
+            for redirect in response.history:
+                if (
+                    redirect.status_code < 400
+                    and _service(redirect.url, None)[0] == source
+                ):
+                    _admission.observe(source, identity, cost, redirect)
+            read_budget = _service(response.url, None)[0] == source
+        error = _admission.observe(
+            source,
+            identity,
+            cost,
+            response,
+            read_budget=read_budget,
+        )
         if error is not None:
             raise error
         if stream:
