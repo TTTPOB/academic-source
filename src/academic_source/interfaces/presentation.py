@@ -38,7 +38,7 @@ def _result_data(
         for artifact in result.artifacts
     ]
     if result.status == "succeeded":
-        for key in ("reason", "message", "action"):
+        for key in ("reason", "message", "action", "rate_limit"):
             data.pop(key)
     else:
         # Keep one aggregate outcome, not a source-by-source failure transcript.
@@ -53,7 +53,7 @@ def _result_data(
         if not actionable:
             data.pop("message")
             data.pop("action")
-    for key in ("artifacts", "metadata", "warnings", "message", "action"):
+    for key in ("artifacts", "metadata", "warnings", "message", "action", "rate_limit"):
         if not data.get(key):
             data.pop(key, None)
     return data

@@ -20,6 +20,7 @@ from academic_source.infrastructure.storage import Store
 from academic_source.settings import Settings
 from academic_source.sources import LegacySources, Source
 from academic_source.sources.models import SourceFailure
+from scansci_pdf.upstream_errors import RateLimited
 
 from . import discovery, lists
 from .downloads import DownloadCapabilities
@@ -183,6 +184,15 @@ class Application:
             for entry in entries:
                 try:
                     result = self._acquire(entry, job.request, job.id, config)
+                except RateLimited as exc:
+                    result = AcquisitionResult(
+                        identifier=entry["identifier"],
+                        status="failed",
+                        reason="rate_limited",
+                        message=str(exc),
+                        action="retry_later",
+                        rate_limit=exc.to_dict(),
+                    )
                 except Exception:
                     log.exception("Acquisition failed for %s", entry["identifier"])
                     result = AcquisitionResult(
@@ -273,6 +283,7 @@ class Application:
                         reason=outcome.reason,
                         message=outcome.message,
                         action=outcome.action,
+                        rate_limit=outcome.rate_limit,
                         attempts=outcome.attempts,
                     )
                 pdf = outcome.path

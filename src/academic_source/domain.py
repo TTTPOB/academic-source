@@ -41,6 +41,7 @@ class Attempt(BaseModel):
     reason: str = ""
     message: str = ""
     action: str = ""
+    rate_limit: dict[str, Any] = Field(default_factory=dict)
 
 
 class AcquisitionRequest(BaseModel):
@@ -82,6 +83,7 @@ class AcquisitionResult(BaseModel):
     reason: str = ""
     message: str = ""
     action: str = ""
+    rate_limit: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     cached: bool = False

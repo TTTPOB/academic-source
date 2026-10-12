@@ -2,22 +2,18 @@
 
 from __future__ import annotations
 
-import json
 import re
 import unicodedata
-from contextlib import nullcontext
 from datetime import date
 from difflib import SequenceMatcher
 from typing import Any
 
-import requests
-
 from .identifiers import normalize_doi
+from .upstream_client import get_json, openalex_params
+from .upstream_errors import UpstreamError
 
-_SEARCH_TIMEOUT = 30
-_USER_AGENT = "academic-source/0.1 (https://github.com/TTTPOB/academic-source)"
 _MAX_LIMIT = 100
-_MAX_CANDIDATES = 200  # OpenAlex's per-page maximum; never paginate to fill a limit.
+_MAX_CANDIDATES = 100  # OpenAlex's per-page maximum; never paginate to fill a limit.
 _NON_PAPER_TYPES = {
     "peer-review",
     "component",
@@ -53,52 +49,20 @@ _PARATEXT_TITLES = {
 }
 
 
-class DiscoveryError(RuntimeError):
-    """An upstream discovery request failed, rather than returning no matches."""
-
-
-def _plain_session() -> requests.Session:
-    session = requests.Session()
-    session.headers.update({"User-Agent": _USER_AGENT})
-    return session
-
-
 def _openalex_get(
     entity: str,
     params: dict[str, Any],
     config: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Close owned sessions/responses, but leave the shared configured session alive."""
-    if config is not None:
-        from .network import _get_session, request_timeout
-
-        context = nullcontext(_get_session(config))
-        timeout = request_timeout(config)
-        if config.get("openalex_api_key"):
-            params = {**params, "api_key": config["openalex_api_key"]}
-    else:
-        context = _plain_session()
-        timeout = _SEARCH_TIMEOUT
-    try:
-        with (
-            context as session,
-            session.get(
-                f"https://api.openalex.org/{entity}",
-                params=params,
-                timeout=timeout,
-            ) as response,
-        ):
-            response.raise_for_status()
-            data = response.json()
-    except json.JSONDecodeError as exc:
-        raise DiscoveryError("OpenAlex returned invalid JSON") from exc
-    except requests.HTTPError as exc:
-        status = exc.response.status_code if exc.response is not None else "unknown"
-        raise DiscoveryError(f"OpenAlex request failed (HTTP {status})") from exc
-    except requests.RequestException as exc:
-        raise DiscoveryError("OpenAlex request failed (network error)") from exc
+    data = get_json(
+        f"https://api.openalex.org/{entity}",
+        config,
+        source="openalex",
+        operation="search" if "search" in params else "list",
+        params=openalex_params(config or {}, params),
+    )
     if not isinstance(data, dict) or not isinstance(data.get("results"), list):
-        raise DiscoveryError("OpenAlex returned an invalid results payload")
+        raise UpstreamError("openalex", "OpenAlex returned an invalid results payload")
     return data["results"]
 
 

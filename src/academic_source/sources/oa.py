@@ -11,6 +11,8 @@ import requests
 
 from scansci_pdf.network import fetch, polite_delay
 from scansci_pdf.pdf_utils import claim_download_url
+from scansci_pdf.upstream_client import openalex_params
+from scansci_pdf.upstream_errors import RateLimited
 
 from ..domain import Attempt
 from ..infrastructure.documents import is_readable_pdf
@@ -52,6 +54,15 @@ def _metadata(source: str, url: str, config: dict[str, Any]) -> tuple[dict, Atte
             return {}, _failed(source, reason, f"Metadata HTTP {status}", "retry_later")
         payload = response.json()
         return payload, Attempt(source=source, status="discovered")
+    except RateLimited as exc:
+        return {}, Attempt(
+            source=source,
+            status="failed",
+            reason="rate_limited",
+            message=str(exc),
+            action="retry_later",
+            rate_limit=exc.to_dict(),
+        )
     except (
         requests.RequestException,
         TimeoutError,
@@ -101,7 +112,8 @@ def discover(doi: str, config: dict[str, Any]):
             )
         yield unpaywall_candidates(payload), attempt
 
-    params = f"?{urlencode({'mailto': email})}" if email else ""
+    auth = openalex_params(config, {"mailto": email} if email else {})
+    params = f"?{urlencode(auth)}" if auth else ""
     payload, attempt = _metadata(
         "OpenAlexOA", f"https://api.openalex.org/works/doi:{q}{params}", config
     )
@@ -148,6 +160,11 @@ def _html_candidates(html: str, base_url: str, source: str) -> list[Candidate]:
 
 
 def _http_candidate(candidate: Candidate, path: Path, config: dict[str, Any]):
+    public_url = (
+        urlsplit(candidate.url)._replace(query="", fragment="").geturl()
+        if candidate.source == "OpenAlexContent"
+        else candidate.url
+    )
     response = None
     partial = path.with_suffix(".pdf.part")
     try:
@@ -160,7 +177,7 @@ def _http_candidate(candidate: Candidate, path: Path, config: dict[str, Any]):
                 _failed(
                     candidate.source,
                     "no_pdf_found",
-                    f"PDF location HTTP 404: {candidate.url}",
+                    f"PDF location HTTP 404: {public_url}",
                 ),
                 [],
             )
@@ -177,7 +194,7 @@ def _http_candidate(candidate: Candidate, path: Path, config: dict[str, Any]):
                 _failed(
                     candidate.source,
                     reason,
-                    f"HTTP {status}: {candidate.url}",
+                    f"HTTP {status}: {public_url}",
                     "retry_later",
                 ),
                 [],
@@ -197,16 +214,14 @@ def _http_candidate(candidate: Candidate, path: Path, config: dict[str, Any]):
             if is_readable_pdf(partial):
                 partial.replace(path)
                 return (
-                    SourceSuccess(
-                        path=path, source=candidate.source, url=candidate.url
-                    ),
+                    SourceSuccess(path=path, source=candidate.source, url=public_url),
                     Attempt(source=candidate.source, status="succeeded"),
                     [],
                 )
             return (
                 None,
                 _failed(
-                    candidate.source, "invalid_pdf", f"Unreadable PDF: {candidate.url}"
+                    candidate.source, "invalid_pdf", f"Unreadable PDF: {public_url}"
                 ),
                 [],
             )
@@ -236,7 +251,7 @@ def _http_candidate(candidate: Candidate, path: Path, config: dict[str, Any]):
                 _failed(
                     candidate.source,
                     "blocked",
-                    f"HTML challenge: {candidate.url}",
+                    f"HTML challenge: {public_url}",
                     "check_browser_session",
                 ),
                 [],
@@ -247,17 +262,34 @@ def _http_candidate(candidate: Candidate, path: Path, config: dict[str, Any]):
             _failed(
                 candidate.source,
                 "no_pdf_found",
-                f"HTML/non-PDF response: {candidate.url}",
+                f"HTML/non-PDF response: {public_url}",
             ),
             links,
         )
-    except (requests.RequestException, TimeoutError, ConnectionError) as exc:
+    except RateLimited as exc:
+        return (
+            None,
+            Attempt(
+                source=candidate.source,
+                status="failed",
+                reason="rate_limited",
+                message=str(exc),
+                action="retry_later",
+                rate_limit=exc.to_dict(),
+            ),
+            [],
+        )
+    except (
+        requests.RequestException,
+        TimeoutError,
+        ConnectionError,
+    ) as exc:
         return (
             None,
             _failed(
                 candidate.source,
                 "network_error",
-                f"{type(exc).__name__}: {candidate.url}",
+                f"{type(exc).__name__}: {public_url}",
                 "retry_later",
             ),
             [],

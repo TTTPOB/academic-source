@@ -23,4 +23,5 @@ class SourceFailure:
     reason: str
     message: str = ""
     action: str = ""
+    rate_limit: dict[str, Any] = field(default_factory=dict)
     attempts: list[Attempt] = field(default_factory=list)

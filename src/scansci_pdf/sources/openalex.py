@@ -8,16 +8,25 @@ from typing import Any
 
 import requests
 
-from ..network import fetch_json, polite_delay, USER_AGENT, request_timeout, proxy_dict, select_proxy_for_url
-from ..pdf_utils import download_pdf, is_plausible_pdf_url, is_pdf_file, success, _response_looks_pdf
+from ..network import fetch, fetch_json, polite_delay
+from ..pdf_utils import (
+    _response_looks_pdf,
+    download_pdf,
+    is_pdf_file,
+    is_plausible_pdf_url,
+    success,
+)
+from ..upstream_client import openalex_content_url, openalex_params
 
 
 def try_openalex_oa(doi: str, output_path: Path, config: dict[str, Any]) -> dict[str, Any] | None:
     """Try OpenAlex best_oa_location for OA PDF link."""
     q = urllib.parse.quote(doi, safe="")
-    email = config.get("email", "")
-    mailto = f"?mailto={email}" if email else ""
-    url = f"https://api.openalex.org/works/doi:{q}{mailto}"
+    params = openalex_params(
+        config, {"mailto": config["email"]} if config.get("email") else {}
+    )
+    query = f"?{urllib.parse.urlencode(params)}" if params else ""
+    url = f"https://api.openalex.org/works/doi:{q}{query}"
     try:
         payload = fetch_json(url, config)
         if not payload:
@@ -37,7 +46,7 @@ def try_openalex_oa(doi: str, output_path: Path, config: dict[str, Any]) -> dict
                 result["doi"] = doi
                 result["identifier"] = doi
                 return result
-    except Exception:
+    except requests.RequestException:
         pass
     return None
 
@@ -54,7 +63,11 @@ def try_openalex_content_api(doi: str, output_path: Path, config: dict[str, Any]
         return None
 
     q = urllib.parse.quote(doi, safe="")
-    meta_url = f"https://api.openalex.org/works/doi:{q}?mailto={api_key}"
+    params = openalex_params(
+        config, {"mailto": config["email"]} if config.get("email") else {}
+    )
+    meta_url = f"https://api.openalex.org/works/doi:{q}?{urllib.parse.urlencode(params)}"
+    resp = None
     try:
         payload = fetch_json(meta_url, config)
         if not payload:
@@ -70,16 +83,9 @@ def try_openalex_content_api(doi: str, output_path: Path, config: dict[str, Any]
         if not oa.get("is_oa"):
             return None
 
-        content_url = f"https://content.openalex.org/works/{work_id}.pdf?mailto={api_key}"
+        content_url = openalex_content_url(work_id, config)
         polite_delay(config)
-
-        s = requests.Session()
-        s.trust_env = False
-        s.headers.update({"User-Agent": USER_AGENT})
-
-        resp = s.get(content_url, timeout=request_timeout(config),
-                     proxies=proxy_dict(select_proxy_for_url(content_url, config)),
-                     allow_redirects=True, stream=True)
+        resp = fetch(content_url, config, stream=True)
 
         if resp.status_code >= 400:
             return None
@@ -95,6 +101,9 @@ def try_openalex_content_api(doi: str, output_path: Path, config: dict[str, Any]
 
         if is_pdf_file(output_path):
             return success(doi, output_path, "OpenAlexContent")
-    except Exception:
+    except requests.RequestException:
         pass
+    finally:
+        if resp is not None:
+            resp.close()
     return None

@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict
 
 from academic_source.domain import AcquisitionRequest
 from academic_source.interfaces.presentation import job_data
-from scansci_pdf.search import DiscoveryError
+from scansci_pdf.upstream_errors import DiscoveryError
 
 if TYPE_CHECKING:
     from academic_source.services.application import Application

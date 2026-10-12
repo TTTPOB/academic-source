@@ -8,6 +8,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
+from scansci_pdf.upstream_errors import RateLimited
+
 from ..domain import AcquisitionRequest, Attempt
 from ..infrastructure.documents import is_readable_pdf
 from .models import SourceFailure, SourceSuccess
@@ -163,6 +165,15 @@ def _attempt(
         browser_diagnostics._clear_error()
     try:
         outcome = fn(doi, path, dict(config))
+    except RateLimited as exc:
+        return None, Attempt(
+            source=label,
+            status="failed",
+            reason="rate_limited",
+            message=str(exc),
+            action="retry_later",
+            rate_limit=exc.to_dict(),
+        )
     except Exception as exc:  # noqa: BLE001 - site failures must not prevent the next source
         import httpx
         import requests
@@ -337,5 +348,6 @@ class LegacySources:
                 else ""
             ),
             action=selected.action if selected else "",
+            rate_limit=selected.rate_limit if selected else {},
             attempts=attempts,
         )

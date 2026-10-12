@@ -28,13 +28,21 @@ stdio MCP / CLI ────────────┴─> Application ─> Sou
 
 HTTP/MCP 的 search 通过 Application → services.discovery → scansci_pdf.search，只使用 OpenAlex。Python 入口为 search_papers，与公开服务共用本项目的单一检索实现。默认源内相关性顺序不做本地重排；现有 Python 引用数/发布日期排序（可选 asc/desc）和单边/双边年份范围直接传给 OpenAlex。公开 HTTP/MCP 参数仍为 query、limit。
 
-每次获取 min(200, max(30, limit × 3)) 条候选，不翻页；沿用带 DOI 的结果边界，按明确类型、撤稿状态和少量完整泛标题过滤后应用 limit（1–100）。保留综述、预印本、完整会议论文及未知类型，排除明确非论文对象和 is_retracted=true 的原文。结果投影保留 type、撤稿状态和有效 ISO 发布日期，缺值省略。空结果与来源故障分开：真实无命中为列表，预期网络/HTTP/JSON 故障为 DiscoveryError，HTTP 翻译为 502，MCP 使用 SDK 工具错误机制。
+每次获取 min(100, max(30, limit × 3)) 条候选，不翻页；沿用带 DOI 的结果边界，按明确类型、撤稿状态和少量完整泛标题过滤后应用 limit（1–100）。保留综述、预印本、完整会议论文及未知类型，排除明确非论文对象和 is_retracted=true 的原文。结果投影保留 type、撤稿状态和有效 ISO 发布日期，缺值省略。空结果与来源故障分开：真实无命中为列表，预期网络/HTTP/JSON 故障为 DiscoveryError，HTTP 翻译为 502，MCP 使用 SDK 工具错误机制。
 
-MCP get_metadata(id_type='doi', doi='...') / get_metadata(id_type='arxiv', arxiv_id='...') 和 HTTP POST /api/v1/metadata {id_type, doi} / {id_type, arxiv_id} 通过 Application → services.discovery.get_metadata 显式分流：doi 经 normalize_doi 查 Crossref，arxiv 经局部严格规范化并保留请求版本后查 arXiv 原生 API 的 id_list。两者复用现有 _get_session、request_timeout、代理和 User-Agent；Atom 使用 stdlib ElementTree，无独立 transport 或缓存层。
+MCP get_metadata(id_type='doi', doi='...') / get_metadata(id_type='arxiv', arxiv_id='...') 和 HTTP POST /api/v1/metadata {id_type, doi} / {id_type, arxiv_id} 通过 Application → services.discovery.get_metadata 显式分流：doi 经 normalize_doi 查 Crossref，arxiv 经局部严格规范化并保留请求版本后查 arXiv 原生 API 的 id_list。两者通过 scansci_pdf.upstream_client 的 get_json/get_text 复用现有网络会话、request_timeout、代理和 User-Agent；Atom 使用 stdlib ElementTree，无独立 transport 或缓存层。
 
 请求的 id_type 必填，只允许对应的 doi 或 arxiv_id；服务层统一拒绝缺失、错配或同时提供两种 ID。所有响应保留 id_type、metadata_source、metadata_status，以及类型专属的规范请求 doi 或 arxiv_id。Crossref 保留现有书目、类型和有向 DOI 关系/更新证据；arXiv 返回精简书目、摘要、日期和实际 version，真实发表 DOI 单列 published_doi。metadata_status 区分匹配记录 found、Crossref 404 / arXiv 合法空 feed 的 not_found、网络/HTTP/JSON/XML/错误 entry/记录不匹配的 unavailable；意外内部错误直接传播。请求身份和 arXiv 版本语义见 README。
 
 get_metadata 不做标题推断，来源只由 id_type 决定。标题搜索使用 OpenAlex；内部获取直接复用现有标题相似度匹配，匹配失败保留原标题，不新增元数据查询依赖。直接 DOI/arXiv 获取无需先查元数据。内部 DOI→idconv→PMCID 与 Europe PMC/PMC 的 PDF 候选转换保持原链路，不提供公开 PMID/PMCID 输入。关键词检索与按需元数据查询互不阻塞，元数据来源不参与候选召回或排序。
+
+## 上游请求控制与错误
+
+scansci_pdf.upstream_client 是 network.fetch 与 JSON/text API 客户端的共享准入点。OpenAlex API 和 Content 共用服务级速率控制，计费观察按实际 api_key 或匿名出口隔离；Crossref 元数据使用 5 RPS / 并发 1，arXiv 元数据使用 3 秒间隔 / 并发 1。stream 响应在消费者 close 后释放并发名额，业务消费者在成功与失败路径均关闭响应。控制保留现有会话、代理、超时与成功 JSON probe 缓存；浏览器渠道不属于此 HTTP 控制点。
+
+scansci_pdf.upstream_errors 集中定义 DiscoveryError、UpstreamError 和 RateLimited。429 根据安全响应证据记录 kind、UTC retry_at 及可用额度信息，不把原始正文或带凭据 URL 放进错误。已知冷却立即拒绝，第一版不自动重试；OpenAlex 日预算不足只拒绝成本超过 remaining 的操作，免费 singleton 可继续，其他服务独立。
+
+搜索将限流交给现有 HTTP 502 / MCP 工具错误边界；标题获取有独立的 RateLimited 分支，保留 rate_limited、retry_later 和 rate_limit。Crossref/arXiv 元数据限流为保留身份与来源的 unavailable，只有限流返回 rate_limit。OA 在尝试记录中保留安全限流信息并继续其他来源；最终失败只透传选中的汇总原因及其恢复信息，不改变来源优先级。Attempt、SourceFailure、AcquisitionResult 的 rate_limit 字段贯通来源、任务持久化和精简对外投影；成功与非限流结果省略空字段。意外内部异常仍传播或记录服务日志。
 
 ## 输入与产物
 

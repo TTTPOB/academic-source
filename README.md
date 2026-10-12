@@ -70,7 +70,7 @@ curl -H @- \
 
 ## 检索与元数据
 
-HTTP `GET /api/v1/search?query=...&limit=10` 与 MCP `search(query, limit)` 只从 OpenAlex 检索，默认保留其相关性顺序。`limit` 为 1–100；只取一页有界候选（最多 200 条），当前只返回带 DOI 的候选，分类过滤后再截断，因此结果可能少于请求数量。默认排除明确的审稿报告、组件/补充材料、词条/数据对象、书籍、paratext、勘误/撤稿通知、会议摘要及已标记撤稿的原文；保留研究文章、综述、预印本、完整会议论文与未知类型。另有少量完整泛标题规则（如 `Foreword`、`Manuscript Submission Guideline`），不会因标题含 Review 或 Guideline 就排除。
+HTTP `GET /api/v1/search?query=...&limit=10` 与 MCP `search(query, limit)` 只从 OpenAlex 检索，默认保留其相关性顺序。`limit` 为 1–100；只取一页有界候选（最多 100 条），当前只返回带 DOI 的候选，分类过滤后再截断，因此结果可能少于请求数量。默认排除明确的审稿报告、组件/补充材料、词条/数据对象、书籍、paratext、勘误/撤稿通知、会议摘要及已标记撤稿的原文；保留研究文章、综述、预印本、完整会议论文与未知类型。另有少量完整泛标题规则（如 `Foreword`、`Manuscript Submission Guideline`），不会因标题含 Review 或 Guideline 就排除。
 
 结果保留已有书目信息，以及可用的 OpenAlex `type`、`is_retracted` 和 ISO `publication_date`；缺失字段省略，false/0 仍保留。不承诺上游类型准确、覆盖所有编辑材料或消除短词/基因名称歧义。真实无命中返回 `[]`；OpenAlex 网络、HTTP 或 JSON 错误通过 HTTP 502 或 MCP 工具错误返回，不伪装无命中。
 
@@ -96,6 +96,20 @@ arXiv 的响应 `arxiv_id` 不带 `arxiv:` 前缀，并保留请求版本（如 
 标题使用 `search` 查 OpenAlex 候选；`get_metadata` 不做标题推断。获取请求中的标题继续通过 OpenAlex 相似度匹配（0.75 阈值，拒绝不同 DOI 同分最佳匹配），不依赖 Crossref 元数据查询成功。直接 DOI 或 arXiv 获取也无需先调用 `get_metadata`；内部 DOI→PMC 标识转换和 PDF 候选发现保持原链路。
 
 元数据查询不参与关键词召回，不逐条补全搜索结果，也不重排结果。需要某个 DOI 或 arXiv 记录的补充元数据时，单独调用 `get_metadata`。
+
+### 上游限流与恢复
+
+搜索、标题匹配、OpenAlex 精确 DOI 查询和 Content 下载共用进程内准入控制；Crossref 单条元数据请求最多 5 次/秒、并发 1，arXiv 原生 API 请求间隔至少 3 秒、并发 1。控制复用现有网络会话、代理和超时配置。应用的多把 Bearer 服务密钥不会给客户端分配独立的上游额度。
+
+上游 429 或已知冷却会返回明确限流结果，不自动重试，也不等待日预算重置：
+
+- 搜索仍返回 HTTP 502 / MCP 工具错误，消息包含可用的 UTC 重试时间、剩余额度与该操作所需额度。不要立即重复相同请求。
+- 标题获取失败返回 `reason=rate_limited`、`action=retry_later` 和非空 `rate_limit`；直接 DOI/arXiv 获取可继续。OA 的单个来源限流后仍尝试其他独立来源。
+- 元数据返回 `metadata_status=unavailable`，保留请求身份、`metadata_source`、简短 `metadata_error` 和 `rate_limit`。其他元数据失败不会附空的限流字段。
+
+`rate_limit` 包含 `source`、`kind`（`daily_budget/request_rate/unknown`），以及有证据时的 UTC `retry_at`、`remaining`、`required`；不返回上游 URL、密钥或原始错误正文。OpenAlex 的日预算按实际上游身份共享，search、list 和 Content 消耗同一预算；免费精确查询在无可用计费额度时仍可使用，但也受请求速率限制。
+
+可在私有服务配置的 `source_config.openalex_api_key` 设置 OpenAlex 账户密钥。该密钥通过 `api_key` 用于检索、精确查询与 Content 下载；`source_config.email` 是联系邮箱，两者用途不同。预算不足时等待 `retry_at`，减少重复计费操作，或使用合法的更高账户额度。
 
 ## 本地与远端 CLI
 
@@ -170,9 +184,9 @@ MCP 下载 URL 默认从当前请求的 scheme、host 与部署前缀生成，�
 
 可选请求字段：`markdown`、`supplementary`、`bibtex`。PDF 获取成功与附加转换是否成功分开报告。原生 JATS 与模型清洗尚未实现。
 
-MCP、HTTP 和 CLI 的任务结果使用同一精简投影：成功单篇保留产物、命中的 `artifacts[].provenance.source/url`、非空元数据和警告；不返回逐来源未命中或重复尝试的 `attempts`。失败单篇不会消失，即使任务为 `partial`，仍保留其 `identifier`、`status` 和一个汇总 `reason`；只有配置、鉴权、带明确 `action` 的阻塞及需检查服务日志的内部错误保留非空 `message/action`。转换/导出警告和任务级 `error` 不受影响。空的单篇 `artifacts/metadata/warnings/message/action` 字段省略；顶层 `artifacts` 始终为列表；HTTP API 使用受保护的永久地址，HTTP MCP 使用一次性绝对 URL，stdio 使用本地导出。
+MCP、HTTP 和 CLI 的任务结果使用同一精简投影：成功单篇保留产物、命中的 `artifacts[].provenance.source/url`、非空元数据和警告；不返回逐来源未命中或重复尝试的 `attempts`。失败单篇不会消失，即使任务为 `partial`，仍保留其 `identifier`、`status` 和一个汇总 `reason`；只有配置、鉴权、带明确 `action` 的阻塞及需检查服务日志的内部错误保留非空 `message/action`。转换/导出警告和任务级 `error` 不受影响。空的单篇 `artifacts/metadata/warnings/message/action/rate_limit` 字段省略；顶层 `artifacts` 始终为列表；HTTP API 使用受保护的永久地址，HTTP MCP 使用一次性绝对 URL，stdio 使用本地导出。
 
-这是响应契约的精简：客户端不要依赖响应中的 `attempts` 或空字段固定存在，应使用产物来源和单篇汇总状态。完整尝试仍存于原有内部任务记录，持久化结构不变；精简响应不能用来覆盖该记录。
+这是响应契约的精简：客户端不要依赖响应中的 `attempts` 或空字段固定存在，应使用产物来源和单篇汇总状态。完整尝试和可用限流信息仍存于内部任务记录；精简响应不能用来覆盖该记录。
 
 ## 配置与存储
 

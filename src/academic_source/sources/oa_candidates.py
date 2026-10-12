@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from scansci_pdf.upstream_client import openalex_content_url
+
 
 @dataclass(frozen=True)
 class Candidate:
@@ -131,7 +133,7 @@ def openalex_candidates(payload: dict[str, Any], api_key: str = "") -> list[Cand
         work_id = payload["id"].rsplit("/", 1)[-1]
         candidates.append(
             Candidate(
-                f"https://content.openalex.org/works/{work_id}.pdf?mailto={api_key}",
+                openalex_content_url(work_id, {"openalex_api_key": api_key}),
                 "OpenAlexContent",
             )
         )

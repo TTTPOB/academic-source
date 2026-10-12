@@ -7,6 +7,19 @@ import pymupdf
 from academic_source.sources.models import SourceFailure, SourceSuccess
 
 
+def isolate_upstreams(monkeypatch):
+    """Isolate admission observations; protocol timing is tested in the client suite."""
+    from scansci_pdf import upstream_client
+
+    monkeypatch.setattr(upstream_client, "_admission", upstream_client._Admission())
+    policy = upstream_client._policy
+    monkeypatch.setattr(
+        upstream_client,
+        "_policy",
+        lambda source, host, config: (0, policy(source, host, config)[1]),
+    )
+
+
 def paper_bytes() -> bytes:
     with pymupdf.open() as document:
         page = document.new_page()

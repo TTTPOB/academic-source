@@ -13,7 +13,16 @@ from academic_source.domain import AcquisitionRequest
 from academic_source.services import discovery
 from academic_source.services.application import Application
 from academic_source.settings import Settings
-from tests.academic_source.helpers import RecordingSource, paper_bytes
+from tests.academic_source.helpers import (
+    RecordingSource,
+    isolate_upstreams,
+    paper_bytes,
+)
+
+
+@pytest.fixture(autouse=True)
+def offline_upstreams(monkeypatch):
+    isolate_upstreams(monkeypatch)
 
 
 def response(request, message, status=200):
@@ -614,3 +623,100 @@ def test_metadata_requires_only_the_selected_type_field(tmp_path, transport, arg
             },
         ).json()["result"]
         assert mcp["isError"] is True
+
+
+@pytest.mark.parametrize("id_type,source", [("doi", "crossref"), ("arxiv", "arxiv")])
+def test_http_mcp_metadata_limit_keeps_source_and_safe_retry_information(
+    tmp_path, monkeypatch, id_type, source
+):
+    from datetime import datetime
+
+    identifier = "10.1234/limited" if id_type == "doi" else "1706.03762v1"
+    field = "doi" if id_type == "doi" else "arxiv_id"
+    proxy = f"http://private:fake-key@metadata-limit-{source}.test:8080"
+
+    def send(_adapter, request, **kwargs):
+        result = response(request, {"message": f"private upstream body {proxy}"}, 429)
+        result.headers["Retry-After"] = "60"
+        return result
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
+    application = Application(
+        Settings(
+            data_dir=tmp_path, auth_mode="off", source_config={"network_proxy": proxy}
+        ),
+        source=RecordingSource(),
+    )
+    with TestClient(create_app(application=application)) as client:
+        http = client.post(
+            "/api/v1/metadata", json={"id_type": id_type, field: identifier}
+        )
+        assert http.status_code == 200
+        data = http.json()
+        assert data["metadata_status"] == "unavailable"
+        assert data["metadata_source"] == source
+        assert data[field] == identifier
+        assert "HTTP 429" in data["metadata_error"]
+        assert data["rate_limit"]["source"] == source
+        retry = datetime.fromisoformat(data["rate_limit"]["retry_at"])
+        assert retry.utcoffset().total_seconds() == 0
+
+        def rejected_network(_adapter, request, **kwargs):
+            pytest.fail("A metadata request in cooldown reached HTTP transport")
+
+        monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", rejected_network)
+        mcp = mcp_metadata(client, identifier, id_type)
+        assert mcp["structuredContent"] == data
+        assert "private" not in http.text + str(mcp)
+        assert "fake-key" not in http.text + str(mcp)
+
+
+def test_title_limit_is_persisted_and_projected_while_direct_doi_still_succeeds(
+    tmp_path, monkeypatch
+):
+    from academic_source.interfaces.presentation import job_data
+
+    title = "The role of ARID3C in cancer biology"
+    key = "fake-title-budget-key"
+
+    def send(_adapter, request, **kwargs):
+        assert urlsplit(request.url).hostname == "api.openalex.org"
+        result = response(request, {"message": "private body"}, 429)
+        result.headers.update(
+            {"X-RateLimit-Remaining": "5", "X-RateLimit-Reset": "3600"}
+        )
+        return result
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
+    application = Application(
+        Settings(
+            data_dir=tmp_path, auth_mode="off", source_config={"openalex_api_key": key}
+        ),
+        source=RecordingSource(),
+    )
+    with TestClient(create_app(application=application)) as client:
+        job = application.wait(
+            application.submit(
+                AcquisitionRequest(
+                    identifiers=[title, "10.1234/direct"], policy="legal_only"
+                )
+            ).id,
+            10,
+        )
+        assert job.status == "partial"
+        failed, succeeded = job.results
+        assert failed.reason == "rate_limited"
+        assert failed.action == "retry_later"
+        assert failed.rate_limit["kind"] == "daily_budget"
+        assert failed.rate_limit["remaining"] == 5
+        assert failed.rate_limit["required"] == 10
+        assert succeeded.status == "succeeded"
+        persisted = application.job(job.id)
+        assert persisted.results[0].rate_limit == failed.rate_limit
+        http = client.get(f"/api/v1/jobs/{job.id}")
+        projected = http.json()["results"][0]
+        assert projected["rate_limit"] == failed.rate_limit
+        assert projected["message"] == failed.message
+        assert "rate_limit" not in http.json()["results"][1]
+        assert projected == job_data(persisted)["results"][0]
+        assert key not in http.text

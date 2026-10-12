@@ -15,6 +15,12 @@ from academic_source.sources.models import SourceFailure, SourceSuccess
 from academic_source.sources.oa_candidates import (
     Candidate,
 )
+from tests.academic_source.helpers import isolate_upstreams
+
+
+@pytest.fixture(autouse=True)
+def offline_upstreams(monkeypatch):
+    isolate_upstreams(monkeypatch)
 
 
 class Response:
@@ -547,7 +553,7 @@ def test_openalex_content_reuses_metadata_without_another_query(monkeypatch, tmp
                     "open_access": {"is_oa": True},
                 },
             )
-        assert url == "https://content.openalex.org/works/W42.pdf?mailto=key"
+        assert url == "https://content.openalex.org/works/W42.pdf?api_key=key"
         return Response(url, body=pdf_bytes())
 
     monkeypatch.setattr(oa, "fetch", fetch)
@@ -688,3 +694,270 @@ def test_landing_pdf_link_decodes_html_entities_without_changing_signed_query(
     assert isinstance(result, SourceSuccess)
     assert result.url == pdf
     assert pdf in visited
+
+
+def test_search_budget_exhaustion_allows_free_lookup_and_other_oa_sources(
+    monkeypatch, tmp_path
+):
+    import json
+
+    from scansci_pdf.search import search_papers
+    from scansci_pdf.upstream_errors import RateLimited
+
+    key = "fake-oa-budget-key"
+    config = {"openalex_api_key": key}
+    visited = []
+    pdf = pdf_bytes()
+
+    def send(_adapter, request, **kwargs):
+        parsed = urlsplit(request.url)
+        visited.append(request.url)
+        result = requests.Response()
+        result.status_code = 200
+        result.request = request
+        result.url = request.url
+        result._content_consumed = True
+        if parsed.hostname == "api.openalex.org":
+            assert parse_qs(parsed.query)["api_key"] == [key]
+            result.headers.update(
+                {"X-RateLimit-Remaining": "5", "X-RateLimit-Reset": "3600"}
+            )
+            if parsed.path == "/works":
+                result.status_code = 429
+                payload = {"message": "private budget body"}
+            else:
+                payload = {
+                    "id": "https://openalex.org/W42",
+                    "open_access": {"is_oa": True},
+                }
+        elif parsed.hostname == "www.ebi.ac.uk":
+            payload = {"resultList": {"result": [{"pmcid": "PMC134036"}]}}
+        else:
+            assert parsed.hostname == "europepmc.org"
+            result._content = pdf
+            result.headers["Content-Type"] = "application/pdf"
+            return result
+        result._content = json.dumps(payload).encode()
+        return result
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
+    with pytest.raises(RateLimited):
+        search_papers("papers", config=config)
+    acquired = oa.acquire_oa("10.1234/limited", tmp_path, config)
+    assert isinstance(acquired, SourceSuccess)
+    assert acquired.source == "EuropePMC"
+    assert acquired.path.read_bytes() == pdf
+    content_attempt = next(
+        item for item in acquired.attempts if item.source == "OpenAlexContent"
+    )
+    assert content_attempt.reason == "rate_limited"
+    assert content_attempt.rate_limit["required"] == 100
+    assert content_attempt.rate_limit["remaining"] == 5
+    assert [urlsplit(url).hostname for url in visited] == [
+        "api.openalex.org",
+        "api.openalex.org",
+        "www.ebi.ac.uk",
+        "europepmc.org",
+    ]
+
+
+@pytest.mark.parametrize("entrypoint", ["progressive", "legacy"])
+def test_openalex_content_authentication_reaches_real_http_adapter(
+    monkeypatch, tmp_path, entrypoint
+):
+    import json
+
+    from academic_source.interfaces.presentation import job_data
+    from academic_source.services.application import Application
+    from academic_source.settings import Settings
+    from scansci_pdf.sources.openalex import try_openalex_content_api
+
+    key = f"fake-{entrypoint}-key+with/reserved="
+    email = "reader@example.test"
+    config = {"openalex_api_key": key, "email": email, "json_probe_cache_seconds": 0}
+    visited = []
+    pdf = pdf_bytes().replace(b"%%EOF", b"\n" * 2000 + b"%%EOF")
+
+    def send(_adapter, request, **kwargs):
+        parsed = urlsplit(request.url)
+        params = parse_qs(parsed.query)
+        visited.append(parsed.hostname)
+        result = requests.Response()
+        result.status_code = 200
+        result.request = request
+        result.url = request.url
+        result._content_consumed = True
+        if parsed.hostname == "api.unpaywall.org":
+            assert params["email"] == [email]
+            result.status_code = 404
+            result._content = b"{}"
+        elif parsed.hostname == "api.openalex.org":
+            assert params["api_key"] == [key]
+            assert params["mailto"] == [email]
+            result._content = json.dumps(
+                {"id": "https://openalex.org/W42", "open_access": {"is_oa": True}}
+            ).encode()
+        else:
+            assert parsed.hostname == "content.openalex.org"
+            assert parsed.path == "/works/W42.pdf"
+            assert params == {"api_key": [key]}
+            result._content = pdf
+            result.headers["Content-Type"] = "application/pdf"
+        return result
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
+    if entrypoint == "progressive":
+        application = Application(
+            Settings(data_dir=tmp_path / "service", source_config=config)
+        )
+        try:
+            request = AcquisitionRequest(
+                identifiers=["10.1234/content"], policy="legal_only"
+            )
+            job = application.wait(application.submit(request).id, 10)
+            assert job.status == "succeeded"
+            artifact = job.results[0].artifacts[0]
+            assert artifact.provenance.source == "OpenAlexContent"
+            assert (
+                artifact.provenance.url == "https://content.openalex.org/works/W42.pdf"
+            )
+            assert application.store.artifact_path(artifact.id).read_bytes() == pdf
+            assert key not in application.job(job.id).model_dump_json()
+            assert key not in str(job_data(job))
+            cached = application.wait(application.submit(request).id, 10)
+            assert cached.results[0].cached is True
+            assert cached.results[0].artifacts[0].provenance == artifact.provenance
+        finally:
+            application.close()
+    else:
+        path = tmp_path / "content.pdf"
+        acquired = try_openalex_content_api("10.1234/content", path, config)
+        assert acquired["source"] == "OpenAlexContent"
+        assert path.read_bytes() == pdf
+    assert visited[-2:] == ["api.openalex.org", "content.openalex.org"]
+
+
+def test_oa_metadata_limit_survives_source_aggregation_and_job_persistence(
+    monkeypatch, tmp_path
+):
+    import json
+
+    from academic_source.interfaces.presentation import job_data
+    from academic_source.services.application import Application
+    from academic_source.settings import Settings
+
+    visited = []
+
+    def send(_adapter, request, **kwargs):
+        host = urlsplit(request.url).hostname
+        visited.append(host)
+        result = requests.Response()
+        result.request = request
+        result.url = request.url
+        result._content_consumed = True
+        result._content = json.dumps({"message": "private upstream body"}).encode()
+        result.status_code = 429 if host == "api.openalex.org" else 404
+        result.headers["Retry-After"] = "60"
+        return result
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
+    # Bound this OA regression to the discovery chain, without publisher I/O.
+    monkeypatch.setattr(sources, "_plan", lambda *args: [])
+    application = Application(Settings(data_dir=tmp_path))
+    try:
+        job = application.wait(
+            application.submit(
+                AcquisitionRequest(identifiers=["10.1234/limited"], policy="legal_only")
+            ).id,
+            10,
+        )
+        assert job.status == "failed"
+        failed = job.results[0]
+        assert failed.reason == "rate_limited"
+        assert failed.rate_limit["source"] == "openalex"
+        assert failed.rate_limit["kind"] == "unknown"
+        assert failed.action == "retry_later"
+        assert visited == ["api.openalex.org", "www.ebi.ac.uk", "www.ncbi.nlm.nih.gov"]
+        persisted = application.job(job.id)
+        assert persisted.results[0].rate_limit == failed.rate_limit
+        projected = job_data(persisted)["results"][0]
+        assert projected["rate_limit"] == failed.rate_limit
+        assert "retry at" in projected["message"]
+        assert "private" not in str(projected)
+    finally:
+        application.close()
+
+
+def test_content_failure_diagnostics_keep_public_url_without_credentials(
+    monkeypatch, tmp_path
+):
+    import json
+
+    key = "fake-content-diagnostics-key"
+
+    def send(_adapter, request, **kwargs):
+        result = requests.Response()
+        result.request = request
+        result.url = request.url
+        result._content_consumed = True
+        if urlsplit(request.url).hostname == "api.openalex.org":
+            result.status_code = 200
+            result._content = json.dumps(
+                {"id": "https://openalex.org/W42", "open_access": {"is_oa": True}}
+            ).encode()
+        else:
+            result.status_code = (
+                403 if urlsplit(request.url).hostname == "content.openalex.org" else 404
+            )
+            result._content = b"{}"
+        return result
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
+    failure = oa.acquire_oa("10.1234/content", tmp_path, {"openalex_api_key": key})
+    assert isinstance(failure, SourceFailure)
+    content_attempt = next(
+        item for item in failure.attempts if item.source == "OpenAlexContent"
+    )
+    assert content_attempt.reason == "blocked"
+    assert (
+        content_attempt.message
+        == "HTTP 403: https://content.openalex.org/works/W42.pdf"
+    )
+    assert key not in str(failure.attempts)
+
+
+@pytest.mark.parametrize("entrypoint", ["oa", "content"])
+def test_legacy_openalex_lookup_limit_reaches_safe_source_failure(
+    monkeypatch, tmp_path, entrypoint
+):
+    from scansci_pdf.sources.openalex import try_openalex_content_api, try_openalex_oa
+
+    key = f"fake-legacy-limit-{entrypoint}"
+    fn = try_openalex_oa if entrypoint == "oa" else try_openalex_content_api
+
+    def send(_adapter, request, **kwargs):
+        assert parse_qs(urlsplit(request.url).query)["api_key"] == [key]
+        result = requests.Response()
+        result.request = request
+        result.url = request.url
+        result.status_code = 429
+        result.headers["Retry-After"] = "60"
+        result._content = b'{"message": "private raw body"}'
+        result._content_consumed = True
+        return result
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
+    monkeypatch.setattr(sources, "_plan", lambda *args: [("OpenAlexOA", fn)])
+    outcome = sources.LegacySources().acquire(
+        "10.1234/limited",
+        AcquisitionRequest(identifiers=["10.1234/limited"], policy="scihub_first"),
+        tmp_path,
+        {"openalex_api_key": key, "json_probe_cache_seconds": 0},
+    )
+    assert isinstance(outcome, SourceFailure)
+    assert outcome.reason == "rate_limited"
+    assert outcome.rate_limit["source"] == "openalex"
+    assert outcome.action == "retry_later"
+    assert "retry at" in outcome.message
+    assert key not in outcome.message + str(outcome.attempts)
+    assert "private raw body" not in outcome.message + str(outcome.attempts)

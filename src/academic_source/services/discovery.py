@@ -1,13 +1,10 @@
 """Normalize paper references and expose safe discovery results."""
 
-import json
 import re
 from html import unescape
 from typing import Any, Literal
 from urllib.parse import quote, urlsplit
 from xml.etree import ElementTree
-
-import requests
 
 from scansci_pdf.identifiers import (
     ARXIV_RE,
@@ -15,6 +12,8 @@ from scansci_pdf.identifiers import (
     normalize_arxiv_id,
     normalize_doi,
 )
+from scansci_pdf.upstream_client import get_json, get_text
+from scansci_pdf.upstream_errors import RateLimited, UpstreamError
 
 
 def normalize_identifier(value: str) -> str:
@@ -60,40 +59,32 @@ def _doi_metadata(doi: str, config: dict[str, Any]) -> dict[str, Any]:
         "doi": doi,
         "metadata_source": "crossref",
     }
-    from scansci_pdf.network import _get_session, request_timeout
-
-    session = _get_session(config)
     params = {"mailto": config["email"]} if config.get("email") else {}
     try:
-        with session.get(
+        payload = get_json(
             f"https://api.crossref.org/works/{quote(doi, safe='')}",
+            config,
+            source="crossref",
+            operation="lookup",
             params=params,
             headers={"Accept": "application/json"},
-            timeout=request_timeout(config),
-        ) as response:
-            if response.status_code == 404:
-                return {**result, "metadata_status": "not_found"}
-            response.raise_for_status()
-            payload = response.json()
-    except json.JSONDecodeError:
+        )
+    except RateLimited as exc:
         return {
             **result,
             "metadata_status": "unavailable",
-            "metadata_error": "Crossref returned invalid JSON",
+            "metadata_error": str(exc),
+            "rate_limit": exc.to_dict(),
         }
-    except requests.HTTPError as exc:
-        status = exc.response.status_code if exc.response is not None else "unknown"
+    except UpstreamError as exc:
+        if exc.status_code == 404:
+            return {**result, "metadata_status": "not_found"}
         return {
             **result,
             "metadata_status": "unavailable",
-            "metadata_error": f"Crossref metadata request failed (HTTP {status})",
+            "metadata_error": str(exc),
         }
-    except requests.RequestException:
-        return {
-            **result,
-            "metadata_status": "unavailable",
-            "metadata_error": "Crossref metadata request failed (network error)",
-        }
+
     message = payload.get("message") if isinstance(payload, dict) else None
     record_doi = message.get("DOI") if isinstance(message, dict) else None
     if (
@@ -134,42 +125,41 @@ def _metadata_arxiv_id(value: str) -> str:
 
 
 def _arxiv_metadata(arxiv_id: str, config: dict[str, Any]) -> dict[str, Any]:
-    from scansci_pdf.network import _get_session, request_timeout
-
     result = {
         "id_type": "arxiv",
         "arxiv_id": arxiv_id,
         "metadata_source": "arxiv",
     }
-    session = _get_session(config)
     try:
-        with session.get(
+        text = get_text(
             "https://export.arxiv.org/api/query",
+            config,
+            source="arxiv",
+            operation="lookup",
             params={"id_list": arxiv_id},
             headers={"Accept": "application/atom+xml"},
-            timeout=request_timeout(config),
-        ) as response:
-            response.raise_for_status()
-            feed = ElementTree.fromstring(response.content)
+        )
+        feed = ElementTree.fromstring(text)
     except ElementTree.ParseError:
         return {
             **result,
             "metadata_status": "unavailable",
             "metadata_error": "arXiv returned invalid XML",
         }
-    except requests.HTTPError as exc:
-        status = exc.response.status_code if exc.response is not None else "unknown"
+    except RateLimited as exc:
         return {
             **result,
             "metadata_status": "unavailable",
-            "metadata_error": f"arXiv metadata request failed (HTTP {status})",
+            "metadata_error": str(exc),
+            "rate_limit": exc.to_dict(),
         }
-    except requests.RequestException:
+    except UpstreamError as exc:
         return {
             **result,
             "metadata_status": "unavailable",
-            "metadata_error": "arXiv metadata request failed (network error)",
+            "metadata_error": str(exc),
         }
+
     atom = "{http://www.w3.org/2005/Atom}"
     invalid = {
         **result,
