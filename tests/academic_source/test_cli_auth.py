@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from academic_source.interfaces import cli
 from academic_source.services.application import Application
 from academic_source.settings import Settings
@@ -42,6 +44,29 @@ def test_remote_cli_sends_bearer_for_upload_jobs_and_permanent_download(
     exported = list(output.glob("*.pdf"))
     assert len(exported) == 1
     assert exported[0].read_bytes() == source.content
+
+
+@pytest.mark.parametrize("key", ["private-cli-key\n", "private-cli-key\t", ""])
+def test_remote_cli_rejects_invalid_key_without_printing_secret(
+    tmp_path, monkeypatch, capsys, key
+):
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
+    monkeypatch.setenv("ACADEMIC_SOURCE_API_KEY", key)
+    source = RecordingSource()
+    service = Application(
+        Settings(data_dir=tmp_path / "server", api_keys=["offline-server-key"]),
+        source=source,
+    )
+    with running_server(service) as server:
+        assert cli.main(["get", "10.1234/example", "--server", server]) == 1
+    captured = capsys.readouterr()
+    assert "private-cli-key" not in captured.out + captured.err
+    assert captured.out == ""
+    assert captured.err.strip() == (
+        "ACADEMIC_SOURCE_API_KEY must be a non-empty ASCII string without whitespace"
+    )
+    assert source.calls == []
 
 
 def test_local_cli_runs_without_http_keys(tmp_path, monkeypatch, capsys):

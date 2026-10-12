@@ -14,6 +14,7 @@ from academic_source.interfaces.auth import BearerAuthMiddleware
 from academic_source.interfaces.downloads import (
     DownloadResponseHeadersMiddleware,
     create_download_router,
+    download_server_error_handler,
 )
 from academic_source.interfaces.mcp import create_mcp
 from academic_source.interfaces.web import create_web_router
@@ -52,6 +53,7 @@ def create_app(
                 await to_thread.run_sync(service.close)
 
     app = FastAPI(title="academic-source", lifespan=lifespan)
+    app.add_exception_handler(500, download_server_error_handler)
     app.state.application = service
     app.state.mcp = mcp
     app.include_router(create_router(service))

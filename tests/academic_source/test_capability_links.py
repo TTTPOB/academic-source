@@ -2,13 +2,23 @@
 
 import asyncio
 import logging
+import socket
 import sqlite3
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager, closing, contextmanager
 from datetime import datetime
 from urllib.parse import urlsplit
 
+import httpx
 import pytest
+import uvicorn
 from fastapi.testclient import TestClient
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
+from starlette.applications import Starlette
+from starlette.routing import Mount
 
 from academic_source.app import create_app
 from academic_source.interfaces.mcp import create_mcp
@@ -205,6 +215,106 @@ def test_request_base_includes_root_path_and_public_base_overrides_it(service):
         assert url.startswith("https://public.example/service/downloads/")
 
 
+@contextmanager
+def live_http_app(app, *, root_path=""):
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        server = uvicorn.Server(
+            uvicorn.Config(app, root_path=root_path, log_level="error", log_config=None)
+        )
+        thread = threading.Thread(
+            target=server.run, kwargs={"sockets": [listener]}, daemon=True
+        )
+        thread.start()
+        try:
+            deadline = time.monotonic() + 5
+            while (
+                not server.started and thread.is_alive() and time.monotonic() < deadline
+            ):
+                time.sleep(0.01)
+            assert server.started, "test HTTP server failed to start"
+            yield f"http://127.0.0.1:{port}"
+        finally:
+            server.should_exit = True
+            thread.join(timeout=10)
+            assert not thread.is_alive(), "test HTTP server did not shut down"
+
+
+@pytest.mark.parametrize("proxy_root", ["", "/proxy"])
+def test_real_mcp_mount_and_uvicorn_root_path_return_downloadable_absolute_url(
+    service, proxy_root
+):
+    application, _ = service
+    inner = create_app(application=application)
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        async with inner.router.lifespan_context(inner):
+            yield
+
+    outer = Starlette(routes=[Mount("/papers", inner)], lifespan=lifespan)
+
+    async def exchange(base_url):
+        async with (
+            httpx.AsyncClient(trust_env=False) as http,
+            streamable_http_client(f"{base_url}/papers/mcp", http_client=http) as (
+                reader,
+                writer,
+                _,
+            ),
+            ClientSession(reader, writer) as session,
+        ):
+            await session.initialize()
+            response = await session.call_tool(
+                "acquire",
+                {
+                    "request": {"identifiers": ["10.1234/example"]},
+                    "wait_seconds": 5,
+                },
+            )
+            assert not response.isError
+            url = response.structuredContent["artifacts"][0]["download_url"]
+            assert url.startswith(f"{base_url}{proxy_root}/papers/downloads/")
+            # A prefix-stripping proxy forwards this external path to origin.
+            origin_url = base_url + urlsplit(url).path.removeprefix(proxy_root)
+            downloaded = await http.get(origin_url)
+            assert downloaded.status_code == 200
+            assert downloaded.content == application.source.content
+            assert downloaded.headers["cache-control"] == "no-store"
+
+    with live_http_app(outer, root_path=proxy_root) as base_url:
+        asyncio.run(exchange(base_url))
+
+
+@pytest.mark.parametrize("auth_mode", ["off", "required"])
+def test_unhandled_download_io_error_keeps_private_headers_and_propagates(
+    tmp_path, monkeypatch, auth_mode
+):
+    application = Application(
+        Settings(data_dir=tmp_path, auth_mode=auth_mode, api_keys=["test-key"]),
+        source=RecordingSource(),
+    )
+
+    def broken_claim(_token):
+        raise OSError("offline I/O failure")
+
+    monkeypatch.setattr(application.downloads, "claim", broken_claim)
+    app = create_app(application=application)
+    with TestClient(app, root_path="/papers", raise_server_exceptions=False) as client:
+        response = client.get("/papers/downloads/test-ticket")
+        assert response.status_code == 500
+        assert response.text == "Internal Server Error"
+        assert response.headers["cache-control"] == "no-store"
+        assert response.headers["referrer-policy"] == "no-referrer"
+        # A second client shares the active app without re-entering its lifespan.
+        with (
+            closing(TestClient(app, root_path="/papers")) as raising,
+            pytest.raises(OSError, match="offline I/O failure"),
+        ):
+            raising.get("/papers/downloads/test-ticket")
+
+
 def test_partial_stream_consumes_ticket_without_removing_artifact(service, tmp_path):
     application, _ = service
     original = b"download-content\n" * 20000
@@ -336,10 +446,13 @@ def test_capability_is_anonymous_but_permanent_artifact_remains_protected(tmp_pa
         assert client.get(f"/api/v1/jobs/{job['id']}").status_code == 401
 
 
-def test_uvicorn_access_log_redacts_downloads_including_root_path(service, caplog):
+def test_uvicorn_access_log_redacts_downloads_including_root_path(
+    service, caplog, monkeypatch
+):
     application, _ = service
     create_app(application=application)
     logger = logging.getLogger("uvicorn.access")
+    monkeypatch.setattr(logger, "propagate", True)
     with caplog.at_level(logging.INFO, logger="uvicorn.access"):
         for target in (
             "/downloads/secret-ticket",

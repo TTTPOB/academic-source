@@ -6,13 +6,31 @@ import logging
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 from starlette._utils import get_route_path
 from starlette.datastructures import MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 if TYPE_CHECKING:
     from academic_source.services.application import Application
+
+
+def _private_response_headers(scope: Scope) -> dict[str, str]:
+    path = get_route_path(scope)
+    if path == "/downloads" or path.startswith("/downloads/"):
+        return {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
+    if path.rstrip("/") == "/mcp":
+        return {"Cache-Control": "no-store"}
+    return {}
+
+
+async def download_server_error_handler(request: Request, exc: Exception) -> Response:
+    """Keep framework-generated 500 responses private without swallowing errors."""
+    return PlainTextResponse(
+        "Internal Server Error",
+        status_code=500,
+        headers=_private_response_headers(request.scope),
+    )
 
 
 class DownloadResponseHeadersMiddleware:
@@ -23,16 +41,11 @@ class DownloadResponseHeadersMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        path = get_route_path(scope)
-        download = path == "/downloads" or path.startswith("/downloads/")
-        sensitive = download or path.rstrip("/") == "/mcp"
+        private_headers = _private_response_headers(scope)
 
         async def send_private(message: Message) -> None:
-            if sensitive and message["type"] == "http.response.start":
-                headers = MutableHeaders(scope=message)
-                headers["Cache-Control"] = "no-store"
-                if download:
-                    headers["Referrer-Policy"] = "no-referrer"
+            if private_headers and message["type"] == "http.response.start":
+                MutableHeaders(scope=message).update(private_headers)
             await send(message)
 
         await self.app(scope, receive, send_private)

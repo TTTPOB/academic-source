@@ -52,6 +52,12 @@ def _save_path(output: Path, item: dict[str, Any]) -> Path:
 
 def _remote(args: argparse.Namespace) -> dict[str, Any]:
     key = os.environ.get("ACADEMIC_SOURCE_API_KEY")
+    if key is not None and (
+        not key or any(not 33 <= ord(character) <= 126 for character in key)
+    ):
+        raise ValueError(
+            "ACADEMIC_SOURCE_API_KEY must be a non-empty ASCII string without whitespace"
+        )
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     with httpx.Client(
         base_url=args.server.rstrip("/") + "/",

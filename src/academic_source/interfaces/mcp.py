@@ -71,7 +71,9 @@ def create_mcp(application: Application, *, stdio: bool = False) -> FastMCP:
                 raise ValueError(
                     "HTTP download links require an HTTP request or public_base_url"
                 )
-            base_url = str(request.base_url)
+            # Request.base_url uses the outer app_root_path and drops nested Mounts.
+            root_path = request.scope.get("root_path", "").rstrip("/")
+            base_url = str(request.url.replace(path=f"{root_path}/", query=""))
         return partial(application.downloads.issue, base_url=base_url)
 
     @mcp.tool()
