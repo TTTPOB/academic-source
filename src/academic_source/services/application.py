@@ -77,7 +77,7 @@ class Application:
             ) from exc
 
     def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
-        return discovery.search(query, limit)
+        return discovery.search(query, limit, config=self._config())
 
     def resolve(self, identifier: str) -> dict[str, Any]:
         return discovery.resolve(identifier, self._config())

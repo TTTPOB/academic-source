@@ -216,8 +216,11 @@ def _work_params(
     return params
 
 
-def _lookup_author_id(name: str) -> tuple[str | None, str, int, int]:
-    candidates = _openalex_get("authors", {"search": name, "per_page": 10})
+def _lookup_author_id(
+    name: str,
+    config: dict[str, Any] | None = None,
+) -> tuple[str | None, str, int, int]:
+    candidates = _openalex_get("authors", {"search": name, "per_page": 10}, config)
     if not candidates:
         return None, "", 0, 0
     parts = name.casefold().split()
@@ -254,6 +257,7 @@ def search_papers(
     *,
     author: str | None = None,
     author_id: str | None = None,
+    config: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Search one bounded OpenAlex page, filter non-papers, then apply limit.
 
@@ -263,7 +267,7 @@ def search_papers(
     params = _work_params(limit, year_from, year_to, sort)
     author_match = None
     if author and not author_id:
-        author_id, name, works, cited = _lookup_author_id(author)
+        author_id, name, works, cited = _lookup_author_id(author, config)
         if not author_id:
             return []
         author_match = {
@@ -279,7 +283,7 @@ def search_papers(
         params["search"] = query.strip()
     else:
         return []
-    results = _paper_results(_openalex_get("works", params), limit)
+    results = _paper_results(_openalex_get("works", params, config), limit)
     if results and author_match:
         results[0]["_author_match"] = author_match
     return results

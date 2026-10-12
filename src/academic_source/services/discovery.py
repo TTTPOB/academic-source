@@ -143,7 +143,9 @@ def _crossref_fields(message: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def search(query: str, limit: int = 10) -> list[dict[str, Any]]:
+def search(
+    query: str, limit: int = 10, *, config: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
     if not query.strip():
         raise ValueError("Search query must not be empty")
     if not 1 <= limit <= 100:
@@ -171,5 +173,5 @@ def search(query: str, limit: int = 10) -> list[dict[str, Any]]:
             for key in fields
             if key in item and item[key] not in (None, "", [], {})
         }
-        for item in search_papers(query.strip(), limit=limit)
+        for item in search_papers(query.strip(), limit=limit, config=config)
     ]

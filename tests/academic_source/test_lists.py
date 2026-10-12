@@ -88,7 +88,7 @@ def test_empty_and_malformed_uploads_fail_before_job_submission(tmp_path):
 def test_discovery_validates_before_search_and_keeps_public_abstract(monkeypatch):
     from scansci_pdf import search as legacy_search
 
-    def fixture_search(query, limit):
+    def fixture_search(query, limit, *, config=None):
         assert (query, limit) == ("papers", 2)
         return [
             {

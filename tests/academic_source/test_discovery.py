@@ -257,6 +257,51 @@ def mcp_call(client, name, arguments):
     ).json()["result"]
 
 
+@pytest.mark.parametrize(
+    "source_config",
+    [
+        {
+            "openalex_api_key": "application-key",
+            "network_proxy": "http://application-proxy.test:8080",
+        },
+        {},
+    ],
+    ids=["configured", "defaults"],
+)
+def test_http_mcp_search_use_application_key_and_proxy_at_http_boundary(
+    tmp_path,
+    monkeypatch,
+    source_config,
+):
+    monkeypatch.delenv("SCANSCI_PDF_PROXY", raising=False)
+    sent = []
+
+    def send(_adapter, request, **kwargs):
+        sent.append((request, kwargs["proxies"]))
+        return response(request, {"results": [work("10.1234/known")]})
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
+    application = Application(
+        Settings(data_dir=tmp_path, source_config=source_config),
+        source=RecordingSource(),
+    )
+    with TestClient(create_app(application=application)) as client:
+        http = client.get("/api/v1/search", params={"query": "papers"})
+        assert http.status_code == 200
+        assert http.json()[0]["doi"] == "10.1234/known"
+        mcp = mcp_call(client, "search", {"query": "papers"})
+        assert mcp["structuredContent"]["result"] == http.json()
+
+    expected_key = [source_config["openalex_api_key"]] if source_config else None
+    proxy = source_config.get("network_proxy")
+    expected_proxies = {"http": proxy, "https": proxy} if proxy else {}
+    for request, proxies in sent:
+        assert urlsplit(request.url).hostname == "api.openalex.org"
+        assert parse_qs(urlsplit(request.url).query).get("api_key") == expected_key
+        assert proxies == expected_proxies
+    assert len(sent) == 2
+
+
 def test_http_mcp_search_share_type_projection_validation_and_errors(
     tmp_path, transport
 ):
