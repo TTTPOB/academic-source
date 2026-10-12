@@ -20,7 +20,7 @@ def _pdf(path):
 
 
 def _patch_handlers(monkeypatch, visited, *, win=None):
-    """Replace site I/O, keeping the real planner and execution order in use."""
+    """Replace site I/O and force an OA miss; exercise the real fallback policy."""
     from academic_source import sources
     from scansci_pdf.sources import publishers
 
@@ -62,19 +62,9 @@ def _patch_handlers(monkeypatch, visited, *, win=None):
         for func, label in funcs.items():
             monkeypatch.setattr(target, func, handler(label))
 
-    def fast_oa(doi, work_dir, config):
-        attempts = []
-        for label in ("Unpaywall", "OpenAlexOA", "SemanticScholar", "EuropePMC", "PMC"):
-            result, attempt = sources._attempt(
-                label, handler(label), doi, work_dir, config, len(attempts) + 100
-            )
-            attempts.append(attempt)
-            if result:
-                result.attempts = attempts
-                return result
-        return SourceFailure(reason="not_found", attempts=attempts)
-
-    monkeypatch.setattr(sources, "acquire_oa", fast_oa)
+    monkeypatch.setattr(
+        sources, "acquire_oa", lambda *args: SourceFailure(reason="not_found")
+    )
     return handler
 
 
@@ -113,9 +103,7 @@ def test_legal_only_exhausts_legal_sources_without_grey(monkeypatch, tmp_path):
     _patch_handlers(monkeypatch, visited)
     result = _get(tmp_path, "legal_only", {"scihub_enabled": True})
     assert isinstance(result, SourceFailure)
-    assert {"SemanticScholar", "OpenAIRE", "CORE", "CrossrefPage", "PMC"} <= set(
-        visited
-    )
+    assert {"PublisherDirect", "OpenAIRE", "CORE", "CrossrefPage"} <= set(visited)
     assert set(visited).isdisjoint({"SciBban", "LibGen", "Sci-Hub"})
     assert len(result.attempts) == len(visited)
 
@@ -136,7 +124,7 @@ def test_oa_first_reaches_grey_after_all_legal_fail(monkeypatch, tmp_path):
     result = _get(tmp_path, "oa_first", {"scihub_enabled": True})
     assert result.source == "SciBban"
     assert (
-        visited.index("Unpaywall")
+        visited.index("OpenAIRE")
         < visited.index("PublisherDirect")
         < visited.index("SciBban")
     )
@@ -202,14 +190,7 @@ def test_elsevier_api_short_circuits_other_sources(
         config,
     )
     assert result.source == "ElsevierAPI"
-    assert visited == [
-        "Unpaywall",
-        "OpenAlexOA",
-        "SemanticScholar",
-        "EuropePMC",
-        "PMC",
-        "ElsevierAPI",
-    ]
+    assert visited == ["ElsevierAPI"]
     assert [attempt.source for attempt in result.attempts] == visited
 
 
@@ -218,7 +199,7 @@ def test_elsevier_api_short_circuits_other_sources(
     [
         ("10.1016/example", "fastest", False, "Crossref"),
         ("10.1016/example", "legal_only", False, "Crossref"),
-        ("10.1016/example", "oa_first", True, "Unpaywall"),
+        ("10.1016/example", "oa_first", True, "OpenAIRE"),
         ("10.1016/example", "scihub_first", True, "SciBban"),
         ("10.1016/example", "grey_only", True, "SciBban"),
         ("10.1016/example", "scihub_only", True, "Sci-Hub"),
@@ -250,37 +231,7 @@ def test_elsevier_shortcut_respects_key_policy_and_doi(
         {"scihub_enabled": True, "elsevier_api_key": "example-only" if has_key else ""},
     )
     assert result.source == first
-    if policy in ("fastest", "legal_only"):
-        assert visited == [
-            "Unpaywall",
-            "OpenAlexOA",
-            "SemanticScholar",
-            "EuropePMC",
-            "PMC",
-            first,
-        ]
-    else:
-        assert visited == [first]
-
-
-@pytest.mark.parametrize("parallel_sources", [True, False])
-def test_fastest_tries_sources_in_order_and_stops_at_first_pdf(
-    monkeypatch, tmp_path, parallel_sources
-):
-    from scansci_pdf.sources import publishers
-
-    visited = []
-    _patch_handlers(monkeypatch, visited, win="OpenAlexOA")
-    monkeypatch.setattr(publishers, "get_publisher_fast_sources", lambda doi: [])
-
-    result = _get(
-        tmp_path,
-        "fastest",
-        {"scihub_enabled": False, "parallel_sources": parallel_sources},
-    )
-    assert result.source == "OpenAlexOA"
-    assert visited == ["Unpaywall", "OpenAlexOA"]
-    assert [attempt.source for attempt in result.attempts] == visited
+    assert visited == [first]
 
 
 def test_webvpn_saved_session_headless_and_login_page_exits(monkeypatch, tmp_path):

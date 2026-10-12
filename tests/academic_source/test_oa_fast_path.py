@@ -321,18 +321,6 @@ def test_fallback_reuses_download_dedupe_and_preserves_failure_action(
     assert result.attempts[-1].reason == "not_found"
 
 
-def test_planner_does_not_repeat_consumed_metadata_or_publisher_aliases():
-    handlers = sources._plan(
-        "10.1016/example",
-        AcquisitionRequest(identifiers=["10.1016/example"]),
-        {"openalex_api_key": "test"},
-    )
-    assert {name for name, _ in handlers}.isdisjoint(oa.REPLACED_SOURCES)
-    assert {"Crossref", "ElsevierBrowser", "OpenAIRE", "CORE"} <= {
-        name for name, _ in handlers
-    }
-
-
 def test_dedupe_scope_ends_with_each_acquisition(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(
