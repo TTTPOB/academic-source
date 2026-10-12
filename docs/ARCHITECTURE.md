@@ -24,6 +24,14 @@ stdio MCP / CLI ────────────┴─> Application ─> Sou
 - `infrastructure.storage`、`documents`：SQLite 记录、文件落盘和 PDF 可读性检查。
 - `interfaces.api`、`mcp`、`cli`、`web`：共享应用服务的协议适配；MCP 提供搜索、解析、列表解析、获取和任务状态；仅 stdio 另提供 `export_artifacts`，不代理 HTTP。
 
+## 检索与标识解析
+
+HTTP/MCP 的 search 通过 Application → services.discovery → scansci_pdf.search，只使用 OpenAlex。Python 的 search_papers 与 search_papers_v2 共用同一实现。默认源内相关性顺序不做本地重排；现有 Python 引用数/发布日期排序（可选 asc/desc）和单边/双边年份范围直接传给 OpenAlex。公开 HTTP/MCP 参数仍为 query、limit。
+
+每次获取 min(200, max(30, limit × 3)) 条候选，不翻页；沿用带 DOI 的结果边界，按明确类型、撤稿状态和少量完整泛标题过滤后应用 limit（1–100）。保留综述、预印本、完整会议论文及未知类型，排除明确非论文对象和 is_retracted=true 的原文。结果投影保留 type、撤稿状态和有效 ISO 发布日期，缺值省略。空结果与来源故障分开：真实无命中为列表，预期网络/HTTP/JSON 故障为 DiscoveryError，HTTP 翻译为 502，MCP 使用 SDK 工具错误机制。
+
+services.discovery.resolve 对显式 DOI 才执行 Crossref 单 DOI 元数据请求：保留规范化标识，返回精简的书目、类型和有向 DOI 关系/更新证据。metadata_status 区分 found、not_found（404）、unavailable（预期请求/JSON/记录失败）；规范化成功不代表元数据核验成功。标题解析共用 OpenAlex 相似度匹配，不自动查 Crossref，内部获取的标题解析也不新增元数据依赖。arXiv 只规范化。关键词检索与按需元数据补充互不阻塞，Crossref 不参与候选召回或排序。
+
 ## 输入与产物
 
 获取请求恰好选择一种输入：标识符列表、已上传文件的 `upload_id` 或内联文本。上传在服务端按块流式写入，保留文件扩展名并受大小限制；列表解析支持文本、BibTeX、表格及 JSON 等当前解析器支持的格式。
@@ -36,7 +44,7 @@ PDF 是获取成功的基础产物；可选 Markdown、补充材料和 BibTeX �
 
 `LegacySources` 在新的统一来源边界中调度保留的站点实现，包括开放获取服务、出版商 URL/HTML/浏览器规则、arXiv，以及配置后可用的机构访问通道（如 CARSI、WebVPN、EZProxy、机构会话和浏览器批量路径）。这保留有效站点知识，不代表所有来源、浏览器依赖或订阅能力在每个环境均可用。
 
-来源策略由获取请求决定。`fastest`、`oa_first`、`legal_only` 先执行轻量 OA 快路径：逐个查询 Unpaywall、OpenAlex、Semantic Scholar、Europe PMC core 和 PMC 标识转换，发现候选即验证文件，取得可读 PDF 后立即停止，不等待其余元数据。保留 PDF 链接、公开落地页和仓储标识；识别 PMCID 后先尝试 Europe PMC 网站的 `api/getPdf?pmcid=...`。同一次获取内 HTTP 候选去重，回退阶段不重复查询已完成的 OA 服务；失败仍接原有合法、灰色及已配置机构渠道。`scihub_first`、`grey_only`、`scihub_only` 等显式策略保持原顺序。
+来源策略由获取请求决定。`fastest`、`oa_first`、`legal_only` 先执行轻量 OA 快路径：逐个查询 Unpaywall、OpenAlex、Europe PMC core 和 PMC 标识转换，发现候选即验证文件，取得可读 PDF 后立即停止，不等待其余元数据。保留 PDF 链接、公开落地页和仓储标识；识别 PMCID 后先尝试 Europe PMC 网站的 `api/getPdf?pmcid=...`。同一次获取内 HTTP 候选去重，回退阶段不重复查询已完成的 OA 服务；失败仍接原有合法、灰色及已配置机构渠道。`scihub_first`、`grey_only`、`scihub_only` 等显式策略保持原顺序。
 
 Elsevier API key 可用时，`10.1016/` 的 DOI 在 `fastest` 和 `legal_only` 的 OA 快路径未成功后，仍优先尝试 Elsevier API，再继续其他出版商来源。API/XML 成功不等于正文授权，最终仍以可读 PDF 校验为准。
 

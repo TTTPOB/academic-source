@@ -36,6 +36,21 @@ academic-source mcp
 
 两种 MCP 均提供 `search`、`resolve`、`parse_list`、`acquire`、`job_status`。HTTP MCP 的产物包含 `download_url`，通过 HTTP 下载；独立 stdio 不依赖 HTTP，产物仅返回 ID 等元数据，另有 `export_artifacts(artifact_ids, output_dir)` 将已登记文件复制到 stdio **进程所在机器**的指定目录，返回文件实际路径。若进程在容器中，目录须由容器挂载到所需位置；路径不是客户端机器的远程路径。不同 ID 即使文件同名也不会相互覆盖。
 
+## 检索与元数据
+
+HTTP `GET /api/v1/search?query=...&limit=10` 与 MCP `search(query, limit)` 只从 OpenAlex 检索，默认保留其相关性顺序。`limit` 为 1–100；只取一页有界候选（最多 200 条），当前只返回带 DOI 的候选，分类过滤后再截断，因此结果可能少于请求数量。默认排除明确的审稿报告、组件/补充材料、词条/数据对象、书籍、paratext、勘误/撤稿通知、会议摘要及已标记撤稿的原文；保留研究文章、综述、预印本、完整会议论文与未知类型。另有少量完整泛标题规则（如 `Foreword`、`Manuscript Submission Guideline`），不会因标题含 Review 或 Guideline 就排除。
+
+结果保留已有书目信息，以及可用的 OpenAlex `type`、`is_retracted` 和 ISO `publication_date`；缺失字段省略，false/0 仍保留。不承诺上游类型准确、覆盖所有编辑材料或消除短词/基因名称歧义。真实无命中返回 `[]`；OpenAlex 网络、HTTP 或 JSON 错误通过 HTTP 502 或 MCP 工具错误返回，不伪装无命中。
+
+HTTP `POST /api/v1/resolve`（`{"identifier":"DOI、标题或 arXiv 标识"}`）与 MCP `resolve(identifier)` 共用以下语义：
+
+- **显式 DOI**：保留规范化后的 `identifier/doi`，按 DOI 查询 Crossref，补充非空的 `title/authors/year/type`，以及可用的 `relations/review_type/updates`。`metadata_status=found` 表示查到同 DOI 记录，`metadata_source=crossref`；不保证所有书目字段齐全。
+- **元数据未取得**：Crossref 404 返回 `metadata_status=not_found`；网络、HTTP、JSON 或记录不匹配返回 `metadata_status=unavailable` 并附简短 `metadata_error`。两者仍保留规范标识，但不能作为元数据核验成功。关系中的父 DOI 不会取代当前 DOI。
+- **标题**：只用 OpenAlex 候选标题相似度匹配（沿用 0.75 阈值，拒绝不同 DOI 同分最佳匹配），不是首条命中即确认；不匹配则保留原标题并返回 `doi=null`。标题解析及获取过程中的标题解析不自动查询 Crossref；OpenAlex 故障按上面的错误机制返回。
+- **arXiv**：规范化标识，不查询 Crossref。
+
+Crossref 不参与关键词召回，不逐条补全搜索结果，也不重排结果。需要某个 DOI 的补充元数据时，单独调用 `resolve`。
+
 ## 本地与远端 CLI
 
 ```bash

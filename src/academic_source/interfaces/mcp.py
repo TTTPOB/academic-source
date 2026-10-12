@@ -65,7 +65,10 @@ def create_mcp(application: Application, *, stdio: bool = False) -> FastMCP:
 
     @mcp.tool()
     async def resolve(identifier: str) -> dict[str, Any]:
-        """Resolve a DOI, title, or other paper identifier."""
+        """Normalize identifiers; enrich explicit DOIs via Crossref with metadata_status.
+
+        Titles are matched through OpenAlex, without a Crossref metadata lookup.
+        """
         return await to_thread.run_sync(partial(application.resolve, identifier))
 
     @mcp.tool()
