@@ -220,70 +220,74 @@ def download_pdf(
     if not claim_download_url(url, config):
         return None
 
+    from contextlib import ExitStack
+
     try:
-        if cookies is not None:
-            from .network import (
-                CHROME_UA,
-                request_timeout,
-                proxy_dict,
-                select_proxy_for_url,
-                USER_AGENT,
-            )
-            session = requests.Session()
-            session.trust_env = False
-            session.headers.update({"User-Agent": USER_AGENT})
-            if referer:
-                # Some shadow-library CDNs (sci.bban.top, observed 2026-09)
-                # 403 any PDF request without a same-site Referer.
-                session.headers.update({"Referer": referer})
-            if browser_ua:
-                # …and they also 403 non-browser User-Agents outright — the
-                # engine UA ("scansci-pdf/x") gets HTML even with Referer.
-                session.headers.update({"User-Agent": CHROME_UA})
-            session.cookies.update(cookies)
-            resp = session.get(
-                url,
-                timeout=request_timeout(config),
-                proxies=proxy_dict(select_proxy_for_url(url, config)),
-                allow_redirects=True,
-                stream=True,
-            )
-        else:
-            resp = fetch(url, config, stream=True, use_tor=use_tor)
-        if resp.status_code >= 400:
-            return None
+        with ExitStack() as resources:
+            if cookies is not None:
+                from .network import (
+                    CHROME_UA,
+                    request_timeout,
+                    proxy_dict,
+                    select_proxy_for_url,
+                    USER_AGENT,
+                )
+                session = resources.enter_context(requests.Session())
+                session.trust_env = False
+                session.headers.update({"User-Agent": USER_AGENT})
+                if referer:
+                    # Some shadow-library CDNs (sci.bban.top, observed 2026-09)
+                    # 403 any PDF request without a same-site Referer.
+                    session.headers.update({"Referer": referer})
+                if browser_ua:
+                    # …and they also 403 non-browser User-Agents outright — the
+                    # engine UA ("scansci-pdf/x") gets HTML even with Referer.
+                    session.headers.update({"User-Agent": CHROME_UA})
+                session.cookies.update(cookies)
+                resp = session.get(
+                    url,
+                    timeout=request_timeout(config),
+                    proxies=proxy_dict(select_proxy_for_url(url, config)),
+                    allow_redirects=True,
+                    stream=True,
+                )
+            else:
+                resp = fetch(url, config, stream=True, use_tor=use_tor)
+            resources.enter_context(resp)
+            if resp.status_code >= 400:
+                return None
 
-        iterator = resp.iter_content(chunk_size=8192)
-        first_chunk = next(iterator, b"")
-        if not _response_looks_pdf(resp, first_chunk):
-            return None
+            iterator = resp.iter_content(chunk_size=8192)
+            first_chunk = next(iterator, b"")
+            if not _response_looks_pdf(resp, first_chunk):
+                return None
 
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = output_path.with_suffix(output_path.suffix + ".part")
-        try:
-            # requests' timeout tuple only guards connect + each socket read;
-            # a peer that drips bytes forever would hold the race open, so
-            # bound the whole stream with a wall-clock deadline too.
-            deadline = time.monotonic() + float(config.get("download_deadline_seconds", 60))
-            with tmp_path.open("wb") as fh:
-                fh.write(first_chunk)
-                for chunk in iterator:
-                    if time.monotonic() > deadline:
-                        raise TimeoutError("stream deadline exceeded")
-                    if chunk:
-                        fh.write(chunk)
-            tmp_path.replace(output_path)
-        except Exception:
-            tmp_path.unlink(missing_ok=True)
-            raise
-
-        if is_pdf_file(output_path):
-            return success(output_path.stem, output_path, source)
-        else:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = output_path.with_suffix(output_path.suffix + ".part")
             try:
-                output_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+                # requests' timeout tuple only guards connect + each socket read;
+                # a peer that drips bytes forever would hold the race open, so
+                # bound the whole stream with a wall-clock deadline too.
+                deadline = time.monotonic() + float(config.get("download_deadline_seconds", 60))
+                with tmp_path.open("wb") as fh:
+                    fh.write(first_chunk)
+                    for chunk in iterator:
+                        if time.monotonic() > deadline:
+                            raise TimeoutError("stream deadline exceeded")
+                        if chunk:
+                            fh.write(chunk)
+                tmp_path.replace(output_path)
+            except Exception:
+                tmp_path.unlink(missing_ok=True)
+                raise
+
+            if is_pdf_file(output_path):
+                return success(output_path.stem, output_path, source)
+            else:
+                try:
+                    output_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
     except Exception:
         return None
     return None

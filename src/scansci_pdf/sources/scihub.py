@@ -604,77 +604,79 @@ def try_scihub_domain(
     }
 
     try:
-        resp = fetch(landing_url, config, stream=True, use_tor=use_tor)
+        with fetch(landing_url, config, stream=True, use_tor=use_tor) as http_response:
+            resp = http_response
 
-        # Fallback to browser on Cloudflare/403/CAPTCHA
-        if resp.status_code in (403, 503) or _is_cloudflare_block(resp):
-            _mark_browser_required(domain, config)
-            resp = _try_browser(landing_url, config, resp)
-            if resp is None:
+            # Fallback to browser on Cloudflare/403/CAPTCHA
+            if resp.status_code in (403, 503) or _is_cloudflare_block(resp):
+                _mark_browser_required(domain, config)
+                resp = _try_browser(landing_url, config, resp)
+                if resp is None:
+                    if fail_notes is not None:
+                        fail_notes.append("challenge(browser bypass failed)")
+                    return None
+
+            if resp.status_code >= 400:
                 if fail_notes is not None:
-                    fail_notes.append("challenge(browser bypass failed)")
+                    fail_notes.append(f"http_{resp.status_code}")
                 return None
 
-        if resp.status_code >= 400:
-            if fail_notes is not None:
-                fail_notes.append(f"http_{resp.status_code}")
-            return None
+            first = next(resp.iter_content(chunk_size=8192), b"")
+            # Check for CAPTCHA in first chunk
+            if resp.status_code == 200 and first:
+                content_sample = first[:5000].decode('utf-8', errors='ignore').lower()
+                if 'captcha' in content_sample or 'recaptcha' in content_sample:
+                    log.info(f"   CAPTCHA detected, trying browser...")
+                    # Use browser to bypass CAPTCHA
+                    browser_resp = _try_browser(landing_url, config, resp)
+                    if browser_resp is None:
+                        log.warning(f"   browser bypass failed — is CloakBrowser installed? Run: pip install cloakbrowser")
+                        if fail_notes is not None:
+                            fail_notes.append("challenge(captcha bypass failed)")
+                        return None
+                    # Get new content from browser response
+                    resp = browser_resp
+                    first = resp.content[:8192] if resp.content else b""
+                    log.info(f"   browser bypassed CAPTCHA, content size: {len(first)}")
 
-        first = next(resp.iter_content(chunk_size=8192), b"")
-        # Check for CAPTCHA in first chunk
-        if resp.status_code == 200 and first:
-            content_sample = first[:5000].decode('utf-8', errors='ignore').lower()
-            if 'captcha' in content_sample or 'recaptcha' in content_sample:
-                log.info(f"   CAPTCHA detected, trying browser...")
-                # Use browser to bypass CAPTCHA
-                browser_resp = _try_browser(landing_url, config, resp)
-                if browser_resp is None:
-                    log.warning(f"   browser bypass failed — is CloakBrowser installed? Run: pip install cloakbrowser")
-                    if fail_notes is not None:
-                        fail_notes.append("challenge(captcha bypass failed)")
-                    return None
-                # Get new content from browser response
-                resp = browser_resp
-                first = resp.content[:8192] if resp.content else b""
-                log.info(f"   browser bypassed CAPTCHA, content size: {len(first)}")
+            if _response_looks_pdf(resp, first):
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp_path = output_path.with_suffix(output_path.suffix + ".part")
+                try:
+                    with tmp_path.open("wb") as fh:
+                        fh.write(first)
+                        for chunk in resp.iter_content(chunk_size=8192):
+                            if chunk:
+                                fh.write(chunk)
+                    tmp_path.replace(output_path)
+                except Exception:
+                    tmp_path.unlink(missing_ok=True)
+                    raise
+                if is_pdf_file(output_path):
+                    return success(doi, output_path, f"Sci-Hub({domain})")
 
-        if _response_looks_pdf(resp, first):
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp_path = output_path.with_suffix(output_path.suffix + ".part")
-            try:
-                with tmp_path.open("wb") as fh:
-                    fh.write(first)
-                    for chunk in resp.iter_content(chunk_size=8192):
-                        if chunk:
-                            fh.write(chunk)
-                tmp_path.replace(output_path)
-            except Exception:
-                tmp_path.unlink(missing_ok=True)
-                raise
-            if is_pdf_file(output_path):
-                return success(doi, output_path, f"Sci-Hub({domain})")
-
-        # Collect full HTML content (browser responses have _content, direct responses need raw.read)
-        if resp._content:
-            html = first + resp._content
-        else:
-            try:
-                html = first + resp.raw.read(512_000, decode_content=True)
-            except Exception:
-                html = first
-        pdf_url = extract_pdf_url_from_html(html.decode("utf-8", errors="ignore"), resp.url)
-        if not pdf_url:
-            if fail_notes is not None:
-                fail_notes.append("not_in_library(no pdf url)")
-            return None
-        result = download_pdf_from_scihub(pdf_url, output_path, config, f"Sci-Hub({domain})",
-                                          use_tor=use_tor, cookies=resp.cookies, referer=landing_url)
-        if result:
-            result["doi"] = doi
-            result["identifier"] = doi
-        elif fail_notes is not None:
-            fail_notes.append("not_in_library(pdf download failed)")
-        return result
+            # Collect full HTML content (browser responses have _content, direct responses need raw.read)
+            if resp._content:
+                html = first + resp._content
+            else:
+                try:
+                    html = first + resp.raw.read(512_000, decode_content=True)
+                except Exception:
+                    html = first
+            pdf_url = extract_pdf_url_from_html(html.decode("utf-8", errors="ignore"), resp.url)
+            if not pdf_url:
+                if fail_notes is not None:
+                    fail_notes.append("not_in_library(no pdf url)")
+                return None
+            http_response.close()
+            result = download_pdf_from_scihub(pdf_url, output_path, config, f"Sci-Hub({domain})",
+                                              use_tor=use_tor, cookies=resp.cookies, referer=landing_url)
+            if result:
+                result["doi"] = doi
+                result["identifier"] = doi
+            elif fail_notes is not None:
+                fail_notes.append("not_in_library(pdf download failed)")
+            return result
     except Exception as e:
         log.warning("   [scihub] %s HTTP lane failed: %r", domain, e, exc_info=True)
         if fail_notes is not None:
