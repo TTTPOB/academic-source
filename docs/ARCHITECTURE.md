@@ -69,6 +69,8 @@ OA 元数据查询成功时 `Attempt.status` 为 `discovered`，表示服务返�
 
 `started_at`、`elapsed_seconds`、`seconds`、`candidates` 在旧任务记录里不存在，读取时为空，对外投影省略空值。
 
+HTTP `POST /api/v1/jobs/{job_id}/cancel` 与 MCP `cancel_job(job_id)` 均返回与任务查询相同的投影。排队任务立即进入 `cancelled`，不再计入 `queue.ahead`；执行中的任务继续处理当前论文（包括来源尝试与导出），结束后进入 `cancelled`，不会再开始下一篇。已完成的结果与产物仍可访问。取消进行中可继续轮询任务状态；已进入终态的任务不会改变。服务重启仍把遗留的 `queued`、`running` 任务标为 `interrupted`。
+
 ## 输入与产物
 
 获取请求恰好选择一种输入：标识符列表、已上传文件的 `upload_id` 或内联文本。上传在服务端按块流式写入，保留文件扩展名并受大小限制；列表解析支持文本、BibTeX、表格及 JSON 等当前解析器支持的格式。

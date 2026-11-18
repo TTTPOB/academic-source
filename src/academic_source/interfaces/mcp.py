@@ -32,6 +32,7 @@ def create_mcp(application: Application, *, stdio: bool = False) -> FastMCP:
     # The SDK route stays /mcp; mounting its ASGI app at / avoids /mcp/mcp.
     instructions = (
         "Acquire returns a persistent job. Poll job_status until it finishes. "
+        "Use cancel_job to stop a queued job or stop after the current paper. "
         "For paper lists use inline text or a previously uploaded upload_id. "
     )
     if stdio:
@@ -126,6 +127,13 @@ def create_mcp(application: Application, *, stdio: bool = False) -> FastMCP:
         """Inspect a previously submitted job and its artifacts."""
         job = await to_thread.run_sync(partial(application.job, job_id))
         return job_data(job, downloadable=not stdio, download_factory=downloads(ctx))
+
+    @mcp.tool()
+    async def cancel_job(job_id: str, ctx: Context) -> dict[str, Any]:
+        """Cancel a queued job or let it finish the current paper before stopping."""
+        factory = downloads(ctx)
+        job = await to_thread.run_sync(partial(application.cancel, job_id))
+        return job_data(job, downloadable=not stdio, download_factory=factory)
 
     if stdio:
 

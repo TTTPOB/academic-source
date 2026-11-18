@@ -8,7 +8,7 @@ Policy = Literal[
     "fastest", "oa_first", "legal_only", "scihub_first", "grey_only", "scihub_only"
 ]
 JobStatus = Literal[
-    "queued", "running", "succeeded", "partial", "failed", "interrupted"
+    "queued", "running", "succeeded", "partial", "failed", "interrupted", "cancelled"
 ]
 
 

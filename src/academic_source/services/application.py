@@ -7,11 +7,12 @@ import json
 import logging
 import os
 import time
-from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, TimeoutError
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import RLock
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -54,7 +55,10 @@ class Application:
             self._executor = ThreadPoolExecutor(
                 max_workers=1, thread_name_prefix="acquisition"
             )
+            # Future.cancel() calls the cleanup callback on the cancelling thread.
+            self._jobs_lock = RLock()
             self._futures: dict[str, Future[None]] = {}
+            self._cancel_requested: set[str] = set()
             self._closed = False
             self._executor.submit(self.source.prepare, self._config())
         except BaseException:
@@ -119,29 +123,55 @@ class Application:
             created_at=now,
             updated_at=now,
         )
-        self.store.save_job(job)
         config = self._config()
-        future = self._executor.submit(self._run, job, entries, config)
-        self._futures[job.id] = future
-        future.add_done_callback(lambda _future: self._futures.pop(job.id, None))
+        with self._jobs_lock:
+            self.store.save_job(job)
+            future = self._executor.submit(self._run, job, entries, config)
+            self._futures[job.id] = future
+            future.add_done_callback(lambda _: self._forget_job(job.id))
         # Read a snapshot instead of exposing the mutable worker-owned model.
         return self.job(job.id)
 
+    def _forget_job(self, job_id: str) -> None:
+        with self._jobs_lock:
+            self._futures.pop(job_id, None)
+            self._cancel_requested.discard(job_id)
+
     def job(self, job_id: str) -> Job:
-        job = self.store.get_job(job_id)
-        if job.status == "queued":
-            # Insertion order is submission order; finished jobs are removed.
-            waiting = list(self._futures)
-            if job_id in waiting:
-                job.queue_ahead = waiting.index(job_id)
-        return job
+        with self._jobs_lock:
+            job = self.store.get_job(job_id)
+            if job.status == "queued":
+                # Insertion order is submission order, including the running job.
+                waiting = [
+                    key for key, future in self._futures.items() if not future.done()
+                ]
+                if job_id in waiting:
+                    job.queue_ahead = waiting.index(job_id)
+            return job
+
+    def cancel(self, job_id: str) -> Job:
+        with self._jobs_lock:
+            job = self.job(job_id)
+            if job.status not in {"queued", "running"}:
+                return job
+            future = self._futures.get(job_id)
+            if future is None:
+                return job
+            if future.cancel():
+                job.status = "cancelled"
+                job.queue_ahead = None
+                self._save(job)
+            else:
+                self._cancel_requested.add(job_id)
+            return job
 
     def wait(self, job_id: str, timeout: float = 0) -> Job:
-        future = self._futures.get(job_id)
+        with self._jobs_lock:
+            future = self._futures.get(job_id)
         if future:
             try:
                 future.result(timeout=max(0, timeout))
-            except TimeoutError:
+            except (CancelledError, TimeoutError):
                 pass
         return self.job(job_id)
 
@@ -189,8 +219,12 @@ class Application:
             job.status = "running"
             job.started_at = _now()
             for entry in entries:
-                job.current_identifier = entry["identifier"]
-                self._save(job)
+                # Publish the next paper's start atomically with the cancellation check.
+                with self._jobs_lock:
+                    if job.id in self._cancel_requested:
+                        break
+                    job.current_identifier = entry["identifier"]
+                    self._save(job)
                 started = time.monotonic()
                 try:
                     result = self._acquire(entry, job.request, job.id, config)
@@ -232,8 +266,11 @@ class Application:
                 self.source.close()
             except Exception:
                 log.exception("Source cleanup failed for job %s", job.id)
-        job.current_identifier = ""
-        self._save(job)
+        with self._jobs_lock:
+            if job.id in self._cancel_requested:
+                job.status = "cancelled"
+            job.current_identifier = ""
+            self._save(job)
 
     def _save(self, job: Job) -> None:
         job.updated_at = _now()

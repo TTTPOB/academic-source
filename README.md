@@ -37,6 +37,8 @@ academic-source mcp
 
 两种 MCP 均提供 `search`、`get_metadata`、`parse_list`、`acquire`、`job_status`。HTTP MCP 的产物包含绝对 `download_url`，可不带长期 Bearer 密钥下载一次；独立 stdio 不依赖 HTTP，产物仅返回 ID 等元数据，另有 `export_artifacts(artifact_ids, output_dir)` 将已登记文件复制到 stdio **进程所在机器**的指定目录，返回文件实际路径。若进程在容器中，目录须由容器挂载到所需位置；路径不是客户端机器的远程路径。不同 ID 即使文件同名也不会相互覆盖。
 
+可通过 HTTP `POST /api/v1/jobs/{job_id}/cancel` 或 MCP `cancel_job(job_id)` 取消获取任务：排队任务立即取消，执行中的任务做完当前论文后停止，已取得的产物仍可访问。
+
 ## HTTP 认证与可分享部署
 
 HTTP 默认 `auth_mode="required"`。服务端必须至少配置一把静态密钥；缺失或显式空数组会在创建业务服务和 worker 前启动失败。多把密钥权限相同，可以分别分发与轮换；没有用户、角色、scope 或 OAuth 自动发现。MCP 客户端需支持预配置 `Authorization` header。

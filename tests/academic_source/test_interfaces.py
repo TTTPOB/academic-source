@@ -129,6 +129,7 @@ def test_mcp_and_http_share_one_real_job_and_artifact_store(tmp_path):
             "parse_list",
             "acquire",
             "job_status",
+            "cancel_job",
         }
         metadata_tool = next(
             tool

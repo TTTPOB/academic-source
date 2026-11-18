@@ -93,6 +93,13 @@ def create_router(application: Application) -> APIRouter:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Unknown job") from exc
 
+    @api.post("/jobs/{job_id}/cancel")
+    def cancel_job(job_id: str) -> dict[str, Any]:
+        try:
+            return job_data(application.cancel(job_id))
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Unknown job") from exc
+
     @api.get("/artifacts/{artifact_id}/content")
     def artifact(artifact_id: str) -> FileResponse:
         try:
