@@ -186,7 +186,7 @@ def test_source_adapter_preserves_failed_attempts_and_publisher_order(
     monkeypatch.setattr(
         publishers,
         "get_publisher_fast_sources",
-        lambda doi: [(rejected, "Direct"), (available, "Publisher")],
+        lambda doi: [(rejected, "NatureDirect"), (available, "PublisherDirect")],
     )
     outcome = LegacySources().acquire(
         "10.1234/test",
@@ -197,7 +197,10 @@ def test_source_adapter_preserves_failed_attempts_and_publisher_order(
     assert isinstance(outcome, SourceSuccess)
     assert outcome.source == "publisher"
     assert [item.reason for item in outcome.attempts[:1]] == ["auth_required"]
-    assert [item.source for item in outcome.attempts] == ["Direct", "Publisher"]
+    assert [item.source for item in outcome.attempts] == [
+        "NatureDirect",
+        "PublisherDirect",
+    ]
 
 
 def test_noninteractive_legacy_login_fallback_does_not_open_windows(

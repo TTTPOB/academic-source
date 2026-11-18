@@ -20,7 +20,7 @@ stdio MCP / CLI ────────────┴─> Application ─> Sou
 - `academic_source.settings`：运行设置和显式 `source_config`；默认数据目录为 `~/.academic-source`，配置文件为其中的 `settings.json`。
 - `academic_source.app`、`services.application`：组合 HTTP/MCP 生命周期，执行搜索、DOI/arXiv 元数据查询、获取、缓存、任务和导出。
 - `services.discovery`、`lists`、`exports`：标识规范化、DOI/arXiv 元数据、列表输入和可选产物转换；继续复用所需的上游解析及抓取知识。
-- `sources`：统一选源和结果边界，直接调用保留下来的来源函数；不把旧下载编排器作为新的总入口。
+- `sources`：按来源注册表和请求策略选源，自有 OA 路径直接返回类型化结果，借用的来源函数通过适配器接入；不调用旧下载编排器。
 - `infrastructure.storage`、`documents`：SQLite 记录、文件落盘和 PDF 可读性检查。
 - `interfaces.api`、`mcp`、`cli`、`web`：共享应用服务的协议适配；MCP 提供搜索、DOI/arXiv 元数据、列表解析、获取和任务状态；仅 stdio 另提供 `export_artifacts`，不代理 HTTP。
 
@@ -97,7 +97,9 @@ HTTP MCP 的 `acquire`、`job_status` 为已登记产物返回绝对 `download_u
 
 Elsevier API key 可用时，`10.1016/` 的 DOI 在 `fastest` 和 `legal_only` 的 OA 快路径未成功后，仍优先尝试 Elsevier API，再继续其他出版商来源。API/XML 成功不等于正文授权，最终仍以可读 PDF 校验为准。
 
-来源尝试保留来源名、状态、原因和诊断信息。单篇结果与批量逐项结果共享成功判定；外部站点错误不会被当成成功，任务级意外错误记录在服务日志并以通用错误状态返回，不把内部异常细节伪装成站点结论。
+回退顺序由 `sources.registry` 的策略表和来源注册表生成。每个标签记录类别、归属、执行后端、站点键和适用的启用条件；同一标签只在首次出现时尝试。出版商内部的 DOI 匹配和顺序继续使用现有出版商表。`http` 用于[已核对](HTTP_SOURCE_AUDIT.md)、不走浏览器且不绕过 HTTP 准入点的来源，其他来源保守标为 `browser`。这些标记目前不参与线程分配或限流。
+
+单个来源返回 `SourceSuccess` 或封闭的 `SourceError` 类型。借用来源的异常、失败字典和出版商浏览器返回 `None` 后携带的全局诊断，由 `sources.legacy` 一次归一化；应用的适配器只在相应浏览器调用返回 `None` 后读取全局诊断，未改动全局状态或浏览器线程模型。自有 OA 路径直接构造错误类型。每次尝试仍记录原有的来源名、状态和诊断，最终汇总保持原有错误优先级和对外 `reason` 字符串。
 
 ## 任务、文件与缓存
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Any, Protocol
@@ -18,9 +17,9 @@ from .models import (
     failed_attempt,
     observe,
 )
-from .oa import FAST_POLICIES, REPLACED_SOURCES, acquire_oa
-
-Handler = tuple[str, LegacyHandler]
+from .oa import acquire_oa
+from .registry import FAST_POLICIES, PROVIDERS
+from .registry import plan as _plan
 
 
 class Source(Protocol):
@@ -37,134 +36,6 @@ class Source(Protocol):
         work_dir: Path,
         config: dict[str, Any],
     ) -> SourceSuccess | SourceFailure: ...
-
-
-def _broker_source(
-    doi: str, path: Path, config: dict[str, Any]
-) -> dict[str, Any] | None:
-    from scansci_pdf.institutional.instsci_bridge import _try_session_broker
-    from scansci_pdf.institutional.publisher_profiles import infer_publisher_profile
-
-    return _try_session_broker(doi, path, config, infer_publisher_profile(doi))
-
-
-def _publisher_batch_source(
-    doi: str, path: Path, config: dict[str, Any]
-) -> dict[str, Any] | None:
-    from scansci_pdf.institutional.instsci_bridge import _try_browser_batch_download
-    from scansci_pdf.institutional.publisher_profiles import infer_publisher_profile
-
-    return _try_browser_batch_download(doi, path, config, infer_publisher_profile(doi))
-
-
-def _sage_cn_source(
-    doi: str, path: Path, config: dict[str, Any]
-) -> dict[str, Any] | None:
-    from scansci_pdf.sources.sage_cn import try_sage_cn_authorized
-
-    if try_sage_cn_authorized(doi, path, config):
-        return {"success": True, "file": str(path), "source": "SAGECN"}
-    return None
-
-
-def _plan(
-    doi: str,
-    request: AcquisitionRequest,
-    config: dict[str, Any],
-    skip_oa: bool = False,
-) -> list[Handler]:
-    """Enumerate original source families without invoking the old racing engine.
-
-    skip_oa drops the OA-only sources once the fast path has established that
-    the work is not open access.
-    """
-    from scansci_pdf.sources.carsi_source import try_carsi
-    from scansci_pdf.sources.core_api import try_core
-    from scansci_pdf.sources.crossref import try_crossref_page_scrape
-    from scansci_pdf.sources.europepmc import try_europepmc, try_pmc
-    from scansci_pdf.sources.ezproxy import try_ezproxy
-    from scansci_pdf.sources.oa_discovery import try_doaj
-    from scansci_pdf.sources.openaire import try_openaire
-    from scansci_pdf.sources.openalex import try_openalex_content_api, try_openalex_oa
-    from scansci_pdf.sources.publishers import get_publisher_fast_sources
-    from scansci_pdf.sources.unpaywall import try_unpaywall
-    from scansci_pdf.sources.vpnsci import try_vpnsci
-
-    publisher = [(label, fn) for fn, label in get_publisher_fast_sources(doi)]
-    if (
-        doi.startswith("10.1016/")
-        and request.policy in ("fastest", "legal_only")
-        and (config.get("elsevier_api_key") or os.environ.get("ELSEVIER_API_KEY"))
-    ):
-        publisher = [entry for entry in publisher if entry[0] == "ElsevierAPI"] + [
-            entry for entry in publisher if entry[0] != "ElsevierAPI"
-        ]
-    oa: list[Handler] = [
-        ("Unpaywall", try_unpaywall),
-        ("OpenAlexOA", try_openalex_oa),
-        ("OpenAIRE", try_openaire),
-        ("DOAJ", try_doaj),
-        ("CrossrefPage", try_crossref_page_scrape),
-        ("EuropePMC", try_europepmc),
-        ("CORE", try_core),
-        ("PMC", try_pmc),
-    ]
-    if config.get("openalex_api_key"):
-        oa.append(("OpenAlexContent", try_openalex_content_api))
-    if request.policy in FAST_POLICIES:
-        # These APIs were already queried by progressive discovery, including publisher aliases.
-        oa = [entry for entry in oa if entry[0] not in REPLACED_SOURCES]
-        publisher = [entry for entry in publisher if entry[0] not in REPLACED_SOURCES]
-    if skip_oa:
-        logging.getLogger(__name__).info(
-            "skip identifier=%s reason=closed_access sources=%s",
-            doi,
-            ",".join(entry[0] for entry in oa),
-        )
-        oa = []
-    legal = [*oa, *publisher] if request.policy == "oa_first" else [*publisher, *oa]
-
-    grey: list[Handler] = []
-    if config.get("scihub_enabled", True):
-        from scansci_pdf.sources.libgen import try_libgen
-        from scansci_pdf.sources.scibban import try_scibban
-        from scansci_pdf.sources.scihub import try_scihub
-
-        grey = [
-            ("SciBban", try_scibban),
-            ("LibGen", try_libgen),
-            ("Sci-Hub", try_scihub),
-        ]
-    if request.policy == "scihub_only":
-        return [entry for entry in grey if entry[0] == "Sci-Hub"]
-    if request.policy == "grey_only":
-        return grey
-
-    institutional: list[Handler] = []
-    if config.get("carsi_enabled") and config.get("carsi_idp_name"):
-        institutional.append(("CARSI", try_carsi))
-        if doi.startswith("10.1177/"):
-            institutional.insert(0, ("SAGECN", _sage_cn_source))
-    if config.get("vpnsci_enabled"):
-        institutional.append(("WebVPN", try_vpnsci))
-    if config.get("ezproxy_enabled"):
-        institutional.append(("EZProxy", try_ezproxy))
-    if institutional:
-        institutional.extend(
-            [
-                ("SessionBroker", _broker_source),
-                ("InstitutionalBrowser", _publisher_batch_source),
-            ]
-        )
-
-    if request.policy == "scihub_first":
-        ordered = [*grey, *legal, *institutional]
-    elif request.policy == "legal_only":
-        ordered = [*legal, *institutional]
-    else:
-        ordered = [*legal, *grey, *institutional]
-    seen: set[str] = set()
-    return [entry for entry in ordered if not (entry[0] in seen or seen.add(entry[0]))]
 
 
 def _attempt(
@@ -241,16 +112,7 @@ class LegacySources:
             errors.extend(oa_result.errors)
             closed_access = oa_result.closed_access
         if self._arxiv(identifier):
-            from scansci_pdf.sources.arxiv import download_arxiv_pdf
-
-            def arxiv(reference: str, path: Path, source_config: dict[str, Any]):
-                return download_arxiv_pdf(
-                    f"https://arxiv.org/pdf/{reference.removeprefix('arxiv:')}.pdf",
-                    path,
-                    source_config,
-                )
-
-            handlers = [("arXiv", arxiv)]
+            handlers = [("arXiv", PROVIDERS["arXiv"].resolve())]
         else:
             handlers = _plan(identifier, request, config, closed_access)
         for index, (label, fn) in enumerate(handlers):

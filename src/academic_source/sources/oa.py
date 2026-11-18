@@ -42,16 +42,7 @@ from .oa_candidates import (
     pmc_candidates,
     unpaywall_candidates,
 )
-
-FAST_POLICIES = {"fastest", "oa_first", "legal_only"}
-REPLACED_SOURCES = {
-    "Unpaywall",
-    "OpenAlexOA",
-    "OpenAlexContent",
-    "EuropePMC",
-    "PMC",
-}
-
+from .registry import PROVIDERS
 
 # Metadata lookups return small JSON; a slow one should not hold the whole chain.
 OA_METADATA_READ_TIMEOUT = 8
@@ -393,7 +384,7 @@ def acquire_oa(
                 queue.extend(
                     (item, 1) for link in links[:3] for item in expand_candidate(link)
                 )
-    if str(config.get("browser_backend", "")).lower() == "cdp":
+    if PROVIDERS["OACDP"].is_enabled(doi, config):
         for candidate in blocked[:2]:
             started = time.monotonic()
             result = _browser_candidate(

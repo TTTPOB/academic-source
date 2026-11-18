@@ -134,13 +134,21 @@ def test_oa_first_reaches_grey_after_all_legal_fail(monkeypatch, tmp_path):
 def test_configured_institution_channels_reachable_after_failed_legal(
     monkeypatch, tmp_path
 ):
-    from academic_source import sources
+    from scansci_pdf.institutional import instsci_bridge
 
     visited = []
     handler = _patch_handlers(monkeypatch, visited, win="SessionBroker")
-    monkeypatch.setattr(sources, "_broker_source", handler("SessionBroker"))
+    broker = handler("SessionBroker")
+    batch = handler("InstitutionalBrowser")
     monkeypatch.setattr(
-        sources, "_publisher_batch_source", handler("InstitutionalBrowser")
+        instsci_bridge,
+        "_try_session_broker",
+        lambda doi, path, config, _profile: broker(doi, path, config),
+    )
+    monkeypatch.setattr(
+        instsci_bridge,
+        "_try_browser_batch_download",
+        lambda doi, path, config, _profile: batch(doi, path, config),
     )
     config = {
         "scihub_enabled": False,
@@ -396,8 +404,8 @@ def test_challenge_reason_survives_later_source_failures(monkeypatch, tmp_path):
         "get_publisher_fast_sources",
         lambda doi: [
             (browser("ScienceBrowser", "cloudflare_blocked"), "ScienceBrowser"),
-            (browser("OtherBrowser", "browser_unavailable"), "OtherBrowser"),
-            (handler("Direct"), "Direct"),
+            (browser("SpringerBrowser", "browser_unavailable"), "SpringerBrowser"),
+            (handler("SpringerTDM"), "SpringerTDM"),
         ],
     )
     result = LegacySources().acquire(
@@ -413,22 +421,26 @@ def test_challenge_reason_survives_later_source_failures(monkeypatch, tmp_path):
         if item.source.endswith("Browser")
     ] == [
         ("ScienceBrowser", "cloudflare_blocked"),
-        ("OtherBrowser", "browser_unavailable"),
+        ("SpringerBrowser", "browser_unavailable"),
     ]
 
 
 def test_elsevier_key_alone_does_not_enable_institutional_sources(
     monkeypatch, tmp_path
 ):
-    from academic_source import sources
+    from scansci_pdf.institutional import instsci_bridge
 
     visited = []
     _patch_handlers(monkeypatch, visited)
     monkeypatch.setattr(
-        sources, "_broker_source", lambda *args: pytest.fail("broker called")
+        instsci_bridge,
+        "_try_session_broker",
+        lambda *args: pytest.fail("broker called"),
     )
     monkeypatch.setattr(
-        sources, "_publisher_batch_source", lambda *args: pytest.fail("browser called")
+        instsci_bridge,
+        "_try_browser_batch_download",
+        lambda *args: pytest.fail("browser called"),
     )
     result = _get(
         tmp_path, "legal_only", {"scihub_enabled": False, "elsevier_api_key": "key"}
@@ -511,8 +523,11 @@ def test_readable_pdf_required_before_source_wins(monkeypatch, tmp_path):
     monkeypatch.setattr(
         publishers,
         "get_publisher_fast_sources",
-        lambda doi: [(truncated, "Truncated"), (readable, "Readable")],
+        lambda doi: [(truncated, "NatureDirect"), (readable, "PublisherDirect")],
     )
     result = _get(tmp_path, "legal_only", {"scihub_enabled": False})
-    assert result.source == "Readable"
-    assert [item.source for item in result.attempts][-2:] == ["Truncated", "Readable"]
+    assert result.source == "PublisherDirect"
+    assert [item.source for item in result.attempts][-2:] == [
+        "NatureDirect",
+        "PublisherDirect",
+    ]
