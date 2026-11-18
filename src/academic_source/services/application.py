@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -124,10 +125,16 @@ class Application:
         self._futures[job.id] = future
         future.add_done_callback(lambda _future: self._futures.pop(job.id, None))
         # Read a snapshot instead of exposing the mutable worker-owned model.
-        return self.store.get_job(job.id)
+        return self.job(job.id)
 
     def job(self, job_id: str) -> Job:
-        return self.store.get_job(job_id)
+        job = self.store.get_job(job_id)
+        if job.status == "queued":
+            # Insertion order is submission order; finished jobs are removed.
+            waiting = list(self._futures)
+            if job_id in waiting:
+                job.queue_ahead = waiting.index(job_id)
+        return job
 
     def wait(self, job_id: str, timeout: float = 0) -> Job:
         future = self._futures.get(job_id)
@@ -180,8 +187,11 @@ class Application:
     ) -> None:
         try:
             job.status = "running"
-            self._save(job)
+            job.started_at = _now()
             for entry in entries:
+                job.current_identifier = entry["identifier"]
+                self._save(job)
+                started = time.monotonic()
                 try:
                     result = self._acquire(entry, job.request, job.id, config)
                 except RateLimited as exc:
@@ -201,6 +211,7 @@ class Application:
                         reason="internal_error",
                         message="Acquisition failed; see server logs",
                     )
+                result.elapsed_seconds = round(time.monotonic() - started, 3)
                 job.results.append(result)
                 job.completed += 1
                 self._save(job)
@@ -221,6 +232,7 @@ class Application:
                 self.source.close()
             except Exception:
                 log.exception("Source cleanup failed for job %s", job.id)
+        job.current_identifier = ""
         self._save(job)
 
     def _save(self, job: Job) -> None:

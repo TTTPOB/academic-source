@@ -56,6 +56,8 @@ def _result_data(
     for key in ("artifacts", "metadata", "warnings", "message", "action", "rate_limit"):
         if not data.get(key):
             data.pop(key, None)
+    if data.get("elapsed_seconds") is None:
+        data.pop("elapsed_seconds", None)
     return data
 
 
@@ -75,7 +77,20 @@ def job_data(
 
     factory = download if download_factory is not None else None
     # Exclude diagnostics before serialization, including when polling large jobs.
-    data = job.model_dump(mode="json", exclude={"results", "artifacts"})
+    data = job.model_dump(
+        mode="json",
+        exclude={"results", "artifacts", "queue_ahead", "current_identifier"},
+    )
+    if job.started_at is None:
+        data.pop("started_at")
+    if job.status == "queued" and job.queue_ahead is not None:
+        data["queue"] = {"ahead": job.queue_ahead}
+    elif job.status == "running":
+        data["progress"] = {
+            "current": min(job.completed + 1, job.total),
+            "total": job.total,
+            "identifier": job.current_identifier,
+        }
     data["results"] = [
         _result_data(result, downloadable=downloadable, download_factory=factory)
         for result in job.results

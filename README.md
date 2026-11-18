@@ -186,6 +186,8 @@ MCP 下载 URL 默认从当前请求的 scheme、host 与部署前缀生成，�
 
 MCP、HTTP 和 CLI 的任务结果使用同一精简投影：成功单篇保留产物、命中的 `artifacts[].provenance.source/url`、非空元数据和警告；不返回逐来源未命中或重复尝试的 `attempts`。失败单篇不会消失，即使任务为 `partial`，仍保留其 `identifier`、`status` 和一个汇总 `reason`；只有配置、鉴权、带明确 `action` 的阻塞及需检查服务日志的内部错误保留非空 `message/action`。转换/导出警告和任务级 `error` 不受影响。空的单篇 `artifacts/metadata/warnings/message/action/rate_limit` 字段省略；顶层 `artifacts` 始终为列表；HTTP API 使用受保护的永久地址，HTTP MCP 使用一次性绝对 URL，stdio 使用本地导出。
 
+任务响应带有耗时和进度：`started_at` 是开始执行的时间，与 `created_at` 之差即排队时间；每篇结果的 `elapsed_seconds` 不含排队。任务为 `queued` 时 `queue.ahead` 给出前面的任务数，为 `running` 时 `progress` 给出正在处理第几篇及其标识符。每个来源各花了多久写在服务日志里，每次尝试一行，以 `attempt identifier=` 开头。
+
 这是响应契约的精简：客户端不要依赖响应中的 `attempts` 或空字段固定存在，应使用产物来源和单篇汇总状态。完整尝试和可用限流信息仍存于内部任务记录；精简响应不能用来覆盖该记录。
 
 ## 配置与存储

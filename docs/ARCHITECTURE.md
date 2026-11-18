@@ -44,6 +44,31 @@ scansci_pdf.upstream_errors 集中定义 DiscoveryError、UpstreamError 和 Rate
 
 搜索将限流交给现有 HTTP 502 / MCP 工具错误边界；标题获取有独立的 RateLimited 分支，保留 rate_limited、retry_later 和 rate_limit。Crossref/arXiv 元数据限流为保留身份与来源的 unavailable，只有限流返回 rate_limit。OA 在尝试记录中保留安全限流信息并继续其他来源；最终失败只透传选中的汇总原因及其恢复信息，不改变来源优先级。Attempt、SourceFailure、AcquisitionResult 的 rate_limit 字段贯通来源、任务持久化和精简对外投影；成功与非限流结果省略空字段。意外内部异常仍传播或记录服务日志。
 
+## 耗时、排队与尝试日志
+
+任务记录三个时间：`created_at`（提交）、`started_at`（工作线程开始执行）、`updated_at`（最近一次写入）。排队时间是 `started_at − created_at`。每篇结果的 `elapsed_seconds` 从轮到这篇开始计，包含标题解析、缓存查找、来源尝试和可选导出，不含排队。
+
+对外投影按任务状态附加进度信息：
+
+| 状态 | 字段 | 含义 |
+|---|---|---|
+| `queued` | `queue.ahead` | 排在前面的任务数，包括正在执行的那个 |
+| `running` | `progress.current` / `total` / `identifier` | 正在处理第几篇、共几篇、这篇的标识符 |
+
+`queue.ahead` 在读取时由内存中的提交顺序算出，不写入任务记录。
+
+每次来源尝试（OA 元数据查询、候选下载、CDP 重试、各出版商和其他渠道）在 `Attempt.seconds` 记录耗时，并由 `academic_source.sources` 日志器写一行 INFO：
+
+```text
+attempt identifier=10.1126/science.aad8559 source=EuropePMC status=failed reason=network_error candidates=- seconds=30.412
+```
+
+日志行不含 `message`，因为它可能引用下载地址。`serve` 命令把 `academic_source` 日志器设为 INFO 并输出到 stderr。
+
+OA 元数据查询成功时 `Attempt.status` 为 `discovered`，表示服务返回了这篇文献的记录。`Attempt.candidates` 是从该记录得到的候选地址数：0 表示有记录但没有开放版本。
+
+`started_at`、`elapsed_seconds`、`seconds`、`candidates` 在旧任务记录里不存在，读取时为空，对外投影省略空值。
+
 ## 输入与产物
 
 获取请求恰好选择一种输入：标识符列表、已上传文件的 `upload_id` 或内联文本。上传在服务端按块流式写入，保留文件扩展名并受大小限制；列表解析支持文本、BibTeX、表格及 JSON 等当前解析器支持的格式。

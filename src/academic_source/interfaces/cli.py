@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import logging
 import os
 import shutil
 import sys
@@ -139,6 +140,14 @@ def main(argv: list[str] | None = None) -> int:
             # The CLI owns signals; Uvicorn otherwise replays them on exit.
             capture_signals = staticmethod(nullcontext)
 
+        # Uvicorn configures only its own loggers; attempt timings are INFO lines.
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        )
+        service_log = logging.getLogger("academic_source")
+        service_log.addHandler(handler)
+        service_log.setLevel(logging.INFO)
         try:
             app = create_app()
         except ValueError as exc:

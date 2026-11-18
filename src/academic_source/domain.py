@@ -42,6 +42,10 @@ class Attempt(BaseModel):
     message: str = ""
     action: str = ""
     rate_limit: dict[str, Any] = Field(default_factory=dict)
+    # Wall-clock duration of this attempt; absent on records written before it existed.
+    seconds: float | None = None
+    # For status="discovered": how many candidate locations the service returned.
+    candidates: int | None = None
 
 
 class AcquisitionRequest(BaseModel):
@@ -87,6 +91,8 @@ class AcquisitionResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     cached: bool = False
+    # Time spent on this paper once its turn came; queue time is not included.
+    elapsed_seconds: float | None = None
 
 
 class Job(BaseModel):
@@ -99,6 +105,11 @@ class Job(BaseModel):
     error: str = ""
     created_at: str
     updated_at: str
+    # Set when the worker picks the job up; created_at..started_at is queue time.
+    started_at: str | None = None
+    current_identifier: str = ""
+    # Filled on read for queued jobs only; never persisted with a value.
+    queue_ahead: int | None = None
 
     @computed_field
     @property

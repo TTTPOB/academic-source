@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
@@ -12,7 +13,7 @@ from scansci_pdf.upstream_errors import RateLimited
 
 from ..domain import AcquisitionRequest, Attempt
 from ..infrastructure.documents import is_readable_pdf
-from .models import SourceFailure, SourceSuccess
+from .models import SourceFailure, SourceSuccess, observe
 from .oa import FAST_POLICIES, REPLACED_SOURCES, acquire_oa
 
 Handler = tuple[str, Callable[[str, Path, dict[str, Any]], dict[str, Any] | None]]
@@ -149,6 +150,20 @@ def _plan(
 
 
 def _attempt(
+    label: str,
+    fn: Callable,
+    doi: str,
+    work_dir: Path,
+    config: dict[str, Any],
+    index: int,
+) -> tuple[SourceSuccess | None, Attempt]:
+    started = time.monotonic()
+    result, attempt = _call(label, fn, doi, work_dir, config, index)
+    observe(doi, attempt, started)
+    return result, attempt
+
+
+def _call(
     label: str,
     fn: Callable,
     doi: str,

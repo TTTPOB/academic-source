@@ -16,7 +16,7 @@ from scansci_pdf.upstream_errors import RateLimited
 
 from ..domain import Attempt
 from ..infrastructure.documents import is_readable_pdf
-from .models import SourceFailure, SourceSuccess
+from .models import SourceFailure, SourceSuccess, observe
 from .oa_candidates import (
     Candidate,
     europepmc_candidates,
@@ -367,8 +367,17 @@ def acquire_oa(
     config.setdefault("_acquisition_attempted_urls", set())
     attempts: list[Attempt] = []
     blocked: list[Candidate] = []
-    for candidates, discovery_attempt in discover(doi, config):
-        attempts.append(discovery_attempt)
+    discovery = discover(doi, config)
+    while True:
+        # Resuming the generator runs exactly one service's metadata query.
+        started = time.monotonic()
+        step = next(discovery, None)
+        if step is None:
+            break
+        candidates, discovery_attempt = step
+        if discovery_attempt.status == "discovered":
+            discovery_attempt.candidates = len(candidates)
+        attempts.append(observe(doi, discovery_attempt, started))
         queue = [
             (item, 0)
             for candidate in candidates
@@ -380,8 +389,9 @@ def acquire_oa(
             if not claim_download_url(candidate.url, config):
                 continue
             path = work_dir / f"oa-{len(attempts)}.pdf"
+            started = time.monotonic()
             result, attempt, links = _http_candidate(candidate, path, config)
-            attempts.append(attempt)
+            attempts.append(observe(doi, attempt, started))
             if result:
                 result.attempts = attempts
                 return result
@@ -394,10 +404,11 @@ def acquire_oa(
                 )
     if str(config.get("browser_backend", "")).lower() == "cdp":
         for candidate in blocked[:2]:
+            started = time.monotonic()
             result, attempt = _browser_candidate(
                 candidate, work_dir / f"oa-{len(attempts)}.pdf", config
             )
-            attempts.append(attempt)
+            attempts.append(observe(doi, attempt, started))
             if result:
                 result.attempts = attempts
                 return result
