@@ -126,6 +126,8 @@ def discover(doi: str, config: dict[str, Any]):
                 "Unpaywall rejected the configured email address",
                 "ask_user_email",
             )
+        if isinstance(payload.get("is_oa"), bool):
+            attempt.open_access = payload["is_oa"]
         yield unpaywall_candidates(payload), attempt
 
     auth = openalex_params(config, {"mailto": email} if email else {})
@@ -133,6 +135,9 @@ def discover(doi: str, config: dict[str, Any]):
     payload, attempt = _metadata(
         "OpenAlexOA", f"https://api.openalex.org/works/doi:{q}{params}", config
     )
+    verdict = (payload.get("open_access") or {}).get("is_oa")
+    if isinstance(verdict, bool):
+        attempt.open_access = verdict
     yield (
         openalex_candidates(payload, str(config.get("openalex_api_key") or "")),
         attempt,
@@ -383,6 +388,8 @@ def acquire_oa(
     config.setdefault("_acquisition_attempted_urls", set())
     attempts: list[Attempt] = []
     blocked: list[Candidate] = []
+    located = 0
+    verdicts: dict[str, bool] = {}
     discovery = discover(doi, config)
     while True:
         # Resuming the generator runs exactly one service's metadata query.
@@ -391,6 +398,9 @@ def acquire_oa(
         if step is None:
             break
         candidates, discovery_attempt = step
+        located += len(candidates)
+        if discovery_attempt.open_access is not None:
+            verdicts[discovery_attempt.source] = discovery_attempt.open_access
         if discovery_attempt.status == "discovered":
             discovery_attempt.candidates = len(candidates)
         attempts.append(observe(doi, discovery_attempt, started))
@@ -428,4 +438,10 @@ def acquire_oa(
             if result:
                 result.attempts = attempts
                 return result
-    return SourceFailure(reason="not_found", attempts=attempts)
+    # Conservative: one service alone is not enough, and any location overrides both.
+    closed = (
+        located == 0
+        and verdicts.get("Unpaywall") is False
+        and verdicts.get("OpenAlexOA") is False
+    )
+    return SourceFailure(reason="not_found", attempts=attempts, closed_access=closed)

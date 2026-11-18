@@ -64,9 +64,16 @@ def _sage_cn_source(
 
 
 def _plan(
-    doi: str, request: AcquisitionRequest, config: dict[str, Any]
+    doi: str,
+    request: AcquisitionRequest,
+    config: dict[str, Any],
+    skip_oa: bool = False,
 ) -> list[Handler]:
-    """Enumerate original source families without invoking the old racing engine."""
+    """Enumerate original source families without invoking the old racing engine.
+
+    skip_oa drops the OA-only sources once the fast path has established that
+    the work is not open access.
+    """
     from scansci_pdf.sources.carsi_source import try_carsi
     from scansci_pdf.sources.core_api import try_core
     from scansci_pdf.sources.crossref import try_crossref_page_scrape
@@ -104,6 +111,13 @@ def _plan(
         # These APIs were already queried by progressive discovery, including publisher aliases.
         oa = [entry for entry in oa if entry[0] not in REPLACED_SOURCES]
         publisher = [entry for entry in publisher if entry[0] not in REPLACED_SOURCES]
+    if skip_oa:
+        logging.getLogger(__name__).info(
+            "skip identifier=%s reason=closed_access sources=%s",
+            doi,
+            ",".join(entry[0] for entry in oa),
+        )
+        oa = []
     legal = [*oa, *publisher] if request.policy == "oa_first" else [*publisher, *oa]
 
     grey: list[Handler] = []
@@ -293,12 +307,14 @@ class LegacySources:
     ) -> SourceSuccess | SourceFailure:
         config = dict(config)
         attempts: list[Attempt] = []
+        closed_access = False
         if not self._arxiv(identifier) and request.policy in FAST_POLICIES:
             config["_acquisition_attempted_urls"] = set()
             oa_result = acquire_oa(identifier, work_dir, config)
             if isinstance(oa_result, SourceSuccess):
                 return oa_result
             attempts.extend(oa_result.attempts)
+            closed_access = oa_result.closed_access
         if self._arxiv(identifier):
             from scansci_pdf.sources.arxiv import download_arxiv_pdf
 
@@ -311,7 +327,7 @@ class LegacySources:
 
             handlers = [("arXiv", arxiv)]
         else:
-            handlers = _plan(identifier, request, config)
+            handlers = _plan(identifier, request, config, closed_access)
         for index, (label, fn) in enumerate(handlers):
             result, attempt = _attempt(label, fn, identifier, work_dir, config, index)
             attempts.append(attempt)

@@ -10,6 +10,8 @@ OpenAlex 检索、精确 DOI 查询与 Content 下载复用同一请求控制与
 
 OA 快路径向 Unpaywall、OpenAlex、Europe PMC 和 PMC 发出的元数据查询使用单独的读超时 `source_config.oa_metadata_read_timeout`，默认 8 秒。PDF 下载和其他来源仍使用 `read_timeout`（默认 30 秒）。超时的元数据查询记为 `network_error`，快路径继续查下一个服务。修改这个值不会让已有的结果缓存失效。
 
+快路径结束时，如果 Unpaywall 和 OpenAlex 都明确返回 `is_oa=false`，并且四个服务都没有给出任何候选地址，这篇文献被判为非开放获取。此时后续阶段跳过只提供开放获取版本的来源（OpenAIRE、DOAJ、CrossrefPage、CORE），直接进入出版商、灰色和机构来源。只有一个服务给出否定、任一查询失败，或任一服务给出了候选地址（即使下载失败），都不跳过。跳过时服务日志有一行 `skip identifier=... reason=closed_access`。
+
 PMC 标识支持旧式 NCBI 数字路径、新式 `PMC...` 路径、大小写及 Europe PMC `?pdf=render` 等形式；识别后先试 `https://europepmc.org/api/getPdf?pmcid=PMC...`。这是 Europe PMC 的网站接口，不保证每个 PMCID 都有 PDF，失败后继续其他候选和既有渠道。Europe PMC 查询使用 `resultType=core`；`isOpenAccess=N` 不会排除明确的 FreePDF。免费访问不代表 CC 许可。
 
 OA HTTP 候选返回 HTML/challenge 不算成功。全部轻量 HTTP 候选未成功后，仅当已经配置 `browser_backend=cdp`，才对最多两个相关 blocked 候选复用已有浏览器函数兜底：每个候选只创建/关闭自己的标签页，同源导航最多 10 秒、每次 PDF 流请求最多 20 秒（不超过配置值），尝试原 URL 和至多一个页面 PDF 链接。不重启浏览器、不处理人工验证码、不承诺跨源文件流或任意网站解析；失败仍进入普通来源策略。

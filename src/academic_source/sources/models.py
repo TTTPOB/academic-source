@@ -47,3 +47,5 @@ class SourceFailure:
     action: str = ""
     rate_limit: dict[str, Any] = field(default_factory=dict)
     attempts: list[Attempt] = field(default_factory=list)
+    # Unpaywall and OpenAlex both say "not open access" and nothing was located.
+    closed_access: bool = False

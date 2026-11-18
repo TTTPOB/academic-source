@@ -46,6 +46,8 @@ class Attempt(BaseModel):
     seconds: float | None = None
     # For status="discovered": how many candidate locations the service returned.
     candidates: int | None = None
+    # The service's own open-access verdict for the work, when it states one.
+    open_access: bool | None = None
 
 
 class AcquisitionRequest(BaseModel):
