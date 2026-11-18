@@ -22,6 +22,7 @@ stdio MCP / CLI ────────────┴─> Application ─> Sou
 - `services.discovery`、`lists`、`exports`：标识规范化、DOI/arXiv 元数据、列表输入和可选产物转换；继续复用所需的上游解析及抓取知识。
 - `sources`：根据来源注册表和请求策略排出来源顺序，逐个尝试。OA 快路径是自有实现；其余来源借用 `scansci_pdf` 的函数，经适配器接入。
 - `infrastructure.storage`、`documents`：SQLite 记录、文件落盘和 PDF 可读性检查。
+- `client`：连接一个运行中服务的 HTTP 客户端，只依赖 `httpx` 和标准库。默认安装（不带 `server` extra）能运行的只有它和 `interfaces.cli` 的客户端命令。
 - `interfaces.api`、`mcp`、`cli`、`web`：共享应用服务的协议适配；MCP 提供搜索、DOI/arXiv 元数据、列表解析、获取和任务状态；仅 stdio 另提供 `export_artifacts`，不代理 HTTP。
 
 ## 检索与按类型元数据
@@ -69,7 +70,17 @@ OA 元数据查询成功时 `Attempt.status` 为 `discovered`，表示服务返�
 
 `started_at`、`elapsed_seconds`、`seconds`、`candidates` 在旧任务记录里不存在，读取时为空，对外投影省略空值。
 
-HTTP `POST /api/v1/jobs/{job_id}/cancel` 与 MCP `cancel_job(job_id)` 均返回与任务查询相同的投影。排队任务立即进入 `cancelled`，不再计入 `queue.ahead`；执行中的任务继续处理当前论文（包括来源尝试与导出），结束后进入 `cancelled`，不会再开始下一篇。已完成的结果与产物仍可访问。取消进行中可继续轮询任务状态；已进入终态的任务不会改变。服务重启仍把遗留的 `queued`、`running` 任务标为 `interrupted`。
+### 取消任务
+
+`Application.cancel(job_id)` 经 HTTP `POST /api/v1/jobs/{job_id}/cancel` 和 MCP `cancel_job(job_id)` 对外提供，返回值与查询任务相同。
+
+| 任务当时的状态 | 结果 |
+|---|---|
+| `queued` | 立即变为 `cancelled`，不再计入其他任务的 `queue.ahead` |
+| `running` | 把正在处理的这一篇做完（包括它的来源尝试和导出），不再开始下一篇，然后变为 `cancelled` |
+| 已结束 | 不变 |
+
+已完成的结果和产物都保留。取消一个正在执行的任务时，请求立刻返回，状态要等当前这篇做完才变化，调用方继续轮询即可。取消请求只记在内存里：服务如果在这期间重启，任务按原有规则标为 `interrupted`。
 
 ## 输入与产物
 

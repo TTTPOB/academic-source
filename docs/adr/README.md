@@ -33,4 +33,5 @@
 | [0004：以论文为单位并行调度](0004-paper-level-scheduling.md) | Proposed | 未实现 |
 | [0005：逐来源诊断留在日志和任务记录里](0005-acquisition-observability.md) | Accepted，含一项待确认 | 已实现 |
 | [0006：已知非开放获取时跳过纯 OA 来源](0006-skip-oa-only-sources.md) | Proposed | 已实现 |
-| [0007：以论文为边界取消获取任务](0007-job-cancellation.md) | Accepted | 已实现 |
+| [0007：取消任务时做完当前这篇再停](0007-job-cancellation.md) | Accepted | 已实现 |
+| [0008：默认安装是命令行客户端，服务端是可选项](0008-client-first-packaging.md) | Accepted | 已实现 |

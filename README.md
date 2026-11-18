@@ -6,12 +6,21 @@
 
 ## 普通用户：安装并启动
 
-需要 Python 3.11+ 和 [uv](https://docs.astral.sh/uv/)。从本 fork 的 GitHub `main` 安装独立 CLI 工具（无需 clone，也不运行 `uv sync`）：
+需要 Python 3.11+ 和 [uv](https://docs.astral.sh/uv/)。这个包有两种装法：
+
+| 用途 | 安装 | 依赖 |
+|---|---|---|
+| 只当客户端，连接一个已经在运行的服务 | `academic-source` | 只有 `httpx` |
+| 自己运行服务 | `academic-source[server]`，按需再加 `fast`、`vpnsci`、`cdp` 等 | 完整的服务端依赖 |
+
+命令名是 `asource`，`academic-source` 是它的别名。客户端的用法见[命令行客户端](#命令行客户端)。
+
+从 GitHub `main` 安装并启动服务（无需 clone）：
 
 ```bash
-uv tool install 'academic-source[fast,vpnsci] @ git+https://github.com/TTTPOB/academic-source.git@main'
+uv tool install 'academic-source[server,fast,vpnsci] @ git+https://github.com/TTTPOB/academic-source.git@main'
 # Explicitly disable HTTP auth for a trusted local browser session.
-ACADEMIC_SOURCE_AUTH_MODE=off academic-source serve --host 127.0.0.1 --port 8000
+ACADEMIC_SOURCE_AUTH_MODE=off asource serve --host 127.0.0.1 --port 8000
 ```
 
 **只有对应代码合并并推送到 GitHub 的 `main` 后，上述远端安装才会包含本次修改。**需要固定版本可把 `@main` 改成已推送的 `@v0.1.0` 等版本 tag；不要把未推送的 tag 当成现成发行版。已有本地 wheel 时也可以离线/从文件安装（路径和版本以实际构建产物为准）：
@@ -35,9 +44,16 @@ stdio MCP：
 academic-source mcp
 ```
 
-两种 MCP 均提供 `search`、`get_metadata`、`parse_list`、`acquire`、`job_status`。HTTP MCP 的产物包含绝对 `download_url`，可不带长期 Bearer 密钥下载一次；独立 stdio 不依赖 HTTP，产物仅返回 ID 等元数据，另有 `export_artifacts(artifact_ids, output_dir)` 将已登记文件复制到 stdio **进程所在机器**的指定目录，返回文件实际路径。若进程在容器中，目录须由容器挂载到所需位置；路径不是客户端机器的远程路径。不同 ID 即使文件同名也不会相互覆盖。
+两种 MCP 均提供 `search`、`get_metadata`、`parse_list`、`acquire`、`job_status`、`cancel_job`。HTTP MCP 的产物包含绝对 `download_url`，可不带长期 Bearer 密钥下载一次；独立 stdio 不依赖 HTTP，产物仅返回 ID 等元数据，另有 `export_artifacts(artifact_ids, output_dir)` 将已登记文件复制到 stdio **进程所在机器**的指定目录，返回文件实际路径。若进程在容器中，目录须由容器挂载到所需位置；路径不是客户端机器的远程路径。不同 ID 即使文件同名也不会相互覆盖。
 
-可通过 HTTP `POST /api/v1/jobs/{job_id}/cancel` 或 MCP `cancel_job(job_id)` 取消获取任务：排队任务立即取消，执行中的任务做完当前论文后停止，已取得的产物仍可访问。
+### 取消任务
+
+三种方式效果相同：HTTP `POST /api/v1/jobs/{job_id}/cancel`、MCP `cancel_job(job_id)`、命令行 `asource cancel JOB_ID`。
+
+- 还在排队的任务立即变为 `cancelled`。
+- 正在执行的任务把手上这一篇做完，不再开始下一篇，然后变为 `cancelled`。取消请求会立刻返回，此时状态通常仍是 `running`，继续查询直到它变为 `cancelled`。
+- 已经拿到的结果和文件都保留，可以照常下载。
+- 对已经结束的任务取消没有效果，返回它现在的状态。
 
 ## HTTP 认证与可分享部署
 
@@ -113,24 +129,58 @@ arXiv 的响应 `arxiv_id` 不带 `arxiv:` 前缀，并保留请求版本（如 
 
 可在私有服务配置的 `source_config.openalex_api_key` 设置 OpenAlex 账户密钥。该密钥通过 `api_key` 用于检索、精确查询与 Content 下载；`source_config.email` 是联系邮箱，两者用途不同。预算不足时等待 `retry_at`，减少重复计费操作，或使用合法的更高账户额度。
 
-## 本地与远端 CLI
+## 命令行客户端
+
+在任何能访问服务的机器上安装客户端，并告诉它服务在哪里、用哪把密钥：
 
 ```bash
-# Local acquisition and export.
-academic-source get '10.1234/example' --output ./papers
-academic-source batch ./references.bib --output ./papers
+uv tool install 'academic-source @ git+https://github.com/TTTPOB/academic-source.git@main'
 
-# Upload a client-local list and save returned files on the client.
-# ACADEMIC_SOURCE_API_KEY must contain one server key when HTTP auth is required.
-academic-source batch ./references.csv \
-  --server https://YOUR_SERVER --output ./papers
-academic-source get '10.1234/example' \
-  --server https://YOUR_SERVER --output ./papers --policy legal_only
+export ACADEMIC_SOURCE_SERVER='https://YOUR_SERVER'
+export ACADEMIC_SOURCE_API_KEY_FILE="$HOME/.config/academic-source/api-key"
+```
+
+密钥文件里只放一把服务端密钥。也可以直接设置 `ACADEMIC_SOURCE_API_KEY`，它优先于密钥文件。每条命令都接受 `--server` 和 `--api-key-file`，用来覆盖环境变量。
+
+| 命令 | 作用 |
+|---|---|
+| `asource get DOI` | 获取一篇，等它完成，把文件存到 `--output`（默认当前目录） |
+| `asource batch FILE` | 上传本机的文献列表，获取其中每一篇，把文件存到 `--output` |
+| `asource search QUERY [--limit N]` | 按关键词搜索 |
+| `asource metadata --doi DOI` / `--arxiv ID` | 查一篇的书目信息 |
+| `asource status JOB_ID` | 查看任务状态 |
+| `asource download JOB_ID` | 把一个任务已完成的文件存到 `--output` |
+| `asource cancel JOB_ID` | 取消任务 |
+
+```bash
+asource get '10.1234/example' --output ./papers --policy legal_only
+asource batch ./references.bib --output ./papers --markdown
 ```
 
 这些标识符仅为命令示例，不是可下载论文。
 
-运行 `serve`、`mcp` 或本地获取时，第一次 Ctrl+C 会停止接收新任务并排空已接受的队列；再次 Ctrl+C 立即强退，未完成任务在下次启动时标为 `interrupted`。SIGTERM 也请求优雅退出，但不计入 Ctrl+C 次数。远端 CLI 退出不会取消服务器上的任务。
+`get` 和 `batch` 另有 `--policy`、`--markdown`、`--supplementary`、`--bibtex`，以及 `--no-download`（等任务完成，但不把文件取回本机）。
+
+**输出。** 结果是 stdout 上的一份 JSON。`get` 和 `batch` 运行期间在 stderr 报告进度，状态变化时才打印一行：
+
+```text
+job 916d26e6… queued: 2 job(s) ahead
+job 916d26e6… running: paper 1/2 10.1126/science.aad8559
+[1/2] 10.1126/science.aad8559 succeeded 16.6s
+job 916d26e6… running: paper 2/2 10.1038/35079695
+[2/2] 10.1038/35079695 failed network_error 64.0s
+job 916d26e6… partial
+```
+
+`get` 和 `batch` 在任务状态为 `succeeded` 时退出码为 0，否则为 1。
+
+**中断。** `get` 或 `batch` 运行中收到 Ctrl+C 或 SIGTERM 时，客户端先请求服务端取消这个任务，等任务停下后再退出，已完成的文件照常保存。取消的规则见[取消任务](#取消任务)。再按一次 Ctrl+C 立即退出，不再等待。
+
+### 不经过服务，在本进程里获取
+
+装了 `[server]` 且没有指定服务地址时，`get`、`batch`、`search`、`metadata` 在本进程里启动完整的后端来执行，数据目录与 `serve` 相同。一个数据目录同一时间只能被一个进程使用，所以服务正在运行时请用 `--server` 连接它。
+
+运行 `serve`、`mcp` 或在本进程里获取时，第一次 Ctrl+C 会停止接收新任务并排空已接受的队列；再次 Ctrl+C 立即强退，未完成任务在下次启动时标为 `interrupted`。SIGTERM 也请求优雅退出，但不计入 Ctrl+C 次数。
 
 ## 服务器：Docker / GHCR
 

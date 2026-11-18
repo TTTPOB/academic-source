@@ -20,7 +20,7 @@ OA HTTP 候选返回 HTML/challenge 不算成功。全部轻量 HTTP 候选未�
 
 ElsevierAPI 先试直接 PDF，失败时 XML 回退使用默认表示寻找 PDF 附件；这不表示 `view=FULL` 在 API 中普遍无效：曾有请求路径返回 400，另一请求路径对默认 XML 与 `FULL` 均返回 200。XML 元数据 200 或 PDF 200 也不等于正文授权（后者可能只是单页图文摘要）；只有经 PDF 内容校验的结果才会被接受。
 
-浏览器渠道为可选能力。若需要 Patchright 后端，工具安装时选择额外依赖 `academic-source[fast,vpnsci,patchright]`（安装 Git URL 见 [README](../README.md)）；还需在运行环境中安装 Chromium。开发版示例：
+浏览器渠道为可选能力。若需要 Patchright 后端，工具安装时选择额外依赖 `academic-source[server,fast,vpnsci,patchright]`（安装 Git URL 见 [README](../README.md)）；还需在运行环境中安装 Chromium。开发版示例：
 
 ```bash
 uv sync --frozen --extra vpnsci --extra fast --extra patchright
@@ -42,7 +42,7 @@ curl -fsS http://127.0.0.1:19222/json/version
 Chrome 有头运行于容器内桌面；GUI 的 HTTPS 端口 `3001`、CDP `19222` 都**只绑定宿主 loopback**。在个人电脑建立 `ssh -L 3001:127.0.0.1:3001 USER@HOST`，访问 `https://127.0.0.1:3001/` 并接受容器自签证书，仅**人工**完成合法机构登录/验证。LinuxServer 桌面默认没有认证；SSH 端口转发仅保护远程入口，仍应限制服务器本地用户和容器访问，绝不能开放 GUI/CDP 到公网。关闭 SSH/浏览器客户端不会关闭由 Compose 托管的 Chrome；`restart: unless-stopped` 在容器运行时崩溃或主机重启后恢复服务。更新或重建前运行 `docker compose -f deploy/chrome.compose.yml down`，确保旧容器停止；不要在 Chrome 运行时手动清除 profile 锁，也不要同时启动第二个同 profile 的 Chrome。保留 `deploy/chrome-data` 即保留登录会话（其数据敏感，妥善备份和限权）。
 
 ```bash
-uv tool install 'academic-source[fast,vpnsci,cdp] @ git+https://github.com/TTTPOB/academic-source.git@main'
+uv tool install 'academic-source[server,fast,vpnsci,cdp] @ git+https://github.com/TTTPOB/academic-source.git@main'
 mkdir -p "${ACADEMIC_SOURCE_DATA_DIR:-$HOME/.academic-source}"
 ```
 
