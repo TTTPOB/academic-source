@@ -1,6 +1,6 @@
 # HTTP 来源核对清单
 
-[论文并行调度设计](PARALLEL_SCHEDULING.md)需要知道每个来源能否在论文线程上执行。本清单逐个函数沿调用链核对，给出结论。范围是来源计划里出现的全部来源、出版商路由能返回的全部函数、OA 快路径和 arXiv 入口。核对基于 2026-11-18 的代码（提交 `a6009c3`），`scansci_pdf` 的行号以该提交为准。
+[论文并行调度设计](PARALLEL_SCHEDULING.md)需要知道每个来源能否在论文线程上执行。本清单逐个函数沿调用链核对，给出结论。范围是来源计划里出现的全部来源、出版商路由能返回的全部函数、OA 快路径和 arXiv 入口。核对基于 2026-11-18 的代码（提交 `a6009c3`），`scansci_pdf` 的行号以该提交为准；`academic_source` 里的函数只写函数名，包装函数在 `sources/registry.py`，OA 快路径在 `sources/oa.py`。
 
 两种结论：
 
@@ -36,7 +36,7 @@
 | PLOSDirect | [`try_plos_direct` · publishers.py:429](<../src/scansci_pdf/sources/publishers.py#L429-L481>) | 否 | 否；`Session.get` → PDF 校验和写盘。 | `browser` |
 | FrontiersDirect | [`try_frontiers_direct` · publishers.py:488](<../src/scansci_pdf/sources/publishers.py#L488-L522>) | 否 | 否；`Session.get` → PDF 校验和写盘。 | `browser` |
 | BMCDirect | [`try_bmc_direct` · publishers.py:529](<../src/scansci_pdf/sources/publishers.py#L529-L567>) | 否 | 否；候选逐个 `Session.get` → PDF 校验和写盘。 | `browser` |
-| arXiv（独立入口） | [`LegacySources.acquire` 内的 arxiv](<../src/academic_source/sources/__init__.py#L239>) → [`download_arxiv_pdf` · arxiv.py:21](<../src/scansci_pdf/sources/arxiv.py#L21-L45>) | 是 | 否；`fetch(stream=True)` 下载 → 校验和写盘。 | `http` |
+| arXiv（独立入口） | `_arxiv_source` → [`download_arxiv_pdf` · arxiv.py:21](<../src/scansci_pdf/sources/arxiv.py#L21-L45>) | 是 | 否；`fetch(stream=True)` 下载 → 校验和写盘。 | `http` |
 
 ## 出版商浏览器入口
 
@@ -70,17 +70,17 @@
 | LibGen | [`try_libgen` · libgen.py:23](<../src/scansci_pdf/sources/libgen.py#L23-L115>) | 否 | 是；`_try_libgen_mirror` 用 `Session.get`，Cloudflare/403 分支调用 [`browser_engine.solve_url`](<../src/scansci_pdf/browser_engine.py#L486>)。 | `browser` |
 | Sci-Hub | [`try_scihub` · scihub.py:870](<../src/scansci_pdf/sources/scihub.py#L870-L924>) | 否 | 是；`_try_scihub_impl` 可提交 `_browser_first_download` / `_race_browser_domains` 到内置线程池；[`try_scihub_domain`](<../src/scansci_pdf/sources/scihub.py#L575-L686>) 也可回退到浏览器。 | `browser` |
 | CARSI | [`try_carsi` · carsi_source.py:16](<../src/scansci_pdf/sources/carsi_source.py#L16-L65>) | 否 | 是；[`CARSIClient.download_via_browser`](<../src/scansci_pdf/sources/carsi.py#L132-L219>) → `_download_via_cloakbrowser` → 页面导航。 | `browser` |
-| SAGECN | [`_sage_cn_source` · __init__.py:53](<../src/academic_source/sources/__init__.py#L53-L60>) | 否 | 否；[`try_sage_cn_authorized`](<../src/scansci_pdf/sources/sage_cn.py#L82-L139>) 检查和载入磁盘 Cookie，用 `Session.get` 取文章和 PDF。 | `browser` |
+| SAGECN | `_sage_cn_source` | 否 | 否；[`try_sage_cn_authorized`](<../src/scansci_pdf/sources/sage_cn.py#L82-L139>) 检查和载入磁盘 Cookie，用 `Session.get` 取文章和 PDF。 | `browser` |
 | WebVPN | [`try_vpnsci` · vpnsci.py:25](<../src/scansci_pdf/sources/vpnsci.py#L25>) | 否 | 是；别名 → [`try_instsci`](<../src/scansci_pdf/sources/instsci.py#L1007-L1042>) → [`_try_instsci_browser`](<../src/scansci_pdf/sources/instsci.py#L715-L744>) → `browser_backend.launch`。 | `browser` |
 | EZProxy | [`try_ezproxy` · ezproxy.py:106](<../src/scansci_pdf/sources/ezproxy.py#L106-L163>) | 否 | 是；下载入口本身就调用 `browser_backend.launch`，不是仅登录时才使用浏览器。 | `browser` |
-| SessionBroker | [`_broker_source` · __init__.py:35](<../src/academic_source/sources/__init__.py#L35-L41>) | 无本地 HTTP | 可能（进程外）；[`_try_session_broker`](<../src/scansci_pdf/institutional/instsci_bridge.py#L243-L273>) → [`submit_broker_job`](<../src/scansci_pdf/institutional/session_broker.py#L85-L125>) 写队列文件、等结果；外部执行器不在此调用链内，不能证明它不访问浏览器。 | `browser` |
-| InstitutionalBrowser | [`_publisher_batch_source` · __init__.py:44](<../src/academic_source/sources/__init__.py#L44-L50>) | 否 | 是；[`_try_browser_batch_download`](<../src/scansci_pdf/institutional/instsci_bridge.py#L294-L352>) → [`_launch_context` / `fetch_one`](<../src/scansci_pdf/institutional/publisher_batch.py#L439-L455>) → 持久上下文、打开页面。 | `browser` |
+| SessionBroker | `_broker_source` | 无本地 HTTP | 可能（进程外）；[`_try_session_broker`](<../src/scansci_pdf/institutional/instsci_bridge.py#L243-L273>) → [`submit_broker_job`](<../src/scansci_pdf/institutional/session_broker.py#L85-L125>) 写队列文件、等结果；外部执行器不在此调用链内，不能证明它不访问浏览器。 | `browser` |
+| InstitutionalBrowser | `_publisher_batch_source` | 否 | 是；[`_try_browser_batch_download`](<../src/scansci_pdf/institutional/instsci_bridge.py#L294-L352>) → [`_launch_context` / `fetch_one`](<../src/scansci_pdf/institutional/publisher_batch.py#L439-L455>) → 持久上下文、打开页面。 | `browser` |
 
 ## OA 快路径（按阶段分流）
 
 | 标签/阶段 | 函数及位置 | 只走 `network.fetch` | 触达浏览器与调用链 | 结论 |
 |---|---|---|---|---|
-| OA 快路径整体 | [`acquire_oa` · oa.py:308](<../src/academic_source/sources/oa.py#L308>) | 否 | 是；先逐服务发现并验证 HTTP 候选；没成功时，CDP 配置下重试最多两个 `blocked` 候选。 | `browser`（混合；不整体派发） |
-| Unpaywall、OpenAlexOA、EuropePMC、PMC 元数据 | [`discover` / `_metadata` · oa.py:95 / 64](<../src/academic_source/sources/oa.py#L64-L148>) | 是 | 否；逐服务 `fetch`，再[构造候选](<../src/academic_source/sources/oa_candidates.py#L84-L172>)；OpenAlexContent 属于 OpenAlex 产出的候选，无单独元数据请求。 | `http` |
-| 上述来源和 OpenAlexContent 的候选验证 | [`_http_candidate` · oa.py:179](<../src/academic_source/sources/oa.py#L179-L255>) | 是 | 否；流式 `fetch`；HTML 解析只产出 URL，检测拦截只返回状态。 | `http` |
-| OACDP | [`_browser_candidate` · oa.py:258](<../src/academic_source/sources/oa.py#L258-L305>) | 否 | 是；`browser_engine.create_tab` → `navigate_tab` / `get_snapshot` → `fetch_pdf_in_tab` → `close_tab`。 | `browser` |
+| OA 快路径整体 | `acquire_oa` | 否 | 是；先逐服务发现并验证 HTTP 候选；没成功时，CDP 配置下重试最多两个 `blocked` 候选。 | `browser`（混合；不整体派发） |
+| Unpaywall、OpenAlexOA、EuropePMC、PMC 元数据 | `discover` / `_metadata` | 是 | 否；逐服务 `fetch`，再构造候选；OpenAlexContent 属于 OpenAlex 产出的候选，无单独元数据请求。 | `http` |
+| 上述来源和 OpenAlexContent 的候选验证 | `_http_candidate` | 是 | 否；流式 `fetch`；HTML 解析只产出 URL，检测拦截只返回状态。 | `http` |
+| OACDP | `_browser_candidate` | 否 | 是；`browser_engine.create_tab` → `navigate_tab` / `get_snapshot` → `fetch_pdf_in_tab` → `close_tab`。 | `browser` |

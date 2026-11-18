@@ -20,7 +20,7 @@ stdio MCP / CLI ────────────┴─> Application ─> Sou
 - `academic_source.settings`：运行设置和显式 `source_config`；默认数据目录为 `~/.academic-source`，配置文件为其中的 `settings.json`。
 - `academic_source.app`、`services.application`：组合 HTTP/MCP 生命周期，执行搜索、DOI/arXiv 元数据查询、获取、缓存、任务和导出。
 - `services.discovery`、`lists`、`exports`：标识规范化、DOI/arXiv 元数据、列表输入和可选产物转换；继续复用所需的上游解析及抓取知识。
-- `sources`：按来源注册表和请求策略选源，自有 OA 路径直接返回类型化结果，借用的来源函数通过适配器接入；不调用旧下载编排器。
+- `sources`：根据来源注册表和请求策略排出来源顺序，逐个尝试。OA 快路径是自有实现；其余来源借用 `scansci_pdf` 的函数，经适配器接入。
 - `infrastructure.storage`、`documents`：SQLite 记录、文件落盘和 PDF 可读性检查。
 - `interfaces.api`、`mcp`、`cli`、`web`：共享应用服务的协议适配；MCP 提供搜索、DOI/arXiv 元数据、列表解析、获取和任务状态；仅 stdio 另提供 `export_artifacts`，不代理 HTTP。
 
@@ -97,9 +97,28 @@ HTTP MCP 的 `acquire`、`job_status` 为已登记产物返回绝对 `download_u
 
 Elsevier API key 可用时，`10.1016/` 的 DOI 在 `fastest` 和 `legal_only` 的 OA 快路径未成功后，仍优先尝试 Elsevier API，再继续其他出版商来源。API/XML 成功不等于正文授权，最终仍以可读 PDF 校验为准。
 
-回退顺序由 `sources.registry` 的策略表和来源注册表生成。每个标签记录类别、归属、执行后端、站点键和适用的启用条件；同一标签只在首次出现时尝试。出版商内部的 DOI 匹配和顺序继续使用现有出版商表。`http` 用于[已核对](HTTP_SOURCE_AUDIT.md)、不走浏览器且不绕过 HTTP 准入点的来源，其他来源保守标为 `browser`。这些标记目前不参与线程分配或限流。
+### 来源注册表
 
-单个来源返回 `SourceSuccess` 或封闭的 `SourceError` 类型。借用来源的异常、失败字典和出版商浏览器返回 `None` 后携带的全局诊断，由 `sources.legacy` 一次归一化；应用的适配器只在相应浏览器调用返回 `None` 后读取全局诊断，未改动全局状态或浏览器线程模型。自有 OA 路径直接构造错误类型。每次尝试仍记录原有的来源名、状态和诊断，最终汇总保持原有错误优先级和对外 `reason` 字符串。
+`sources.registry` 的 `PROVIDERS` 表列出全部来源，每个来源一项：
+
+| 字段 | 含义 |
+|---|---|
+| 标签 | 来源名，如 `Unpaywall`、`ElsevierBrowser`，出现在尝试记录和日志里 |
+| 类别 | `oa`、`publisher`、`grey`、`institutional`，策略按类别排序 |
+| 归属 | `owned`：在 `academic_source/sources/` 下的自有实现；`borrowed`：`scansci_pdf` 的函数经适配器接入 |
+| 后端 | `http` 或 `browser`。只有[逐函数核对过](HTTP_SOURCE_AUDIT.md)的来源标 `http` |
+| 站点键 | 这个来源主要访问的域名或服务名 |
+| 启用条件 | 依赖配置的来源在什么条件下参与，例如 OpenAlexContent 需要 API key |
+
+各策略的来源顺序由这张表生成：类别之间的先后取决于策略，类别内部按表中的顺序。出版商类别例外，一个 DOI 对应哪些出版商来源、谁先谁后，仍由 `scansci_pdf.sources.publishers` 的出版商表决定。后端和站点键目前只是记录，还不影响执行；它们是[并行调度设计](PARALLEL_SCHEDULING.md)的输入。
+
+### 来源结果与错误类型
+
+每次来源尝试的结果是 `SourceSuccess`，或 `sources.errors` 里定义的一种错误：`Paywall`、`Blocked`、`AuthRequired`、`RateLimited`、`ConfigNeeded`、`NetworkError`、`InvalidPDF`、`NotFound`、`BrowserError`、`InternalError`、`UnknownLegacyError`。这是一个封闭的集合，`present_error()` 用 `match` 处理每一种，漏掉任何一种时 pyrefly 会报错。
+
+借用的来源函数有三种报告失败的方式：抛异常；返回带 `error_type`、`reason` 或 `action` 的字典；返回 `None`，原因留在 `_publisher_strategies_core` 的模块级变量里。`sources.legacy.call_legacy()` 是唯一把这三种方式转换成错误类型的地方，也是唯一读取那个模块级变量的地方。借用来源返回了不认识的原因时，用 `UnknownLegacyError` 原样保留。
+
+`present_error()` 同时决定三件事：这种错误在尝试记录里的 `reason` 字符串；一篇论文所有来源都失败时，哪个错误代表整体结果（例如 Cloudflare 拦截优先于付费墙，付费墙优先于网络错误）；对外的 `reason`（例如 `paywall` 对外是 `auth_required`）。这些字符串和优先级与引入错误类型之前完全一致。
 
 ## 任务、文件与缓存
 
