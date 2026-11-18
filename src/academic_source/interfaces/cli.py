@@ -148,6 +148,8 @@ def main(argv: list[str] | None = None) -> int:
         service_log = logging.getLogger("academic_source")
         service_log.addHandler(handler)
         service_log.setLevel(logging.INFO)
+        # A library may install a root handler; without this each line prints twice.
+        service_log.propagate = False
         try:
             app = create_app()
         except ValueError as exc:
