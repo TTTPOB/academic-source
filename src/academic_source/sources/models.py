@@ -9,6 +9,13 @@ from pathlib import Path
 from typing import Any
 
 from ..domain import Attempt
+from .errors import (
+    NotFound,
+    RateLimited,
+    SourceError,
+    UnknownLegacyError,
+    present_error,
+)
 
 log = logging.getLogger("academic_source.sources")
 
@@ -40,6 +47,20 @@ class SourceSuccess:
     attempts: list[Attempt] = field(default_factory=list)
 
 
+ProviderOutcome = SourceSuccess | SourceError
+
+
+def failed_attempt(source: str, error: SourceError) -> Attempt:
+    return Attempt(
+        source=source,
+        status="failed",
+        reason=present_error(error).attempt_reason,
+        message=error.message,
+        action=error.action,
+        rate_limit=error.details() if isinstance(error, RateLimited) else {},
+    )
+
+
 @dataclass
 class SourceFailure:
     reason: str
@@ -49,3 +70,28 @@ class SourceFailure:
     attempts: list[Attempt] = field(default_factory=list)
     # Unpaywall and OpenAlex both say "not open access" and nothing was located.
     closed_access: bool = False
+    errors: list[SourceError] = field(default_factory=list, repr=False)
+
+    @classmethod
+    def summarize(
+        cls, errors: list[SourceError], attempts: list[Attempt]
+    ) -> SourceFailure:
+        # The first error of the highest priority wins. In the absence of a
+        # ranked error, retain the most recent error that was more than a miss.
+        selected: SourceError = NotFound()
+        priority: int | None = None
+        for error in errors:
+            match error:
+                case NotFound(kind="unspecified") | UnknownLegacyError(code=""):
+                    continue
+            current = present_error(error).priority
+            if priority is None or (current is not None and current < priority):
+                selected, priority = error, current
+        presentation = present_error(selected)
+        return cls(
+            reason=presentation.result_reason or presentation.attempt_reason,
+            message=presentation.result_message or selected.message,
+            action=selected.action,
+            rate_limit=selected.details() if isinstance(selected, RateLimited) else {},
+            attempts=attempts,
+        )

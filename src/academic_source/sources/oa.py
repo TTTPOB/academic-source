@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
@@ -12,11 +14,26 @@ import requests
 from scansci_pdf.network import fetch, polite_delay
 from scansci_pdf.pdf_utils import claim_download_url
 from scansci_pdf.upstream_client import openalex_params
-from scansci_pdf.upstream_errors import RateLimited
+from scansci_pdf.upstream_errors import RateLimited as UpstreamRateLimited
 
 from ..domain import Attempt
 from ..infrastructure.documents import is_readable_pdf
-from .models import SourceFailure, SourceSuccess, observe
+from .errors import (
+    Blocked,
+    ConfigNeeded,
+    InvalidPDF,
+    NetworkError,
+    NotFound,
+    RateLimited,
+    SourceError,
+)
+from .models import (
+    ProviderOutcome,
+    SourceFailure,
+    SourceSuccess,
+    failed_attempt,
+    observe,
+)
 from .oa_candidates import (
     Candidate,
     europepmc_candidates,
@@ -50,13 +67,15 @@ def _metadata_config(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _failed(source: str, reason: str, message: str, action: str = "") -> Attempt:
-    return Attempt(
-        source=source, status="failed", reason=reason, message=message, action=action
-    )
+@dataclass(frozen=True)
+class Discovery:
+    source: str
+    candidates: list[Candidate]
+    error: SourceError | None = None
+    open_access: bool | None = None
 
 
-def _metadata(source: str, url: str, config: dict[str, Any]) -> tuple[dict, Attempt]:
+def _metadata(url: str, config: dict[str, Any]) -> tuple[dict, SourceError | None]:
     response = None
     try:
         response = fetch(
@@ -64,39 +83,30 @@ def _metadata(source: str, url: str, config: dict[str, Any]) -> tuple[dict, Atte
         )
         status = response.status_code
         if status == 404:
-            return {}, _failed(source, "not_found", "DOI not indexed by this service")
+            return {}, NotFound(message="DOI not indexed by this service")
         if status >= 400:
-            reason = "rate_limited" if status == 429 else "network_error"
-            return {}, _failed(source, reason, f"Metadata HTTP {status}", "retry_later")
-        payload = response.json()
-        return payload, Attempt(source=source, status="discovered")
-    except RateLimited as exc:
-        return {}, Attempt(
-            source=source,
-            status="failed",
-            reason="rate_limited",
-            message=str(exc),
-            action="retry_later",
-            rate_limit=exc.to_dict(),
-        )
+            message = f"Metadata HTTP {status}"
+            if status == 429:
+                return {}, RateLimited(message=message, action="retry_later")
+            return {}, NetworkError(status, message=message, action="retry_later")
+        return response.json(), None
+    except UpstreamRateLimited as exc:
+        return {}, RateLimited.from_upstream(exc)
     except (
         requests.RequestException,
         TimeoutError,
         ConnectionError,
         ValueError,
     ) as exc:
-        return {}, _failed(
-            source,
-            "network_error",
-            f"Metadata request: {type(exc).__name__}",
-            "retry_later",
+        return {}, NetworkError(
+            message=f"Metadata request: {type(exc).__name__}", action="retry_later"
         )
     finally:
         if response is not None:
             response.close()
 
 
-def discover(doi: str, config: dict[str, Any]):
+def discover(doi: str, config: dict[str, Any]) -> Iterator[Discovery]:
     """Yield one service's candidates at a time; the caller may stop before the next query."""
     from scansci_pdf.config import DEFAULT_CONFIG
     from scansci_pdf.sources.unpaywall import _is_placeholder_email
@@ -104,60 +114,57 @@ def discover(doi: str, config: dict[str, Any]):
     q = quote(doi, safe="")
     email = str(config.get("email") or DEFAULT_CONFIG["email"]).strip()
     if _is_placeholder_email(email):
-        yield (
+        yield Discovery(
+            "Unpaywall",
             [],
-            _failed(
-                "Unpaywall",
-                "config_needed",
-                "Unpaywall needs the user's real email address",
-                "ask_user_email",
+            ConfigNeeded(
+                message="Unpaywall needs the user's real email address",
+                action="ask_user_email",
             ),
         )
     else:
-        payload, attempt = _metadata(
-            "Unpaywall",
-            f"https://api.unpaywall.org/v2/{q}?{urlencode({'email': email})}",
-            config,
+        payload, error = _metadata(
+            f"https://api.unpaywall.org/v2/{q}?{urlencode({'email': email})}", config
         )
-        if attempt.message == "Metadata HTTP 422":
-            attempt = _failed(
-                "Unpaywall",
-                "config_needed",
-                "Unpaywall rejected the configured email address",
-                "ask_user_email",
+        if isinstance(error, NetworkError) and error.status_code == 422:
+            error = ConfigNeeded(
+                message="Unpaywall rejected the configured email address",
+                action="ask_user_email",
             )
-        if isinstance(payload.get("is_oa"), bool):
-            attempt.open_access = payload["is_oa"]
-        yield unpaywall_candidates(payload), attempt
+        verdict = payload.get("is_oa")
+        yield Discovery(
+            "Unpaywall",
+            unpaywall_candidates(payload),
+            error,
+            verdict if isinstance(verdict, bool) else None,
+        )
 
     auth = openalex_params(config, {"mailto": email} if email else {})
     params = f"?{urlencode(auth)}" if auth else ""
-    payload, attempt = _metadata(
-        "OpenAlexOA", f"https://api.openalex.org/works/doi:{q}{params}", config
+    payload, error = _metadata(
+        f"https://api.openalex.org/works/doi:{q}{params}", config
     )
     verdict = (payload.get("open_access") or {}).get("is_oa")
-    if isinstance(verdict, bool):
-        attempt.open_access = verdict
-    yield (
+    yield Discovery(
+        "OpenAlexOA",
         openalex_candidates(payload, str(config.get("openalex_api_key") or "")),
-        attempt,
+        error,
+        verdict if isinstance(verdict, bool) else None,
     )
 
     params = urlencode(
         {"query": f"DOI:{doi}", "format": "json", "pageSize": 5, "resultType": "core"}
     )
-    payload, attempt = _metadata(
-        "EuropePMC",
-        f"https://www.ebi.ac.uk/europepmc/webservices/rest/search?{params}",
-        config,
+    payload, error = _metadata(
+        f"https://www.ebi.ac.uk/europepmc/webservices/rest/search?{params}", config
     )
-    yield europepmc_candidates(payload), attempt
+    yield Discovery("EuropePMC", europepmc_candidates(payload), error)
 
     params = urlencode({"ids": doi, "format": "json"})
-    payload, attempt = _metadata(
-        "PMC", f"https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/?{params}", config
+    payload, error = _metadata(
+        f"https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/?{params}", config
     )
-    yield pmc_candidates(payload), attempt
+    yield Discovery("PMC", pmc_candidates(payload), error)
 
 
 def _html_candidates(html: str, base_url: str, source: str) -> list[Candidate]:
@@ -187,7 +194,9 @@ def _public_candidate_url(candidate: Candidate, resolved_url: str | None = None)
     return resolved_url if resolved_url is not None else candidate.url
 
 
-def _http_candidate(candidate: Candidate, path: Path, config: dict[str, Any]):
+def _http_candidate(
+    candidate: Candidate, path: Path, config: dict[str, Any]
+) -> tuple[ProviderOutcome, list[Candidate]]:
     public_url = _public_candidate_url(candidate)
     response = None
     partial = path.with_suffix(".pdf.part")
@@ -196,33 +205,16 @@ def _http_candidate(candidate: Candidate, path: Path, config: dict[str, Any]):
         response = fetch(candidate.url, config, stream=True)
         status = response.status_code
         if status == 404:
-            return (
-                None,
-                _failed(
-                    candidate.source,
-                    "no_pdf_found",
-                    f"PDF location HTTP 404: {public_url}",
-                ),
-                [],
-            )
+            return NotFound("pdf", message=f"PDF location HTTP 404: {public_url}"), []
         if status >= 400:
-            reason = (
-                "blocked"
-                if status in (401, 403, 503)
-                else "rate_limited"
-                if status == 429
-                else "network_error"
-            )
-            return (
-                None,
-                _failed(
-                    candidate.source,
-                    reason,
-                    f"HTTP {status}: {public_url}",
-                    "retry_later",
-                ),
-                [],
-            )
+            message = f"HTTP {status}: {public_url}"
+            if status in (401, 403, 503):
+                return Blocked(
+                    "http", status, message=message, action="retry_later"
+                ), []
+            if status == 429:
+                return RateLimited(message=message, action="retry_later"), []
+            return NetworkError(status, message=message, action="retry_later"), []
         chunks = response.iter_content(chunk_size=8192)
         first = next(chunks, b"")
         if first.startswith(b"%PDF-"):
@@ -239,16 +231,9 @@ def _http_candidate(candidate: Candidate, path: Path, config: dict[str, Any]):
                 partial.replace(path)
                 return (
                     SourceSuccess(path=path, source=candidate.source, url=public_url),
-                    Attempt(source=candidate.source, status="succeeded"),
                     [],
                 )
-            return (
-                None,
-                _failed(
-                    candidate.source, "invalid_pdf", f"Unreadable PDF: {public_url}"
-                ),
-                [],
-            )
+            return InvalidPDF(message=f"Unreadable PDF: {public_url}"), []
 
         # Landing pages are useful discovery inputs; challenges are never PDFs.
         body = bytearray(first)
@@ -270,61 +255,32 @@ def _http_candidate(candidate: Candidate, path: Path, config: dict[str, Any]):
                 "challenge-platform",
             )
         ):
-            return (
-                None,
-                _failed(
-                    candidate.source,
-                    "blocked",
-                    f"HTML challenge: {public_url}",
-                    "check_browser_session",
-                ),
-                [],
-            )
+            return Blocked(
+                "challenge",
+                message=f"HTML challenge: {public_url}",
+                action="check_browser_session",
+            ), []
         links = _html_candidates(html, response.url or candidate.url, candidate.source)
-        return (
-            None,
-            _failed(
-                candidate.source,
-                "no_pdf_found",
-                f"HTML/non-PDF response: {public_url}",
-            ),
-            links,
-        )
-    except RateLimited as exc:
-        return (
-            None,
-            Attempt(
-                source=candidate.source,
-                status="failed",
-                reason="rate_limited",
-                message=str(exc),
-                action="retry_later",
-                rate_limit=exc.to_dict(),
-            ),
-            [],
-        )
+        return NotFound("pdf", message=f"HTML/non-PDF response: {public_url}"), links
+    except UpstreamRateLimited as exc:
+        return RateLimited.from_upstream(exc), []
     except (
         requests.RequestException,
         TimeoutError,
         ConnectionError,
     ) as exc:
-        return (
-            None,
-            _failed(
-                candidate.source,
-                "network_error",
-                f"{type(exc).__name__}: {public_url}",
-                "retry_later",
-            ),
-            [],
-        )
+        return NetworkError(
+            message=f"{type(exc).__name__}: {public_url}", action="retry_later"
+        ), []
     finally:
         partial.unlink(missing_ok=True)
         if response is not None:
             response.close()
 
 
-def _browser_candidate(candidate: Candidate, path: Path, config: dict[str, Any]):
+def _browser_candidate(
+    candidate: Candidate, path: Path, config: dict[str, Any]
+) -> ProviderOutcome:
     """Borrow a CDP tab for one bounded, same-origin retry; never restart the browser."""
     from scansci_pdf import browser_engine as browser
 
@@ -342,11 +298,9 @@ def _browser_candidate(candidate: Candidate, path: Path, config: dict[str, Any])
         if not tab or not browser.navigate_tab(
             tab, landing, browser_config, timeout=10
         ):
-            return None, _failed(
-                "OACDP",
-                "network_error",
-                "CDP candidate navigation failed",
-                "check_browser_session",
+            return NetworkError(
+                message="CDP candidate navigation failed",
+                action="check_browser_session",
             )
         snapshot = browser.get_snapshot(tab, browser_config)
         links = _html_candidates(
@@ -362,19 +316,14 @@ def _browser_candidate(candidate: Candidate, path: Path, config: dict[str, Any])
                     path=path,
                     source=candidate.source,
                     url=_public_candidate_url(candidate, url),
-                ), Attempt(source="OACDP", status="succeeded")
-        return None, _failed(
-            "OACDP",
-            "blocked",
-            "CDP did not return a readable PDF",
-            "check_browser_session",
+                )
+        return Blocked(
+            message="CDP did not return a readable PDF", action="check_browser_session"
         )
     except Exception as exc:  # noqa: BLE001 - optional CDP failure must preserve HTTP fallback
-        return None, _failed(
-            "OACDP",
-            "network_error",
-            f"CDP unavailable: {type(exc).__name__}",
-            "check_browser_session",
+        return NetworkError(
+            message=f"CDP unavailable: {type(exc).__name__}",
+            action="check_browser_session",
         )
     finally:
         if tab:
@@ -387,6 +336,16 @@ def acquire_oa(
     config = dict(config)
     config.setdefault("_acquisition_attempted_urls", set())
     attempts: list[Attempt] = []
+    errors: list[SourceError] = []
+
+    def record(source: str, result: ProviderOutcome, started: float) -> None:
+        if isinstance(result, SourceSuccess):
+            attempt = Attempt(source=source, status="succeeded")
+        else:
+            errors.append(result)
+            attempt = failed_attempt(source, result)
+        attempts.append(observe(doi, attempt, started))
+
     blocked: list[Candidate] = []
     located = 0
     verdicts: dict[str, bool] = {}
@@ -397,16 +356,22 @@ def acquire_oa(
         step = next(discovery, None)
         if step is None:
             break
-        candidates, discovery_attempt = step
-        located += len(candidates)
-        if discovery_attempt.open_access is not None:
-            verdicts[discovery_attempt.source] = discovery_attempt.open_access
-        if discovery_attempt.status == "discovered":
-            discovery_attempt.candidates = len(candidates)
-        attempts.append(observe(doi, discovery_attempt, started))
+        located += len(step.candidates)
+        if step.open_access is not None:
+            verdicts[step.source] = step.open_access
+        if step.error is not None:
+            record(step.source, step.error, started)
+        else:
+            attempt = Attempt(
+                source=step.source,
+                status="discovered",
+                candidates=len(step.candidates),
+                open_access=step.open_access,
+            )
+            attempts.append(observe(doi, attempt, started))
         queue = [
             (item, 0)
-            for candidate in candidates
+            for candidate in step.candidates
             for item in expand_candidate(candidate)
         ]
         for candidate, depth in queue:
@@ -416,12 +381,12 @@ def acquire_oa(
                 continue
             path = work_dir / f"oa-{len(attempts)}.pdf"
             started = time.monotonic()
-            result, attempt, links = _http_candidate(candidate, path, config)
-            attempts.append(observe(doi, attempt, started))
-            if result:
+            result, links = _http_candidate(candidate, path, config)
+            record(candidate.source, result, started)
+            if isinstance(result, SourceSuccess):
                 result.attempts = attempts
                 return result
-            if attempt.reason == "blocked":
+            if isinstance(result, Blocked):
                 blocked.append(candidate)
             # Follow declared PDF links once, not an unbounded HTML crawl.
             if depth == 0:
@@ -431,11 +396,11 @@ def acquire_oa(
     if str(config.get("browser_backend", "")).lower() == "cdp":
         for candidate in blocked[:2]:
             started = time.monotonic()
-            result, attempt = _browser_candidate(
+            result = _browser_candidate(
                 candidate, work_dir / f"oa-{len(attempts)}.pdf", config
             )
-            attempts.append(observe(doi, attempt, started))
-            if result:
+            record("OACDP", result, started)
+            if isinstance(result, SourceSuccess):
                 result.attempts = attempts
                 return result
     # Conservative: one service alone is not enough, and any location overrides both.
@@ -444,4 +409,6 @@ def acquire_oa(
         and verdicts.get("Unpaywall") is False
         and verdicts.get("OpenAlexOA") is False
     )
-    return SourceFailure(reason="not_found", attempts=attempts, closed_access=closed)
+    return SourceFailure(
+        reason="not_found", attempts=attempts, closed_access=closed, errors=errors
+    )

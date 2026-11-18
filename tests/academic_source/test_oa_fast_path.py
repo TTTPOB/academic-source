@@ -9,8 +9,9 @@ import pytest
 import requests
 
 from academic_source import sources
-from academic_source.domain import AcquisitionRequest, Attempt
+from academic_source.domain import AcquisitionRequest
 from academic_source.sources import oa
+from academic_source.sources.errors import present_error
 from academic_source.sources.models import SourceFailure, SourceSuccess
 from academic_source.sources.oa_candidates import (
     Candidate,
@@ -288,12 +289,7 @@ def test_html_challenge_waits_for_other_http_before_bounded_cdp(monkeypatch, tmp
         oa,
         "discover",
         lambda *args: iter(
-            [
-                (
-                    [Candidate(url, "OA") for url in urls],
-                    Attempt(source="OA", status="discovered"),
-                )
-            ]
+            [oa.Discovery("OA", [Candidate(url, "OA") for url in urls])]
         ),
     )
     monkeypatch.setattr(
@@ -333,12 +329,7 @@ def test_http_success_never_opens_cdp(monkeypatch, tmp_path):
         oa,
         "discover",
         lambda *args: iter(
-            [
-                (
-                    [Candidate("https://repo.org/file", "OA")],
-                    Attempt(source="OA", status="discovered"),
-                )
-            ]
+            [oa.Discovery("OA", [Candidate("https://repo.org/file", "OA")])]
         ),
     )
     monkeypatch.setattr(
@@ -360,9 +351,9 @@ def test_metadata_failure_is_not_missing(monkeypatch, status, reason):
     monkeypatch.setattr(
         oa, "fetch", lambda url, *args, **kwargs: Response(url, status=status)
     )
-    payload, attempt = oa._metadata("OA", "https://repo.org/api", {})
+    payload, error = oa._metadata("https://repo.org/api", {})
     assert payload == {}
-    assert attempt.reason == reason
+    assert present_error(error).attempt_reason == reason
 
 
 def test_transport_error_is_not_missing(monkeypatch):
@@ -370,7 +361,8 @@ def test_transport_error_is_not_missing(monkeypatch):
         raise requests.Timeout("timeout")
 
     monkeypatch.setattr(oa, "fetch", fail)
-    assert oa._metadata("OA", "https://repo.org/api", {})[1].reason == "network_error"
+    _, error = oa._metadata("https://repo.org/api", {})
+    assert present_error(error).attempt_reason == "network_error"
 
 
 @pytest.mark.parametrize("policy", ["fastest", "oa_first", "legal_only"])
@@ -379,12 +371,7 @@ def test_fast_path_success_precedes_publishers_and_stops(monkeypatch, tmp_path, 
         oa,
         "discover",
         lambda *args: iter(
-            [
-                (
-                    [Candidate("https://repo.org/file", "OA")],
-                    Attempt(source="OA", status="discovered"),
-                )
-            ]
+            [oa.Discovery("OA", [Candidate("https://repo.org/file", "OA")])]
         ),
     )
     monkeypatch.setattr(
@@ -413,9 +400,7 @@ def test_fallback_reuses_download_dedupe_and_preserves_failure_action(
     monkeypatch.setattr(
         oa,
         "discover",
-        lambda *args: iter(
-            [([Candidate(url, "OA")], Attempt(source="OA", status="discovered"))]
-        ),
+        lambda *args: iter([oa.Discovery("OA", [Candidate(url, "OA")])]),
     )
     monkeypatch.setattr(
         oa, "fetch", lambda url, *args, **kwargs: Response(url, status=403)
@@ -449,12 +434,7 @@ def test_dedupe_scope_ends_with_each_acquisition(monkeypatch, tmp_path):
         oa,
         "discover",
         lambda *args: iter(
-            [
-                (
-                    [Candidate("https://repo.org/file", "OA")],
-                    Attempt(source="OA", status="discovered"),
-                )
-            ]
+            [oa.Discovery("OA", [Candidate("https://repo.org/file", "OA")])]
         ),
     )
     monkeypatch.setattr(
@@ -485,9 +465,7 @@ def test_cdp_can_retry_same_http_url_and_keeps_query_and_owned_tab(
     monkeypatch.setattr(
         oa,
         "discover",
-        lambda *args: iter(
-            [([Candidate(url, "OA")], Attempt(source="OA", status="discovered"))]
-        ),
+        lambda *args: iter([oa.Discovery("OA", [Candidate(url, "OA")])]),
     )
     monkeypatch.setattr(oa, "fetch", lambda *args, **kwargs: Response(url, status=403))
     monkeypatch.setattr(browser_engine, "create_tab", lambda *args, **kwargs: "owned")
@@ -521,12 +499,7 @@ def test_truncated_pdf_is_not_a_success(monkeypatch, tmp_path):
         oa,
         "discover",
         lambda *args: iter(
-            [
-                (
-                    [Candidate("https://repo.org/file", "OA")],
-                    Attempt(source="OA", status="discovered"),
-                )
-            ]
+            [oa.Discovery("OA", [Candidate("https://repo.org/file", "OA")])]
         ),
     )
     monkeypatch.setattr(
@@ -629,7 +602,7 @@ def test_cdp_navigates_metadata_landing_and_reads_real_article_snapshot(
     monkeypatch.setattr(
         oa,
         "discover",
-        lambda *args: iter([(candidates, Attempt(source=source, status="discovered"))]),
+        lambda *args: iter([oa.Discovery(source, candidates)]),
     )
     monkeypatch.setattr(
         oa,
@@ -674,9 +647,7 @@ def test_landing_pdf_link_decodes_html_entities_without_changing_signed_query(
     monkeypatch.setattr(
         oa,
         "discover",
-        lambda *args: iter(
-            [(candidates, Attempt(source="Unpaywall", status="discovered"))]
-        ),
+        lambda *args: iter([oa.Discovery("Unpaywall", candidates)]),
     )
 
     def fetch(url, config, **kwargs):

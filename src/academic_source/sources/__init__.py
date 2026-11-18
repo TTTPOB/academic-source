@@ -5,18 +5,22 @@ from __future__ import annotations
 import logging
 import os
 import time
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
-from scansci_pdf.upstream_errors import RateLimited
-
 from ..domain import AcquisitionRequest, Attempt
-from ..infrastructure.documents import is_readable_pdf
-from .models import SourceFailure, SourceSuccess, observe
+from .errors import SourceError
+from .legacy import LegacyHandler, call_legacy
+from .models import (
+    ProviderOutcome,
+    SourceFailure,
+    SourceSuccess,
+    failed_attempt,
+    observe,
+)
 from .oa import FAST_POLICIES, REPLACED_SOURCES, acquire_oa
 
-Handler = tuple[str, Callable[[str, Path, dict[str, Any]], dict[str, Any] | None]]
+Handler = tuple[str, LegacyHandler]
 
 
 class Source(Protocol):
@@ -165,101 +169,20 @@ def _plan(
 
 def _attempt(
     label: str,
-    fn: Callable,
+    fn: LegacyHandler,
     doi: str,
     work_dir: Path,
     config: dict[str, Any],
     index: int,
-) -> tuple[SourceSuccess | None, Attempt]:
+) -> tuple[ProviderOutcome, Attempt]:
     started = time.monotonic()
-    result, attempt = _call(label, fn, doi, work_dir, config, index)
-    observe(doi, attempt, started)
-    return result, attempt
-
-
-def _call(
-    label: str,
-    fn: Callable,
-    doi: str,
-    work_dir: Path,
-    config: dict[str, Any],
-    index: int,
-) -> tuple[SourceSuccess | None, Attempt]:
-    path = work_dir / f"source-{index}.pdf"
-    browser_diagnostics = None
-    if label.endswith("Browser") and label != "InstitutionalBrowser":
-        from scansci_pdf import _publisher_strategies_core
-
-        browser_diagnostics = _publisher_strategies_core
-        browser_diagnostics._clear_error()
-    try:
-        outcome = fn(doi, path, dict(config))
-    except RateLimited as exc:
-        return None, Attempt(
-            source=label,
-            status="failed",
-            reason="rate_limited",
-            message=str(exc),
-            action="retry_later",
-            rate_limit=exc.to_dict(),
-        )
-    except Exception as exc:  # noqa: BLE001 - site failures must not prevent the next source
-        import httpx
-        import requests
-
-        network_error = isinstance(
-            exc,
-            (
-                httpx.RequestError,
-                requests.RequestException,
-                TimeoutError,
-                ConnectionError,
-            ),
-        )
-        return None, Attempt(
-            source=label,
-            status="failed",
-            reason="network_error" if network_error else "internal_error",
-            message=str(exc),
-        )
-    if isinstance(outcome, dict) and outcome.get("success") is not False:
-        candidate = Path(outcome.get("file") or outcome.get("path") or path)
-        if is_readable_pdf(candidate):
-            return (
-                SourceSuccess(
-                    path=candidate,
-                    source=outcome.get("source") or label,
-                    url=outcome.get("url"),
-                    metadata=outcome.get("metadata") or {},
-                ),
-                Attempt(source=label, status="succeeded"),
-            )
-    if outcome is None and browser_diagnostics is not None:
-        error_type, action = browser_diagnostics.get_last_error()
-        if error_type:
-            outcome = {"success": False, "error_type": error_type, "action": action}
-    reason = (
-        outcome.get("error_type") or outcome.get("reason") or "not_found"
-        if isinstance(outcome, dict)
-        else "not_found"
+    result = call_legacy(label, fn, doi, work_dir / f"source-{index}.pdf", config)
+    attempt = (
+        Attempt(source=label, status="succeeded")
+        if isinstance(result, SourceSuccess)
+        else failed_attempt(label, result)
     )
-    message = (
-        str(
-            outcome.get("error")
-            or outcome.get("message")
-            or (outcome.get("reason") if outcome.get("error_type") else "")
-            or ""
-        )
-        if isinstance(outcome, dict)
-        else ""
-    )
-    return None, Attempt(
-        source=label,
-        status="failed",
-        reason=str(reason),
-        message=message,
-        action=str(outcome.get("action") or "") if isinstance(outcome, dict) else "",
-    )
+    return result, observe(doi, attempt, started)
 
 
 class LegacySources:
@@ -307,6 +230,7 @@ class LegacySources:
     ) -> SourceSuccess | SourceFailure:
         config = dict(config)
         attempts: list[Attempt] = []
+        errors: list[SourceError] = []
         closed_access = False
         if not self._arxiv(identifier) and request.policy in FAST_POLICIES:
             config["_acquisition_attempted_urls"] = set()
@@ -314,6 +238,7 @@ class LegacySources:
             if isinstance(oa_result, SourceSuccess):
                 return oa_result
             attempts.extend(oa_result.attempts)
+            errors.extend(oa_result.errors)
             closed_access = oa_result.closed_access
         if self._arxiv(identifier):
             from scansci_pdf.sources.arxiv import download_arxiv_pdf
@@ -331,54 +256,8 @@ class LegacySources:
         for index, (label, fn) in enumerate(handlers):
             result, attempt = _attempt(label, fn, identifier, work_dir, config, index)
             attempts.append(attempt)
-            if result:
+            if isinstance(result, SourceSuccess):
                 result.attempts = attempts
                 return result
-        selected = None
-        for reason in (
-            "cloudflare_blocked",
-            "blocked",
-            "auth_required",
-            "login_required",
-            "paywall",
-            "rate_limited",
-            "config_needed",
-            "network_error",
-            "invalid_pdf",
-        ):
-            selected = next((item for item in attempts if item.reason == reason), None)
-            if selected:
-                break
-        if selected is None:
-            selected = next(
-                (
-                    item
-                    for item in reversed(attempts)
-                    if item.reason not in ("not_found", "")
-                ),
-                None,
-            )
-        reason = selected.reason if selected else "not_found"
-        reason = {
-            "paywall": "auth_required",
-            "login_required": "auth_required",
-            "cloudflare_blocked": "network_error",
-            "blocked": "network_error",
-            "browser_unavailable": "unsupported",
-        }.get(reason, reason)
-        return SourceFailure(
-            reason=reason,
-            message=(
-                {
-                    "blocked": "Public PDF requests were blocked; check the browser session or retry later.",
-                    "network_error": "Public PDF requests failed; check the network or retry later.",
-                    "invalid_pdf": "The available response was not a readable PDF; try another source.",
-                    "no_pdf_found": "Public locations did not return a PDF; try another access channel.",
-                }.get(selected.reason, selected.message)
-                if selected
-                else ""
-            ),
-            action=selected.action if selected else "",
-            rate_limit=selected.rate_limit if selected else {},
-            attempts=attempts,
-        )
+            errors.append(result)
+        return SourceFailure.summarize(errors, attempts)
