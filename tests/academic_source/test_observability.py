@@ -21,6 +21,10 @@ from tests.academic_source.helpers import RecordingSource, isolate_upstreams
 @pytest.fixture(autouse=True)
 def offline_upstreams(monkeypatch):
     isolate_upstreams(monkeypatch)
+    # Tests that start `serve` leave its handler and propagate=False behind.
+    service_log = logging.getLogger("academic_source")
+    monkeypatch.setattr(service_log, "propagate", True)
+    monkeypatch.setattr(service_log, "handlers", [])
 
 
 class Response:
