@@ -156,6 +156,38 @@ def test_oa_attempts_carry_duration_and_candidate_count_and_are_logged(
     assert "SECRET" not in "\n".join(lines)
 
 
+def test_oa_metadata_uses_its_own_read_timeout_and_downloads_keep_theirs(
+    monkeypatch, tmp_path
+):
+    seen = {}
+
+    def fetch(url, config, **kwargs):
+        kind = "download" if kwargs.get("stream") else "metadata"
+        seen.setdefault(kind, set()).add(config["read_timeout"])
+        if "api.unpaywall.org" in url:
+            return Response(
+                url, payload={"best_oa_location": {"url_for_pdf": "https://r.org/f"}}
+            )
+        return Response(url, payload={})
+
+    monkeypatch.setattr(oa, "fetch", fetch)
+    monkeypatch.setattr(oa, "polite_delay", lambda config: None)
+    config = {"email": "a@uni.edu", "read_timeout": 30}
+    oa.acquire_oa("10.1234/paper", tmp_path, config)
+    assert seen == {"metadata": {8}, "download": {30}}
+
+    seen.clear()
+    oa.acquire_oa("10.1234/other", tmp_path, {**config, "oa_metadata_read_timeout": 3})
+    assert seen == {"metadata": {3}, "download": {30}}
+
+
+def test_metadata_timeout_setting_does_not_change_cache_keys():
+    base = {"read_timeout": 30, "email": "a@uni.edu"}
+    assert Application._cache_config(
+        {**base, "oa_metadata_read_timeout": 5}
+    ) == Application._cache_config(base)
+
+
 def test_legacy_source_attempts_are_timed_and_logged(monkeypatch, tmp_path, caplog):
     def paper(doi, path, config):
         with pymupdf.open() as document:

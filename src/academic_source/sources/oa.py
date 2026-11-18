@@ -36,6 +36,20 @@ REPLACED_SOURCES = {
 }
 
 
+# Metadata lookups return small JSON; a slow one should not hold the whole chain.
+OA_METADATA_READ_TIMEOUT = 8
+
+
+def _metadata_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Apply the metadata read timeout; PDF downloads keep read_timeout."""
+    return {
+        **config,
+        "read_timeout": config.get(
+            "oa_metadata_read_timeout", OA_METADATA_READ_TIMEOUT
+        ),
+    }
+
+
 def _failed(source: str, reason: str, message: str, action: str = "") -> Attempt:
     return Attempt(
         source=source, status="failed", reason=reason, message=message, action=action
@@ -45,7 +59,9 @@ def _failed(source: str, reason: str, message: str, action: str = "") -> Attempt
 def _metadata(source: str, url: str, config: dict[str, Any]) -> tuple[dict, Attempt]:
     response = None
     try:
-        response = fetch(url, config, headers={"Accept": "application/json"})
+        response = fetch(
+            url, _metadata_config(config), headers={"Accept": "application/json"}
+        )
         status = response.status_code
         if status == 404:
             return {}, _failed(source, "not_found", "DOI not indexed by this service")

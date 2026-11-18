@@ -355,6 +355,7 @@ class Application:
             "output_dir",
             "cache_dir",
             "parallel_sources",
+            "oa_metadata_read_timeout",
             "science_reader_grace",
             "science_reader_timeout",
         }
