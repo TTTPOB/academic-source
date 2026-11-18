@@ -6,13 +6,17 @@ readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
-dependencies = [
+# The default installation is the command-line client for a running server.
+dependencies = ["httpx>=0.28"]
+
+[project.optional-dependencies]
+# Everything needed to run the service itself: serve, mcp, prune, local mode.
+server = [
     "requests[socks]>=2.31",
     "urllib3>=2.7.0",
     "beautifulsoup4>=4.12",
     "mcp>=1.27,<2",
     "pydantic>=2.11",
-    "httpx>=0.28",
     "python-multipart>=0.0.20",
     "uvicorn>=0.34",
     "fastapi>=0.115",
@@ -20,8 +24,6 @@ dependencies = [
     "openpyxl>=3.1",
     "pymupdf4llm>=0.0.17",
 ]
-
-[project.optional-dependencies]
 fast = ["lxml>=4.9"]
 vpnsci = ["pycryptodome>=3.20"]
 cloakbrowser = ["cloakbrowser>=0.5.9"]
@@ -33,6 +35,8 @@ cdp = ["playwright>=1.63,<2"]
 conflicts = [[{ extra = "cdp" }, { extra = "camoufox" }]]
 
 [project.scripts]
+asource = "academic_source.interfaces.cli:main"
+# Kept for existing deployments that start the service by this name.
 academic-source = "academic_source.interfaces.cli:main"
 
 [build-system]

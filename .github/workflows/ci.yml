@@ -21,7 +21,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python-version }}
-      - run: uv sync --frozen --extra vpnsci --extra fast
+      - run: uv sync --frozen --extra server --extra vpnsci --extra fast
       - run: uv run --frozen ruff check src/academic_source tests/academic_source tests/providers
       - run: uv run --frozen ruff format --check src/academic_source tests/academic_source tests/providers
       - run: >-
@@ -46,8 +46,18 @@ jobs:
       - run: uv venv "$RUNNER_TEMP/wheel-env" --python 3.13
       - run: |
           for wheel in "$RUNNER_TEMP"/wheels/*.whl; do
-            uv pip install --python "$RUNNER_TEMP/wheel-env/bin/python" "academic-source[cdp] @ file://$wheel"
+            uv pip install --python "$RUNNER_TEMP/wheel-env/bin/python" "academic-source[server,cdp] @ file://$wheel"
           done
       - run: |
           "$RUNNER_TEMP/wheel-env/bin/python" "$GITHUB_WORKSPACE/tests/academic_source/test_installation.py" --cdp
+        working-directory: ${{ runner.temp }}
+      # The default installation is the client alone: it must start without the server extra.
+      - run: |
+          uv venv "$RUNNER_TEMP/client-env" --python 3.13
+          for wheel in "$RUNNER_TEMP"/wheels/*.whl; do
+            uv pip install --python "$RUNNER_TEMP/client-env/bin/python" "$wheel"
+          done
+          "$RUNNER_TEMP/client-env/bin/asource" --help
+          if "$RUNNER_TEMP/client-env/bin/python" -c "import pydantic"; then exit 1; fi
+          "$RUNNER_TEMP/client-env/bin/asource" serve 2>&1 | grep -F "academic-source[server]"
         working-directory: ${{ runner.temp }}

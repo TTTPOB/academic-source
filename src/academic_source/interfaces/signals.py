@@ -10,7 +10,9 @@ from contextlib import contextmanager
 
 
 @contextmanager
-def graceful_signals(stop: Callable[[], None]) -> Iterator[None]:
+def graceful_signals(
+    stop: Callable[[], None], *, drain_notice: bool = True
+) -> Iterator[None]:
     """Request a drain once; a second SIGINT exits without joining worker threads."""
     interrupted = False
     stopping = False
@@ -22,6 +24,7 @@ def graceful_signals(stop: Callable[[], None]) -> Iterator[None]:
             if interrupted:
                 os._exit(128 + signal.SIGINT)
             interrupted = True
+        if signum == signal.SIGINT and drain_notice:
             print(
                 "Draining accepted jobs; press Ctrl+C again to force exit.",
                 file=sys.stderr,

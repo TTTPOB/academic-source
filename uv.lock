@@ -15,18 +15,7 @@ name = "academic-source"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "beautifulsoup4" },
-    { name = "fastapi" },
     { name = "httpx" },
-    { name = "mcp" },
-    { name = "openpyxl" },
-    { name = "pydantic" },
-    { name = "pymupdf" },
-    { name = "pymupdf4llm" },
-    { name = "python-multipart" },
-    { name = "requests", extra = ["socks"] },
-    { name = "urllib3" },
-    { name = "uvicorn" },
 ]
 
 [package.optional-dependencies]
@@ -45,6 +34,19 @@ fast = [
 patchright = [
     { name = "patchright" },
 ]
+server = [
+    { name = "beautifulsoup4" },
+    { name = "fastapi" },
+    { name = "mcp" },
+    { name = "openpyxl" },
+    { name = "pydantic" },
+    { name = "pymupdf" },
+    { name = "pymupdf4llm" },
+    { name = "python-multipart" },
+    { name = "requests", extra = ["socks"] },
+    { name = "urllib3" },
+    { name = "uvicorn" },
+]
 vpnsci = [
     { name = "pycryptodome" },
 ]
@@ -59,26 +61,26 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "beautifulsoup4", specifier = ">=4.12" },
+    { name = "beautifulsoup4", marker = "extra == 'server'", specifier = ">=4.12" },
     { name = "camoufox", extras = ["geoip"], marker = "extra == 'camoufox'", specifier = ">=0.4.11" },
     { name = "cloakbrowser", marker = "extra == 'cloakbrowser'", specifier = ">=0.5.9" },
-    { name = "fastapi", specifier = ">=0.115" },
+    { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "lxml", marker = "extra == 'fast'", specifier = ">=4.9" },
-    { name = "mcp", specifier = ">=1.27,<2" },
-    { name = "openpyxl", specifier = ">=3.1" },
+    { name = "mcp", marker = "extra == 'server'", specifier = ">=1.27,<2" },
+    { name = "openpyxl", marker = "extra == 'server'", specifier = ">=3.1" },
     { name = "patchright", marker = "extra == 'patchright'", specifier = ">=1.61" },
     { name = "playwright", marker = "extra == 'cdp'", specifier = ">=1.63,<2" },
     { name = "pycryptodome", marker = "extra == 'vpnsci'", specifier = ">=3.20" },
-    { name = "pydantic", specifier = ">=2.11" },
-    { name = "pymupdf", specifier = ">=1.24" },
-    { name = "pymupdf4llm", specifier = ">=0.0.17" },
-    { name = "python-multipart", specifier = ">=0.0.20" },
-    { name = "requests", extras = ["socks"], specifier = ">=2.31" },
-    { name = "urllib3", specifier = ">=2.7.0" },
-    { name = "uvicorn", specifier = ">=0.34" },
+    { name = "pydantic", marker = "extra == 'server'", specifier = ">=2.11" },
+    { name = "pymupdf", marker = "extra == 'server'", specifier = ">=1.24" },
+    { name = "pymupdf4llm", marker = "extra == 'server'", specifier = ">=0.0.17" },
+    { name = "python-multipart", marker = "extra == 'server'", specifier = ">=0.0.20" },
+    { name = "requests", extras = ["socks"], marker = "extra == 'server'", specifier = ">=2.31" },
+    { name = "urllib3", marker = "extra == 'server'", specifier = ">=2.7.0" },
+    { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.34" },
 ]
-provides-extras = ["fast", "vpnsci", "cloakbrowser", "camoufox", "patchright", "cdp"]
+provides-extras = ["server", "fast", "vpnsci", "cloakbrowser", "camoufox", "patchright", "cdp"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -39,7 +39,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install test dependencies
-        run: uv sync --frozen --extra vpnsci --extra fast
+        run: uv sync --frozen --extra server --extra vpnsci --extra fast
       - name: Test application and providers before publishing
         run: uv run --frozen pytest -q --tb=short
       - name: Prepare image tags
