@@ -11,7 +11,9 @@ import json
 import math
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from email.utils import parsedate_to_datetime
 from typing import Any, Literal
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
@@ -192,22 +194,23 @@ def _service(url: str, source: str | None) -> tuple[str, str]:
 def _policy(source: str, host: str, config: dict[str, Any]) -> tuple[float, int]:
     # OpenAlex officially permits 100 RPS. Ten shared starts/second leaves
     # ample headroom without restoring the obsolete two-RPS search bottleneck.
-    if source == "openalex":
-        return 0.1, 5
-    if source == "crossref":
-        return 0.2, 1
-    if source == "arxiv":
-        return 3.0, 1
+    explicit = {"openalex": (0.1, 5), "crossref": (0.2, 1), "arxiv": (3.0, 1)}
+    parallel = config.get("_parallel_http")
+    if source in explicit and not parallel:
+        return explicit[source]
     custom = config.get("host_concurrency", {})
+    interval = explicit.get(source, (0.5, 0))[0]
     if isinstance(custom, dict):
         if source in custom:
-            return 0.5, int(custom[source])
+            return interval, int(custom[source])
         if host in custom:
-            return 0.5, int(custom[host])
+            return interval, int(custom[host])
+    if source in explicit:
+        return explicit[source]
     for pattern, limit in _HOST_CONCURRENCY.items():
         if host == pattern or host.endswith("." + pattern):
-            return 0.5, limit
-    return 0.5, 0
+            return interval, limit
+    return interval, 1 if parallel else 0
 
 
 def _operation(
@@ -231,12 +234,16 @@ def _identity(
     headers: dict[str, str] | None,
     session: requests.Session,
     proxies: dict[str, str] | None,
+    *,
+    prepared: bool = False,
 ) -> tuple[str, str, str]:
     query = parse_qs(urlsplit(url).query)
     credential = str(
         (params or {}).get("api_key") or next(iter(query.get("api_key", [])), "")
     )
-    actual_headers = requests.structures.CaseInsensitiveDict(session.headers)
+    actual_headers = requests.structures.CaseInsensitiveDict(
+        {} if prepared else session.headers
+    )
     actual_headers.update(headers or {})
     authorization = actual_headers.get("Authorization", "")
     if not credential and authorization.lower().startswith("bearer "):
@@ -318,27 +325,63 @@ def request_response(
     source: str | None = None,
     operation: Operation | None = None,
 ) -> requests.Response:
-    """Admit one request; streamed responses hold their slot until close()."""
+    """Admit HTTP requests; streamed responses hold their slot until close()."""
     from .network import request_timeout
 
-    source, host = _service(url, source)
-    cost = _COSTS[_operation(url, params, operation)] if source == "openalex" else 0
-    identity = _identity(source, url, params, headers, session, proxies)
-    interval, concurrency = _policy(source, host, config)
-    _admission.acquire(source, identity, cost, interval, concurrency)
+    timeout = timeout if timeout is not None else request_timeout(config)
+    gate_redirects = bool(config.get("_parallel_http") and allow_redirects)
+    send = partial(
+        session.request, method, url, params=params, headers=headers,
+        timeout=timeout, proxies=proxies,
+        allow_redirects=allow_redirects and not gate_redirects, stream=stream,
+    )
+    service, host = _service(url, source)
+    cost = _COSTS[_operation(url, params, operation)] if service == "openalex" else 0
+    identity = _identity(service, url, params, headers, session, proxies)
+    response = _admitted_response(service, identity, cost, _policy(service, host, config), send, stream)
+    if not gate_redirects:
+        return response
+
+    history = []
+    while (next_request := response.next) is not None:
+        # Requests prepares the next method/cookies/auth/URL without sending it.
+        # Return this hop's slot before acquiring the next host (possibly itself).
+        response.close()
+        if len(history) >= session.max_redirects:
+            raise requests.TooManyRedirects(
+                f"Exceeded {session.max_redirects} redirects.", response=response
+            )
+        history.append(response)
+        url = next_request.url
+        service, host = _service(url, None)
+        cost = _COSTS[_operation(url, None, operation)] if service == "openalex" else 0
+        redirect_proxies = session.rebuild_proxies(next_request, proxies or {})
+        options = session.merge_environment_settings(url, redirect_proxies, stream, None, None)
+        identity = _identity(
+            service, url, None, next_request.headers, session, options["proxies"], prepared=True
+        )
+        response = _admitted_response(
+            service, identity, cost, _policy(service, host, config),
+            partial(session.send, next_request, timeout=timeout, allow_redirects=False, **options),
+            stream,
+        )
+    response.history = history
+    return response
+
+
+def _admitted_response(
+    source: str,
+    identity: tuple[str, str, str],
+    cost: int,
+    policy: tuple[float, int],
+    send: Callable[[], requests.Response],
+    stream: bool,
+) -> requests.Response:
+    _admission.acquire(source, identity, cost, *policy)
     response = None
     held_by_response = False
     try:
-        response = session.request(
-            method,
-            url,
-            params=params,
-            headers=headers,
-            timeout=timeout if timeout is not None else request_timeout(config),
-            proxies=proxies,
-            allow_redirects=allow_redirects,
-            stream=stream,
-        )
+        response = send()
         read_budget = True
         if source == "openalex" and response.history:
             # Content charges can be reported on its redirect, not the signed

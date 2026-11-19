@@ -1,0 +1,12 @@
+<!-- Trimmed JATS from the NCBI PMC OAI record for PMC3902920. -->
+<jats:article xmlns:jats="https://jats.nlm.nih.gov/ns/archiving/1.4/" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <jats:body>
+    <jats:supplementary-material id="PMC_1" content-type="local-data" position="float" orientation="portrait">
+      <jats:caption>
+        <jats:title>Supplementary Data</jats:title>
+      </jats:caption>
+      <jats:media mimetype="text" mime-subtype="html" xlink:href="supp_42_2_1341__index.html" position="float" orientation="portrait" />
+      <jats:media xlink:role="associated-file" mimetype="application" mime-subtype="pdf" xlink:href="supp_gkt922_nar-01762-r-2013-File006.pdf" position="float" orientation="portrait" />
+    </jats:supplementary-material>
+  </jats:body>
+</jats:article>

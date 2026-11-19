@@ -53,7 +53,11 @@ def _parser() -> argparse.ArgumentParser:
         "batch", help="Get every paper in a local literature list"
     )
     batch.add_argument("file", type=Path)
-    for command in (get, batch):
+    supp = commands.add_parser(
+        "supp", help="Get publisher supplementary files without the main PDF"
+    )
+    supp.add_argument("identifier_or_file", metavar="IDENTIFIER_OR_FILE")
+    for command in (get, batch, supp):
         command.add_argument(
             "--output", type=Path, default=Path("."), help="Local output directory"
         )
@@ -62,10 +66,12 @@ def _parser() -> argparse.ArgumentParser:
             action="store_true",
             help="Wait for the job but leave its files on the server",
         )
-        command.add_argument("--policy", default="fastest")
         command.add_argument("--markdown", action="store_true")
+    for command in (get, batch):
+        command.add_argument("--policy", default="fastest")
         command.add_argument("--supplementary", action="store_true")
         command.add_argument("--bibtex", action="store_true")
+    supp.set_defaults(policy="fastest", supplementary=False, bibtex=False)
     search = commands.add_parser("search", help="Search for papers by keywords")
     search.add_argument("query")
     search.add_argument("--limit", type=int, default=10)
@@ -92,7 +98,7 @@ def _parser() -> argparse.ArgumentParser:
         help="Skills directory to install into "
         "(default: $DSH_AGENTS_HOME/skills, else ~/.agents/skills)",
     )
-    for command in (get, batch, search, metadata, status, download, cancel):
+    for command in (get, batch, supp, search, metadata, status, download, cancel):
         command.add_argument(
             "--server",
             default=os.environ.get("ACADEMIC_SOURCE_SERVER"),
@@ -117,6 +123,13 @@ def _application() -> Any:
     return Application(Settings.load())
 
 
+def _acquisition_input(args: argparse.Namespace) -> tuple[str | None, Path | None]:
+    if args.command == "supp":
+        path = Path(args.identifier_or_file).expanduser()
+        return (None, path) if path.is_file() else (args.identifier_or_file, None)
+    return getattr(args, "identifier", None), getattr(args, "file", None)
+
+
 def _remote(args: argparse.Namespace) -> Any:
     with remote.open_client(args.server, args.api_key_file) as client:
         if args.command == "search":
@@ -131,13 +144,15 @@ def _remote(args: argparse.Namespace) -> Any:
             job = remote.job(client, args.job_id)
             remote.download(client, job, args.output)
             return job
+        identifier, list_file = _acquisition_input(args)
         job = remote.submit(
             client,
-            identifier=getattr(args, "identifier", None),
-            list_file=getattr(args, "file", None),
+            identifier=identifier,
+            list_file=list_file,
             policy=args.policy,
             markdown=args.markdown,
             supplementary=args.supplementary,
+            supplementary_only=args.command == "supp",
             bibtex=args.bibtex,
         )
         stop: list[bool] = []
@@ -167,15 +182,20 @@ def _local_job(args: argparse.Namespace, application: Any) -> dict[str, Any]:
     from academic_source.domain import AcquisitionRequest
     from academic_source.interfaces.presentation import job_data
 
-    if args.command == "batch":
-        with args.file.open("rb") as stream:
-            upload = application.store.put_upload(args.file.name, stream)
-        request = AcquisitionRequest(upload_id=upload.id, policy=args.policy)
-    else:
-        request = AcquisitionRequest(identifiers=[args.identifier], policy=args.policy)
-    request.markdown = args.markdown
-    request.supplementary = args.supplementary
-    request.bibtex = args.bibtex
+    identifier, list_file = _acquisition_input(args)
+    upload_id = None
+    if list_file is not None:
+        with list_file.open("rb") as stream:
+            upload_id = application.store.put_upload(list_file.name, stream).id
+    request = AcquisitionRequest(
+        identifiers=[identifier] if identifier is not None else [],
+        upload_id=upload_id,
+        policy=args.policy,
+        markdown=args.markdown,
+        supplementary=args.supplementary,
+        supplementary_only=args.command == "supp",
+        bibtex=args.bibtex,
+    )
     job = application.submit(request)
     while job.status in ("queued", "running"):
         job = application.wait(job.id, timeout=0.5)
@@ -280,6 +300,6 @@ def main(argv: list[str] | None = None) -> int:
         print(str(exc), file=sys.stderr)
         return 1
     print(json.dumps(data, ensure_ascii=True, indent=2))
-    if args.command in ("get", "batch"):
+    if args.command in ("get", "batch", "supp"):
         return 0 if data["status"] == "succeeded" else 1
     return 0

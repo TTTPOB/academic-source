@@ -103,7 +103,7 @@ PUBLISHER_TOOL_MAP: dict[str, list[str]] = {
     "bioRxiv": ["arXiv", "Unpaywall"],
     "Elsevier": ["Crossref", "Unpaywall", "ElsevierAPI", "ElsevierBrowser"],
     "Wiley": ["WileyBrowser", "Crossref", "Unpaywall"],
-    "Science": ["ScienceDirect", "ScienceBrowser", "Crossref", "Unpaywall"],
+    "Science": ["ScienceBrowser", "Crossref", "Unpaywall"],
     "PNAS": ["PNASDirect", "Crossref", "Unpaywall"],
     "Oxford": ["OxfordBrowser", "Crossref", "Unpaywall"],
     "ACS": ["ACSBrowser", "Crossref", "Unpaywall"],
@@ -315,70 +315,6 @@ def try_mdpi_direct(doi: str, output_path: Path, config: dict[str, Any]) -> dict
                 continue
     except Exception:
         pass
-    return None
-
-
-# ============================================================
-# Science/AAAS direct download (Science Advances, Science, etc.)
-# ============================================================
-
-def try_science_direct(doi: str, output_path: Path, config: dict[str, Any]) -> dict[str, Any] | None:
-    """Download Science/AAAS papers directly. Science Advances is OA."""
-    if not doi.startswith(_SCIENCE_DOI_PREFIX):
-        return None
-
-    from ..network import polite_delay
-    from ..pdf_utils import is_pdf_file, success, _response_looks_pdf
-
-    def _fetch_pdf_camofox(pdf_url: str) -> "requests.Response | None":  # type: ignore[name-defined]
-        from ..camofox import is_available as _camofox_avail, solve_url as _camofox_solve
-        if not _camofox_avail(config):
-            return None
-        result = _camofox_solve(pdf_url, config)
-        if not result:
-            return None
-        solution = result.get("solution", {})
-        if solution.get("status", 0) >= 400:
-            return None
-        import requests as _req
-        resp = _req.Response()
-        resp.status_code = solution.get("status", 200)
-        resp._content = solution.get("response", "").encode("utf-8")
-        resp.url = solution.get("url", pdf_url)
-        return resp
-
-    # Extract article ID from DOI (e.g., sciadv.1600983 -> 1600983)
-    doi_suffix = doi.removeprefix(_SCIENCE_DOI_PREFIX)
-
-    # Try Science Advances PDF URL patterns
-    pdf_urls = []
-    if "sciadv" in doi_suffix:
-        # Science Advances: https://advances.sciencemag.org/content/3/11/e1600983.full.pdf
-        article_id = doi_suffix.split(".")[-1] if "." in doi_suffix else doi_suffix
-        pdf_urls.append(f"https://advances.sciencemag.org/content/3/11/{article_id}.full.pdf")
-        pdf_urls.append(f"https://advances.sciencemag.org/content/early/{article_id}.full.pdf")
-    elif "science" in doi_suffix.lower():
-        # Science magazine
-        pdf_urls.append(f"https://www.science.org/doi/pdf/{doi}")
-
-    for pdf_url in pdf_urls:
-        try:
-            polite_delay(config)
-            resp = _fetch_pdf_camofox(pdf_url)
-            if resp is None:
-                continue
-
-            iterator = resp.iter_content(chunk_size=8192)
-            first = next(iterator, b"")
-            if not _response_looks_pdf(resp, first):
-                continue
-
-            if not _write_pdf_atomic(output_path, first, iterator):
-                continue
-            if is_pdf_file(output_path):
-                return success(doi, output_path, "ScienceDirect")
-        except Exception:
-            continue
     return None
 
 
@@ -645,7 +581,6 @@ _FN_MAP.update({
     "OpenAlexOA": try_openalex_oa,
     "MDPIDirect": try_mdpi_direct,
     "SpringerTDM": try_springer_tdm,
-    "ScienceDirect": try_science_direct,
     "PNASDirect": try_pnas_direct,
     "PLOSDirect": try_plos_direct,
     "FrontiersDirect": try_frontiers_direct,

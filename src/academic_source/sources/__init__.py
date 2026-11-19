@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import logging
 import time
+from functools import partial
 from pathlib import Path
 from typing import Any, Protocol
 
 from ..domain import AcquisitionRequest, Attempt
 from .errors import SourceError
+from .lanes import ProviderLanes
 from .legacy import LegacyHandler, call_legacy
 from .models import (
     ProviderOutcome,
@@ -59,6 +61,9 @@ def _attempt(
 class LegacySources:
     """Try source handlers in policy order until a readable PDF is found."""
 
+    def __init__(self, lanes: ProviderLanes | None = None) -> None:
+        self._lanes = lanes
+
     def prepare(self, config: dict[str, Any]) -> None:
         if str(config.get("browser_backend", "")).strip().lower() != "cdp":
             return
@@ -105,7 +110,13 @@ class LegacySources:
         closed_access = False
         if not self._arxiv(identifier) and request.policy in FAST_POLICIES:
             config["_acquisition_attempted_urls"] = set()
-            oa_result = acquire_oa(identifier, work_dir, config)
+            oa_result = (
+                acquire_oa(
+                    identifier, work_dir, config, run_browser=self._lanes.browser
+                )
+                if self._lanes is not None
+                else acquire_oa(identifier, work_dir, config)
+            )
             if isinstance(oa_result, SourceSuccess):
                 return oa_result
             attempts.extend(oa_result.attempts)
@@ -116,7 +127,12 @@ class LegacySources:
         else:
             handlers = _plan(identifier, request, config, closed_access)
         for index, (label, fn) in enumerate(handlers):
-            result, attempt = _attempt(label, fn, identifier, work_dir, config, index)
+            call = partial(_attempt, label, fn, identifier, work_dir, config, index)
+            result, attempt = (
+                self._lanes.attempt(label, PROVIDERS[label], call)
+                if self._lanes is not None
+                else call()
+            )
             attempts.append(attempt)
             if isinstance(result, SourceSuccess):
                 result.attempts = attempts

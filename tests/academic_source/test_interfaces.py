@@ -263,6 +263,42 @@ def test_remote_cli_uploads_and_exports_over_real_http(tmp_path, monkeypatch):
     assert listing.read_text(encoding="utf-8").startswith("doi,title")
 
 
+def test_mcp_accepts_supplementary_only(tmp_path, monkeypatch):
+    from scansci_pdf import supplementary
+
+    service, source = service_at(tmp_path)
+    monkeypatch.setattr(
+        supplementary,
+        "fetch_supplementary",
+        lambda *_args, **_kwargs: supplementary.SupplementaryResult(pages_read=1),
+    )
+    with TestClient(create_app(application=service)) as client:
+        response = client.post(
+            "/mcp",
+            headers={"Accept": "application/json, text/event-stream"},
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "acquire",
+                    "arguments": {
+                        "request": {
+                            "identifiers": ["10.1234/missing"],
+                            "supplementary_only": True,
+                        }
+                    },
+                },
+            },
+        )
+        job = response.json()["result"]["structuredContent"]
+        assert job["status"] == "succeeded"
+        assert job["results"][0]["warnings"] == [
+            "No supplementary material found (0 found, 0 saved)"
+        ]
+        assert source.calls == []
+
+
 def test_mcp_transport_is_stateless_across_real_restart(tmp_path):
     headers = {
         "Accept": "application/json, text/event-stream",

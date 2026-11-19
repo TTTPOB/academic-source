@@ -8,10 +8,11 @@ from typing import Any
 from ..science_transport import (
     _SCIENCE_DOI_PREFIX,
     _SCIENCE_EPDF_URL,
-    _capture_science_clearance,
-    _science_http_download,
+    _remember_local_science_cookies,
+    _science_fetch_download,
     _wait_for_science_reader,
 )
+from ..supplementary import SupplementaryItem
 from .base import BasePublisherStrategy
 from .registry import StrategyRegistry
 
@@ -38,6 +39,40 @@ class ScienceStrategy(BasePublisherStrategy):
     institution_input_selectors = ("input[name='search']", "#searchInstitution")
     institution_result_selectors = ("input[name='search']",)
 
+    def supplementary_pages(self, doi: str) -> list[str]:
+        science_doi = "https://www.science.org/doi"
+        return [f"{science_doi}/suppl/{doi}", f"{science_doi}/{doi}"]
+
+    def supplementary_items(self, html: str, page_url: str) -> list[SupplementaryItem]:
+        from urllib.parse import unquote, urldefrag, urljoin, urlsplit
+
+        from bs4 import BeautifulSoup
+
+
+        soup = BeautifulSoup(html, "lxml")
+        items: dict[str, SupplementaryItem] = {}
+        for link in soup.select('a[href*="/suppl_file/"]'):
+            url, _ = urldefrag(urljoin(page_url, link["href"]))
+            target = urlsplit(url)
+            filename = unquote(target.path.rsplit("/", 1)[-1])
+            if target.scheme not in {"https", "http"} or not filename or "/suppl_file/" not in target.path:
+                continue
+
+            label = link.get_text().strip()
+            description = ""
+            row = link.find_parent(class_="core-supplementary-material")
+            caption = row.select_one(".core-description") if row else None
+            if caption:
+                # The download link shows file type and size, not the item's title.
+                # Read each caption block intact so inline references retain their punctuation.
+                blocks = caption.find_all(["div", "p"], recursive=False)
+                description = "\n".join(block.get_text().strip() for block in (blocks or [caption]))
+                if label.lower().startswith("download") and description:
+                    heading = row.parent.find("h3", recursive=False) if row.parent else None
+                    label = heading.get_text().strip() if len(blocks) > 1 and heading else description.splitlines()[0]
+            items.setdefault(url, SupplementaryItem(url, label, description, filename))
+        return list(items.values())
+
     def browser_entry_url(self, doi: str, config: dict[str, Any]) -> str:
         from ..browser_backend import BACKEND_CDP, resolve_backend
 
@@ -59,7 +94,7 @@ class ScienceStrategy(BasePublisherStrategy):
         if not signed:
             return html, []
         refreshed = evaluate_js(tab_id, "document.documentElement.outerHTML", config) or html
-        _capture_science_clearance(tab_id, config)
+        _remember_local_science_cookies(config)
         return refreshed, [signed]
 
     async def download(
@@ -68,16 +103,23 @@ class ScienceStrategy(BasePublisherStrategy):
         return self.download_sync(doi, output_path, config)
 
     def download_sync(
-        self, doi: str, output_path: Path, config: dict[str, Any]
+        self,
+        doi: str,
+        output_path: Path,
+        config: dict[str, Any],
+        *,
+        tab_id: str | None = None,
     ) -> dict[str, Any] | None:
-        from ..browser_cookies import load_science_http_state
-        from ..pdf_utils import is_pdf_file, success
         from .._publisher_strategies_core import _browser_download_with_fallback
+        from ..browser_backend import BACKEND_CDP, resolve_backend
+        from ..pdf_utils import is_pdf_file, success
 
-        state = load_science_http_state(config) if doi.startswith(_SCIENCE_DOI_PREFIX) else None
-        if state and _science_http_download(doi, output_path, config, state):
-            if is_pdf_file(output_path):
-                return success(doi, output_path, "Science(Signed)")
+        if (
+            resolve_backend(config) == BACKEND_CDP
+            and doi.startswith(_SCIENCE_DOI_PREFIX)
+            and _science_fetch_download(doi, output_path, config, tab_id=tab_id)
+        ):
+            return success(doi, output_path, "Science(Fetch)")
         entry_url = self.browser_entry_url(doi, config)
         if _browser_download_with_fallback(doi, entry_url, output_path, config, self.name):
             if is_pdf_file(output_path):

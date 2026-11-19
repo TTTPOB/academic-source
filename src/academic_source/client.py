@@ -73,6 +73,7 @@ def submit(
     policy: str,
     markdown: bool = False,
     supplementary: bool = False,
+    supplementary_only: bool = False,
     bibtex: bool = False,
 ) -> dict[str, Any]:
     request: dict[str, Any]
@@ -87,6 +88,8 @@ def submit(
     request.update(
         policy=policy, markdown=markdown, supplementary=supplementary, bibtex=bibtex
     )
+    if supplementary_only:
+        request["supplementary_only"] = True
     return _json(client.post("api/v1/acquisitions", json=request))
 
 

@@ -68,137 +68,91 @@ def _wait_for_science_reader(
         time.sleep(min(2.0, remaining))
 
 
-_SCIENCE_READER_HTML_TIMEOUT = 30.0
-_SCIENCE_PDF_TIMEOUT = 180.0
+_SCIENCE_FETCH_TIMEOUT_MS = 8_000
 _SCIENCE_EPUB_URL_RE = re.compile(r'"epubUrl"\s*:\s*"([^"]+)"')
 
 
-def _science_http_session(config: dict[str, Any], state: dict[str, Any]) -> Any:
-    """Build a plain HTTP session carrying the cached Science clearance.
-
-    Cloudflare binds cf_clearance to the user agent that earned it, so the
-    captured agent is reused verbatim instead of the generic HTTP one.
-    """
-    import requests
-
-    from .browser_backend import BACKEND_CDP, resolve_backend
-    from .network import proxy_dict, science_http_proxy
-
-    session = requests.Session()
-    session.trust_env = False
-    proxy = science_http_proxy(config, cdp=resolve_backend(config) == BACKEND_CDP)
-    session.proxies = proxy_dict(proxy) or {}
-    session.headers["User-Agent"] = state["user_agent"]
-    for cookie in state["cookies"]:
-        session.cookies.set(
-            cookie["name"],
-            cookie["value"],
-            domain=cookie["domain"],
-            path=cookie.get("path", "/"),
-            secure=cookie.get("secure", False),
-            expires=(
-                int(cookie["expires"])
-                if cookie.get("expires") not in (None, 0, -1)
-                else None
-            ),
-        )
-    return session
-
-
-def _science_signed_url_over_http(
-    doi: str, config: dict[str, Any], session: Any
-) -> str | None:
-    """Resolve the signed pdfdirect path from the ePDF HTML without a browser."""
-    response = session.get(
-        _SCIENCE_EPDF_URL.format(doi=doi),
-        timeout=_SCIENCE_READER_HTML_TIMEOUT,
-        headers={"Accept": "text/html,application/xhtml+xml"},
-    )
-    try:
-        if str(response.headers.get("cf-mitigated", "")).lower() == "challenge":
-            log.info("   [Science] HTTP reader challenge")
-            return None
-        if response.status_code != 200:
-            log.info("   [Science] HTTP reader status=%s", response.status_code)
-            return None
-        match = _SCIENCE_EPUB_URL_RE.search(response.text)
-        if not match:
-            log.info("   [Science] HTTP reader has no epub URL")
-            return None
-        signed = _science_signed_pdf_path(match.group(1))
-        if not signed:
-            log.info("   [Science] HTTP reader unsupported epub URL")
-        return signed
-    finally:
-        response.close()
-
-
-def _science_http_download(
-    doi: str, output_path: Path, config: dict[str, Any], state: dict[str, Any]
+def _science_fetch_download(
+    doi: str, output_path: Path, config: dict[str, Any], *, tab_id: str | None = None
 ) -> bool:
-    """Plain-HTTP Science path: ePDF HTML, then the signed pdfdirect resource.
+    """Fetch reader HTML and PDF from an authenticated Science tab."""
+    from urllib.parse import urlsplit
 
-    No browser page is opened. This only works while the cached clearance cookie
-    and its issuing user agent are still accepted, so any failure simply defers
-    to the browser strategy.
-    """
-    from urllib.parse import urljoin
+    from .browser_engine import (
+        _resolve_tab,
+        close_tab,
+        create_tab,
+        fetch_pdf_in_tab,
+        get_owned_tab_for_origin,
+        navigate_tab,
+    )
 
-    from .pdf_utils import _response_looks_pdf, is_pdf_file
-    from .sources.publishers import _write_pdf_atomic
-
-    session = None
+    reader_url = _SCIENCE_EPDF_URL.format(doi=doi)
+    origin = urlsplit(reader_url)
+    own_tab = False
     try:
-        session = _science_http_session(config, state)
-        signed = _science_signed_url_over_http(doi, config, session)
-        if not signed:
+        if tab_id is None:
+            tab_id = get_owned_tab_for_origin(f"{origin.scheme}://{origin.netloc}")
+        if tab_id is None:
+            own_tab = True
+            tab_id = create_tab(reader_url, config, timeout=_SCIENCE_FETCH_TIMEOUT_MS / 1000)
+        if tab_id is None or (page := _resolve_tab(tab_id)) is None:
             return False
-        response = session.get(
-            urljoin(_SCIENCE_EPDF_URL.format(doi=doi), signed),
-            timeout=float(config.get("science_http_timeout", _SCIENCE_PDF_TIMEOUT)),
-            stream=True,
-            headers={"Accept": "application/pdf,*/*"},
+        current = urlsplit(page.url)
+        if not own_tab and (current.scheme, current.netloc) != (origin.scheme, origin.netloc):
+            if not navigate_tab(
+                tab_id, reader_url, config, timeout=_SCIENCE_FETCH_TIMEOUT_MS / 1000
+            ):
+                return False
+            current = urlsplit(page.url)
+        if (current.scheme, current.netloc) != (origin.scheme, origin.netloc):
+            return False
+        reader = page.evaluate(
+            """async ({url, timeout}) => {
+                const response = await fetch(url, {
+                    credentials: 'same-origin', mode: 'same-origin', redirect: 'error',
+                    headers: {'Accept': 'text/html,application/xhtml+xml'},
+                    signal: AbortSignal.timeout(timeout)
+                });
+                const challenge = response.headers.get('cf-mitigated')?.toLowerCase() === 'challenge';
+                return {status: response.status, challenge,
+                        html: response.status === 200 && !challenge ? await response.text() : ''};
+            }""",
+            {"url": reader_url, "timeout": _SCIENCE_FETCH_TIMEOUT_MS},
         )
-        try:
-            if response.status_code >= 400:
-                log.info("   [Science] HTTP PDF status=%s", response.status_code)
-                return False
-            iterator = response.iter_content(chunk_size=8192)
-            first = next(iterator, b"")
-            if not _response_looks_pdf(response, first):
-                log.info("   [Science] HTTP PDF response is not a PDF")
-                return False
-            if not _write_pdf_atomic(output_path, first, iterator):
-                log.info("   [Science] HTTP PDF write failed")
-                return False
-            if not is_pdf_file(output_path):
-                log.info("   [Science] HTTP PDF validation failed")
-                return False
-            return True
-        finally:
-            response.close()
+        if reader["challenge"] or reader["status"] != 200:
+            log.info(
+                "   [Science] in-page reader rejected (status=%s, challenge=%s)",
+                reader["status"],
+                reader["challenge"],
+            )
+            return False
+        match = _SCIENCE_EPUB_URL_RE.search(reader["html"])
+        signed = _science_signed_pdf_path(match.group(1)) if match else None
+        if not signed or urlsplit(signed).path != f"/doi/pdfdirect/{doi}":
+            return False
+        return fetch_pdf_in_tab(tab_id, signed, output_path, config)
     except Exception as exc:
-        log.info("   [Science] plain HTTP path failed: %s", type(exc).__name__)
+        # A Playwright exception can include request data. Keep the fallback log safe.
+        log.info("   [Science] in-page fetch failed: %s", type(exc).__name__)
         return False
     finally:
-        if session is not None:
-            session.close()
+        if own_tab and tab_id is not None:
+            close_tab(tab_id, config)
 
 
-def _capture_science_clearance(tab_id: str, config: dict[str, Any]) -> None:
-    """Persist the Science clearance cookie and its user agent for reuse.
+def _remember_local_science_cookies(config: dict[str, Any]) -> None:
+    """Preserve the generic cookie cache for the local browser fallback only."""
+    from .browser_backend import BACKEND_CDP, resolve_backend
 
-    Later acquisitions can then resolve the signed URL over plain HTTP without
-    opening a browser page. Failures here must never fail the acquisition.
-    """
+    if resolve_backend(config) == BACKEND_CDP:
+        return
     try:
-        from .browser_cookies import merge_cookies, save_science_http_state
-        from .browser_engine import context_cookies, evaluate_js
+        from .browser_cookies import merge_cookies
+        from .browser_engine import context_cookies
 
-        agent = evaluate_js(tab_id, "navigator.userAgent", config)
         cookies = context_cookies("https://www.science.org/", config)
-        if isinstance(agent, str) and agent and cookies:
-            save_science_http_state(agent, cookies, config)
+        if cookies:
             merge_cookies(cookies, config)
     except Exception as exc:
-        log.info(f"   [Science] clearance capture skipped: {type(exc).__name__}")
+        log.info("   [Science] local cookie cache skipped: %s", type(exc).__name__)

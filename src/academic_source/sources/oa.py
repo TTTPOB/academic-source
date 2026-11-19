@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -322,7 +322,12 @@ def _browser_candidate(
 
 
 def acquire_oa(
-    doi: str, work_dir: Path, config: dict[str, Any]
+    doi: str,
+    work_dir: Path,
+    config: dict[str, Any],
+    *,
+    run_browser: Callable[[str, Callable[[], ProviderOutcome]], ProviderOutcome]
+    | None = None,
 ) -> SourceSuccess | SourceFailure:
     config = dict(config)
     config.setdefault("_acquisition_attempted_urls", set())
@@ -386,12 +391,23 @@ def acquire_oa(
                     (item, 1) for link in links[:3] for item in expand_candidate(link)
                 )
     if PROVIDERS["OACDP"].is_enabled(doi, config):
-        for candidate in blocked[:2]:
+
+        def retry(candidate: Candidate) -> ProviderOutcome:
             started = time.monotonic()
             result = _browser_candidate(
                 candidate, work_dir / f"oa-{len(attempts)}.pdf", config
             )
             record("OACDP", result, started)
+            return result
+
+        for candidate in blocked[:2]:
+            result = (
+                run_browser(
+                    urlsplit(candidate.url).hostname or "", lambda c=candidate: retry(c)
+                )
+                if run_browser is not None
+                else retry(candidate)
+            )
             if isinstance(result, SourceSuccess):
                 result.attempts = attempts
                 return result

@@ -26,8 +26,8 @@ class ProviderSpec:
     handler: str | LegacyHandler | None = None
     enabled: Enabled | None = None
     ownership: Literal["owned", "borrowed"] = "borrowed"
-    # Do not mark a borrowed handler as HTTP until its call paths are audited.
-    backend: Literal["http", "browser"] = "browser"
+    # Local browser and Camofox paths take precedence over plain HTTP paths.
+    backend: Literal["browser", "http", "http_ungated"] = "browser"
     # These labels also have a native HTTP implementation in the OA fast path.
     fast_path_backend: Literal["http"] | None = None
 
@@ -116,9 +116,15 @@ PROVIDERS: dict[str, ProviderSpec] = {
         backend="http",
         fast_path_backend="http",
     ),
-    "OpenAIRE": ProviderSpec("oa", "openaire.eu", "openaire:try_openaire"),
-    "DOAJ": ProviderSpec("oa", "doaj.org", "oa_discovery:try_doaj"),
-    "CrossrefPage": ProviderSpec("oa", "crossref", "crossref:try_crossref_page_scrape"),
+    "OpenAIRE": ProviderSpec(
+        "oa", "openaire.eu", "openaire:try_openaire", backend="http_ungated"
+    ),
+    "DOAJ": ProviderSpec(
+        "oa", "doaj.org", "oa_discovery:try_doaj", backend="http_ungated"
+    ),
+    "CrossrefPage": ProviderSpec(
+        "oa", "crossref", "crossref:try_crossref_page_scrape", backend="http_ungated"
+    ),
     "EuropePMC": ProviderSpec(
         "oa",
         "europepmc.org",
@@ -152,26 +158,35 @@ PROVIDERS: dict[str, ProviderSpec] = {
     ),
     "Crossref": ProviderSpec("publisher", "crossref", backend="http"),
     "NatureDirect": ProviderSpec("publisher", "nature.com", backend="http"),
-    "PublisherDirect": ProviderSpec("publisher", "publisher-origin"),
+    "PublisherDirect": ProviderSpec(
+        "publisher", "publisher-origin", backend="http_ungated"
+    ),
     "NatureBrowser": ProviderSpec("publisher", "nature.com"),
     "RoyalSocietyBrowser": ProviderSpec("publisher", "royalsocietypublishing.org"),
     "CopernicusDirect": ProviderSpec("publisher", "copernicus.org"),
-    "MDPIDirect": ProviderSpec("publisher", "mdpi.com"),
-    "ElsevierAPI": ProviderSpec("publisher", "api.elsevier.com"),
+    "MDPIDirect": ProviderSpec("publisher", "mdpi.com", backend="http_ungated"),
+    "ElsevierAPI": ProviderSpec(
+        "publisher", "api.elsevier.com", backend="http_ungated"
+    ),
     "ElsevierBrowser": ProviderSpec("publisher", "sciencedirect.com"),
     "WileyBrowser": ProviderSpec("publisher", "wiley.com"),
-    "ScienceDirect": ProviderSpec("publisher", "science.org"),
     "ScienceBrowser": ProviderSpec("publisher", "science.org"),
-    "PNASDirect": ProviderSpec("publisher", "pnas.org"),
+    "PNASDirect": ProviderSpec("publisher", "pnas.org", backend="http_ungated"),
     "OxfordBrowser": ProviderSpec("publisher", "academic.oup.com"),
     "ACSBrowser": ProviderSpec("publisher", "pubs.acs.org"),
-    "SpringerTDM": ProviderSpec("publisher", "springernature.com"),
+    "SpringerTDM": ProviderSpec(
+        "publisher", "springernature.com", backend="http_ungated"
+    ),
     "SpringerBrowser": ProviderSpec("publisher", "springer.com"),
     "APSBrowser": ProviderSpec("publisher", "journals.aps.org"),
     "IOPBrowser": ProviderSpec("publisher", "iopscience.iop.org"),
-    "PLOSDirect": ProviderSpec("publisher", "journals.plos.org"),
-    "FrontiersDirect": ProviderSpec("publisher", "frontiersin.org"),
-    "BMCDirect": ProviderSpec("publisher", "link.springer.com"),
+    "PLOSDirect": ProviderSpec(
+        "publisher", "journals.plos.org", backend="http_ungated"
+    ),
+    "FrontiersDirect": ProviderSpec(
+        "publisher", "frontiersin.org", backend="http_ungated"
+    ),
+    "BMCDirect": ProviderSpec("publisher", "link.springer.com", backend="http_ungated"),
     "RSCBrowser": ProviderSpec("publisher", "pubs.rsc.org"),
     "AIPBrowser": ProviderSpec("publisher", "pubs.aip.org"),
     "ACMBrowser": ProviderSpec("publisher", "dl.acm.org"),
@@ -190,6 +205,7 @@ PROVIDERS: dict[str, ProviderSpec] = {
         "sage-cn",
         _sage_cn_source,
         lambda doi, config: doi.startswith("10.1177/") and _carsi_enabled(doi, config),
+        backend="http_ungated",
     ),
     "CARSI": ProviderSpec(
         "institutional", "carsi", "carsi_source:try_carsi", _carsi_enabled

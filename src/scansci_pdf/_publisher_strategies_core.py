@@ -29,9 +29,8 @@ from .log import get_logger
 
 log = get_logger()
 
-# Module-level error tracking for caller introspection
-_last_error_type: str = ""
-_last_error_action: str = ""
+# Diagnostics are written and consumed on the same source worker.
+_diagnostics = threading.local()
 
 # Global lock to prevent multiple visible browser windows in parallel racing
 _visible_browser_lock = threading.Lock()
@@ -40,19 +39,15 @@ _visible_browser_active = False
 
 def get_last_error() -> tuple[str, str]:
     """Return (error_type, action) from last _browser_download call."""
-    return _last_error_type, _last_error_action
+    return getattr(_diagnostics, "error", ("", ""))
 
 
 def _set_error(error_type: str, action: str = "") -> None:
-    global _last_error_type, _last_error_action
-    _last_error_type = error_type
-    _last_error_action = action
+    _diagnostics.error = (error_type, action)
 
 
 def _clear_error() -> None:
-    global _last_error_type, _last_error_action
-    _last_error_type = ""
-    _last_error_action = ""
+    _set_error("")
 
 
 def _get_profile_dir(config: dict[str, Any], publisher: str = "shared") -> Path:
@@ -142,7 +137,7 @@ def _save_all_cookie_formats(
 ) -> None:
     """Save cookies in all formats: JSON, Netscape, publisher subset, + bridge to browser-engine."""
     from .config import DATA_DIR
-    from .browser_cookies import cookies_to_netscape, _save_cookies_json
+    from .browser_cookies import _cookie_write_lock, _save_cookies_json, _save_cookies_netscape
 
     cache_dir = Path(config.get("cache_dir", str(DATA_DIR / "cache")))
 
@@ -156,13 +151,10 @@ def _save_all_cookie_formats(
          "httpOnly": c.get("httpOnly", False)}
         for c in cookies
     ]
-    (carsi_dir / f"{publisher.lower()}.json").write_text(
-        json.dumps(cookie_data, indent=2, ensure_ascii=False), encoding="utf-8")
+    _save_cookies_json(cookie_data, carsi_dir / f"{publisher.lower()}.json")
 
     # 2. Save Netscape format (for browser-engine import)
-    netscape_text = cookies_to_netscape(cookies)
     netscape_file = cache_dir / "publisher_cookies.txt"
-    netscape_file.write_text(netscape_text, encoding="utf-8")
 
     # 3. Save publisher-domain subset
     _pub_domains = [
@@ -179,8 +171,10 @@ def _save_all_cookie_formats(
     ]
     pub_cookies = [c for c in cookie_data
                    if any(c.get("domain", "").endswith(d) for d in _pub_domains)]
-    if pub_cookies:
-        _save_cookies_json(pub_cookies, cache_dir / "publisher_cookies.json")
+    with _cookie_write_lock:
+        _save_cookies_netscape(cookies, netscape_file)
+        if pub_cookies:
+            _save_cookies_json(pub_cookies, cache_dir / "publisher_cookies.json")
 
     # 4. Bridge to browser-engine headless service
     try:

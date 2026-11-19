@@ -153,7 +153,11 @@ def test_optional_exports_fail_without_downgrading_pdf(monkeypatch, tmp_path):
 
     monkeypatch.setattr(md_export, "pdf_to_markdown_detailed", conversion_failed)
     monkeypatch.setattr(bibtex, "fetch_bibtex", lambda *args: None)
-    monkeypatch.setattr(supplementary, "fetch_supplementary", lambda *args: [])
+    monkeypatch.setattr(
+        supplementary,
+        "fetch_supplementary",
+        lambda *args, **kwargs: supplementary.SupplementaryResult(pages_unread=1),
+    )
     app = Application(Settings(data_dir=tmp_path), source=FixtureSource())
     try:
         request = AcquisitionRequest(

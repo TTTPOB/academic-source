@@ -6,6 +6,7 @@ import json
 import os
 import random
 import time
+from threading import local
 from typing import Any
 
 import requests
@@ -49,12 +50,18 @@ def is_cloudflare_challenge(title: str) -> bool:
     return any(sig in lower for sig in CLOUDFLARE_CHALLENGE_SIGNALS)
 
 _session_pool: dict[str, requests.Session] = {}
+_thread_sessions = local()
 
 
 def _get_session(config: dict[str, Any]) -> requests.Session:
     proxy = os.environ.get("SCANSCI_PDF_PROXY") or config.get("network_proxy") or ""
     key = proxy or "__none__"
-    if key not in _session_pool:
+    sessions = _session_pool
+    if config.get("_parallel_http"):
+        if not hasattr(_thread_sessions, "pool"):
+            _thread_sessions.pool = {}
+        sessions = _thread_sessions.pool
+    if key not in sessions:
         s = requests.Session()
         s.trust_env = False
         adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=0)
@@ -65,28 +72,12 @@ def _get_session(config: dict[str, Any]) -> requests.Session:
             if proxy.startswith("socks") and not HAS_SOCKS:
                 log.warning("SOCKS proxy configured but PySocks not installed. Install: pip install requests[socks]")
             s.proxies = {"http": proxy, "https": proxy}
-        _session_pool[key] = s
-    return _session_pool[key]
+        sessions[key] = s
+    return sessions[key]
 
 
 def request_timeout(config: dict[str, Any]) -> tuple[int, int]:
     return (int(config.get("connect_timeout", 3)), int(config.get("read_timeout", 7)))
-
-
-def science_http_proxy(config: dict[str, Any], *, cdp: bool) -> str | None:
-    """Choose Science HTTP egress without borrowing an unrelated browser proxy."""
-    explicit = config.get("science_http_proxy")
-    if explicit is not None:
-        return str(explicit).strip() or None
-    if cdp:
-        candidates = (os.environ.get("SCANSCI_PDF_PROXY"), config.get("network_proxy"))
-    else:
-        candidates = (config.get("browser_static_proxy"), config.get("network_proxy"))
-    for candidate in candidates:
-        proxy = str(candidate or "").strip()
-        if proxy:
-            return proxy
-    return None
 
 
 def proxy_dict(proxy: str | None) -> dict[str, str] | None:

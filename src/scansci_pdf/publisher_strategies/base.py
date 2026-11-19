@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import quote
 
 from ..log import get_logger
+from ..supplementary import SupplementaryItem
 
 log = get_logger()
 
@@ -75,6 +76,14 @@ class BasePublisherStrategy:
         if self.article_url_template:
             return self.article_url_template.format(doi=doi)
         return f"https://doi.org/{doi}"
+
+    def supplementary_pages(self, doi: str) -> list[str]:
+        """Pages to read for supplementary material, most specific first."""
+        return [self.article_url(doi)]
+
+    def supplementary_items(self, html: str, page_url: str) -> list[SupplementaryItem] | None:
+        """Items found on one page, or None to use the generic extraction."""
+        return None
 
     def browser_entry_url(self, doi: str, config: dict[str, Any]) -> str:
         """Choose the first browser page for this publisher."""

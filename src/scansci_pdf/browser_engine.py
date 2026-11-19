@@ -22,6 +22,8 @@ import shutil
 import subprocess
 import time
 import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -92,7 +94,13 @@ def _check_browser_backend(config: dict[str, Any] | None = None) -> bool:
 
 import threading as _threading
 
-_tls = _threading.local()
+class _BrowserState(_threading.local):
+    def __init__(self):
+        self.tabs: dict[str, Any] = {}
+        self.captured: dict[str, list] = {}
+
+
+_tls = _BrowserState()
 
 # All live browsers across threads. Playwright sync objects are thread-affine
 # (greenlets), so a graceful cross-thread close at process exit may fail —
@@ -180,11 +188,9 @@ def close_shared_browser(config: dict[str, Any] | None = None) -> None:
     if browser is None:
         return
     borrowed = getattr(_tls, "borrowed", None)
+    _tls.tabs.clear()
+    _tls.captured.clear()
     if borrowed is not None:
-        for tab_id, page in tuple(_tabs.items()):
-            if page in borrowed.pages:
-                _tabs.pop(tab_id, None)
-                _captured.pop(tab_id, None)
         try:
             borrowed.close()
         except Exception:
@@ -437,14 +443,10 @@ def is_available(config: dict[str, Any] | None = None) -> bool:
 # tab-based workflows within a single operation (thread-safe: one thread per tab).
 # ---------------------------------------------------------------------------
 
-_tabs: dict[str, Any] = {}  # tab_id → page
-_captured: dict[str, list] = {}  # tab_id → captured PDF responses
-
-
 def _register_tab(browser, context, page) -> str:
     tab_id = uuid.uuid4().hex[:12]
-    _tabs[tab_id] = page
-    _captured[tab_id] = []
+    _tls.tabs[tab_id] = page
+    _tls.captured[tab_id] = []
 
     # Borrowed CDP pages use chunked in-page fetch; never buffer PDF events.
     if getattr(_tls, "borrowed", None) is not None:
@@ -458,7 +460,7 @@ def _register_tab(browser, context, page) -> str:
                 try:
                     body = response.body()
                     if body[:5] == b"%PDF-":
-                        _captured[tab_id].append({
+                        _tls.captured[tab_id].append({
                             "url": response.url,
                             "status": response.status,
                             "contentType": ct,
@@ -479,8 +481,21 @@ def _register_tab(browser, context, page) -> str:
 
 def _resolve_tab(tab_id: str):
     """Look up page for a tab_id. Returns page or None."""
-    page = _tabs.get(tab_id)
+    page = _tls.tabs.get(tab_id)
     return page
+
+
+def get_owned_tab_for_origin(origin: str) -> str | None:
+    """Find a same-origin tab registered by the current CDP connection only."""
+    borrowed = getattr(_tls, "borrowed", None)
+    if borrowed is not None:
+        expected = urlparse(origin)
+        for tab_id, page in _tls.tabs.items():
+            if page in borrowed.pages:
+                current = urlparse(page.url)
+                if (current.scheme, current.netloc) == (expected.scheme, expected.netloc):
+                    return tab_id
+    return None
 
 
 def solve_url(
@@ -641,8 +656,8 @@ def close_tab(tab_id: str, config: dict[str, Any]) -> None:
             _close_page(page)
         except Exception:
             pass
-    _tabs.pop(tab_id, None)
-    _captured.pop(tab_id, None)
+    _tls.tabs.pop(tab_id, None)
+    _tls.captured.pop(tab_id, None)
 
 
 def navigate_tab(tab_id: str, url: str, config: dict[str, Any], *, timeout: float = 30.0) -> bool:
@@ -682,29 +697,207 @@ def last_pdf_fetch_reason() -> str:
     return getattr(_tls, "pdf_fetch_reason", "no_pdf_found")
 
 
+@dataclass(frozen=True)
+class TabResponse:
+    url: str
+    status: int
+    ok: bool
+    mime: str
+    disposition: str
+    length: int
+    identity: bool
+    challenge: bool
+
+
+@dataclass(frozen=True)
+class TabTransfer:
+    response: TabResponse | None = None
+    reason: str = ""
+    phase: str = "headers"
+    written: int = 0
+    network_error: bool = False
+    overflow_size: int = 0
+
+
+def same_origin(left: str, right: str) -> bool:
+    """Compare web origins, including default ports."""
+    try:
+        first, second = urlparse(left), urlparse(right)
+        if first.scheme not in {"http", "https"} or first.scheme != second.scheme:
+            return False
+        default_port = 443 if first.scheme == "https" else 80
+        first_port = default_port if first.port is None else first.port
+        second_port = default_port if second.port is None else second.port
+        return bool(first.hostname) and first.hostname == second.hostname and first_port == second_port
+    except ValueError:
+        return False
+
+
+def stream_file_in_tab(
+    page: Any,
+    url: str,
+    partial: Path,
+    *,
+    timeout_ms: int,
+    max_bytes: int,
+    max_declared_bytes: int | None = None,
+    accept: Callable[[TabResponse], bool] | None = None,
+) -> TabTransfer:
+    """Stream a web response to a caller-owned temporary path, removing it on failure.
+
+    ``accept`` preserves the main PDF transport's response policy. Without it,
+    use the normal credentialed Fetch policy for attachments and check length.
+    """
+    from urllib.parse import urljoin
+
+    response = None
+    phase = "headers"
+    written = 0
+    session = None
+    complete = False
+    try:
+        page_url = page.url
+        target = urljoin(page_url, url)
+        if not same_origin(page_url, target):
+            return TabTransfer(reason="cross-origin URL")
+        # Both the header request and each pending reader.read() share this deadline.
+        # Main PDF keeps its stricter redirect policy; files use default fetch redirects.
+        policy = "credentials: 'same-origin', mode: 'same-origin'," if accept else "credentials: 'include',"
+        session = page.evaluate_handle(
+            """async ({url, timeout}) => {
+                const controller = new AbortController();
+                const deadline = Date.now() + timeout;
+                const timer = setTimeout(() => controller.abort(), timeout);
+                try {
+                    const response = await fetch(url, {
+                        """ + policy + """
+                        signal: controller.signal
+                    });
+                    return {controller, response, timer, deadline};
+                } catch (error) { clearTimeout(timer); throw error; }
+            }""",
+            {"url": target, "timeout": timeout_ms},
+        )
+        meta = session.evaluate(
+            """s => ({ok: s.response.ok, status: s.response.status,
+                     type: s.response.headers.get('content-type') || '', url: s.response.url,
+                     disposition: s.response.headers.get('content-disposition') || '',
+                     length: s.response.headers.get('content-length') || '',
+                     encoding: s.response.headers.get('content-encoding') || 'identity',
+                     challenge: s.response.headers.get('cf-mitigated') === 'challenge'})"""
+        )
+        length = meta.get("length", "")
+        response = TabResponse(
+            meta["url"], meta["status"], meta["ok"],
+            str(meta["type"]).split(";", 1)[0].strip().lower(),
+            meta.get("disposition", ""), int(length) if length.isascii() and length.isdecimal() else 0,
+            meta.get("encoding", "identity").lower() == "identity", meta.get("challenge", False),
+        )
+        if accept is not None:
+            # Keep strict main-PDF redirect and MIME checks before reading its body.
+            origin, landed = urlparse(page_url), urlparse(response.url)
+            if not accept(response) or (landed.scheme, landed.netloc) != (origin.scheme, origin.netloc):
+                return TabTransfer(response, "response rejected")
+        else:
+            if response.challenge:
+                return TabTransfer(response, f"HTTP {response.status} (browser challenge)")
+            if response.status != 200:
+                return TabTransfer(response, f"HTTP {response.status}")
+            if ((max_declared_bytes is not None and response.length > max_declared_bytes)
+                or (response.identity and response.length > max_bytes)):
+                return TabTransfer(response, overflow_size=response.length)
+        phase = "body"
+        session.evaluate("s => {s.reader = s.response.body.getReader()}")
+        partial.parent.mkdir(parents=True, exist_ok=True)
+        with partial.open("wb") as stream:
+            while True:
+                # Bound each CDP reply; ask for at most one byte beyond the budget.
+                chunk = session.evaluate(
+                    """async (s, limit) => {
+                        const buffer = new Uint8Array(limit);
+                        let used = 0;
+                        let done = false;
+                        while (used < buffer.length) {
+                            if (Date.now() >= s.deadline) {
+                                s.controller.abort(); throw Error('browser stream timeout');
+                            }
+                            if (!s.pending?.length) {
+                                const result = await s.reader.read();
+                                if (result.done) { done = true; break; }
+                                s.pending = result.value;
+                            }
+                            const count = Math.min(buffer.length - used, s.pending.length);
+                            buffer.set(s.pending.subarray(0, count), used);
+                            used += count;
+                            s.pending = s.pending.subarray(count);
+                        }
+                        const value = buffer.subarray(0, used);
+                        let encoded;
+                        if (typeof value.toBase64 === 'function') {
+                            encoded = value.toBase64();
+                        } else {
+                            // Older Chromium: keep spread arguments well below the call stack limit.
+                            const parts = [];
+                            for (let i = 0; i < used; i += 16384) {
+                                parts.push(String.fromCharCode(...value.subarray(i, i + 16384)));
+                            }
+                            encoded = btoa(parts.join(''));
+                        }
+                        return {done, data: encoded};
+                    }""",
+                    min(1024 * 1024, max_bytes - written + 1),
+                )
+                data = base64.b64decode(chunk["data"], validate=True)
+                size = written + len(data)
+                if size > max_bytes:
+                    return TabTransfer(response, phase=phase, written=written, overflow_size=size)
+                stream.write(data)
+                written = size
+                if chunk["done"]:
+                    break
+        if accept is None and response.identity and written < response.length:
+            return TabTransfer(response, f"truncated transfer ({written:,} of {response.length:,} bytes)", phase, written)
+        complete = True
+        return TabTransfer(response, phase=phase, written=written)
+    except Exception as exc:
+        # Playwright errors may embed the URL; report only the class.
+        reason = (
+            "AbortError" if "AbortError" in str(exc)
+            else "TimeoutError" if "browser stream timeout" in str(exc)
+            else type(exc).__name__
+        )
+        return TabTransfer(response, reason, phase, written, network_error=True)
+    finally:
+        if session is not None:
+            try:
+                session.evaluate("s => {clearTimeout(s.timer); s.controller.abort(); s.reader?.cancel().catch(() => {})}")
+            except Exception:
+                pass  # A disconnected browser must not hide the original result.
+            try:
+                session.dispose()
+            except Exception:
+                pass
+        if not complete:
+            partial.unlink(missing_ok=True)
+
+
 def fetch_pdf_in_tab(
     tab_id: str, pdf_url: str, output_path: Path, config: dict[str, Any]
 ) -> bool:
-    """Stream a same-origin browser fetch from an article tab to a temporary file.
-
-    The request runs in the page's own authenticated origin, not in the API
-    process HTTP client. No viewer, download event, or shared filesystem needed.
-    """
+    """Fetch and validate a main PDF within the article's authenticated origin."""
     from urllib.parse import urljoin
 
     _tls.pdf_fetch_error = ""
     _tls.pdf_fetch_reason = "no_pdf_found"
     started = time.monotonic()
+    transfer = TabTransfer()
     phase = "headers"
-    written = 0
-    status = None
-    mime = None
 
     def fail(reason: str, *, category: str = "no_pdf_found") -> bool:
         _tls.pdf_fetch_reason = category
-        details = f"{phase}: {reason}; bytes={written}; elapsed={time.monotonic() - started:.1f}s"
-        if status is not None:
-            details += f"; status={status}; mime={mime}"
+        details = f"{phase}: {reason}; bytes={transfer.written}; elapsed={time.monotonic() - started:.1f}s"
+        if response := transfer.response:
+            details += f"; status={response.status}; mime={response.mime[:80]}"
         _tls.pdf_fetch_error = details
         logger.info("browser_engine: PDF fetch failed: %s", details)
         return False
@@ -714,59 +907,22 @@ def fetch_pdf_in_tab(
         return fail("tab not found")
     origin = urlparse(page.url)
     target = urlparse(urljoin(page.url, pdf_url))
-    if (origin.scheme, origin.netloc) != (target.scheme, target.netloc) or origin.scheme not in ("http", "https"):
+    if origin.scheme not in ("http", "https") or (origin.scheme, origin.netloc) != (target.scheme, target.netloc):
         return fail("cross-origin PDF URL")
-    # Browser-side abort covers both waiting for headers and a stalled stream.
-    # The deadline starts before fetch; byte cap bounds memory/disk use per job.
-    timeout_ms = max(1, int(float(config.get("browser_pdf_timeout", 120)) * 1000))
-    max_bytes = max(1, int(config.get("browser_pdf_max_bytes", 100 * 1024 * 1024)))
-    session = None
     partial = output_path.with_name(output_path.name + ".part")
     try:
-        session = page.evaluate_handle(
-            """async ({url, timeout}) => {
-                const controller = new AbortController();
-                const deadline = Date.now() + timeout;
-                const timer = setTimeout(() => controller.abort(), timeout);
-                try {
-                    const response = await fetch(url, {
-                        credentials: 'same-origin', mode: 'same-origin',
-                        signal: controller.signal
-                    });
-                    return {controller, response, timer, deadline};
-                } catch (error) { clearTimeout(timer); throw error; }
-            }""",
-            {"url": target.geturl(), "timeout": timeout_ms},
+        transfer = stream_file_in_tab(
+            page, pdf_url, partial,
+            timeout_ms=max(1, int(float(config.get("browser_pdf_timeout", 120)) * 1000)),
+            max_bytes=max(1, int(config.get("browser_pdf_max_bytes", 100 * 1024 * 1024))),
+            accept=lambda response: response.ok and any(t in response.mime[:80] for t in ("pdf", "octet-stream")),
         )
-        meta = session.evaluate(
-            """s => ({ok: s.response.ok, status: s.response.status,
-                     type: s.response.headers.get('content-type') || '', url: s.response.url})"""
-        )
-        landed = urlparse(meta["url"])
-        status = meta["status"]
-        mime = str(meta["type"]).split(";", 1)[0].strip().lower()[:80]
-        if (not meta["ok"] or not any(t in mime for t in ("pdf", "octet-stream"))
-                or (landed.scheme, landed.netloc) != (origin.scheme, origin.netloc)):
-            return fail("response rejected")
-        phase = "body"
-        session.evaluate("s => {s.reader = s.response.body.getReader()}")
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with partial.open("wb") as stream:
-            while True:
-                chunk = session.evaluate(
-                    """async s => {
-                        if (Date.now() >= s.deadline) { s.controller.abort(); throw Error('PDF timeout'); }
-                        const {done, value} = await s.reader.read();
-                        return {done, bytes: done ? [] : Array.from(value)};
-                    }"""
-                )
-                if chunk["done"]:
-                    break
-                data = bytes(chunk["bytes"])
-                if written + len(data) > max_bytes:
-                    return fail("PDF exceeds configured byte limit")
-                stream.write(data)
-                written += len(data)
+        phase = transfer.phase
+        if transfer.overflow_size:
+            return fail("PDF exceeds configured byte limit")
+        if transfer.reason:
+            category = "network_error" if transfer.network_error else "no_pdf_found"
+            return fail(transfer.reason, category=category)
         phase = "validation"
         import pymupdf
 
@@ -780,21 +936,9 @@ def fetch_pdf_in_tab(
         partial.replace(output_path)
         return True
     except Exception as exc:
-        # Playwright errors may embed the JS call or URL; report only the class.
-        reason = (
-            "AbortError" if "AbortError" in str(exc)
-            else "TimeoutError" if "PDF timeout" in str(exc)
-            else type(exc).__name__
-        )
-        return fail(reason, category="network_error")
+        return fail(type(exc).__name__, category="network_error")
     finally:
         partial.unlink(missing_ok=True)
-        if session is not None:
-            try:
-                session.evaluate("s => {clearTimeout(s.timer); s.controller.abort(); s.reader?.cancel().catch(() => {})}")
-                session.dispose()
-            except Exception:
-                pass  # A disconnected browser must not hide the original result.
 
 
 def download_pdf_via_browser(
@@ -1074,7 +1218,7 @@ def fetch_url(
         logger.info(f"browser_engine: fetch_url navigate error: {e}")
 
     # Check captured responses
-    for resp in _captured.get(tab_id, []):
+    for resp in _tls.captured.get(tab_id, []):
         data = resp.get("dataBase64", "")
         if data:
             pdf_bytes = base64.b64decode(data)
@@ -1101,22 +1245,30 @@ def get_captured_responses(
     consume: bool = True,
 ) -> list[dict[str, Any]]:
     """Get captured PDF responses for a tab. Optionally consume (clear) them."""
-    captured = _captured.get(tab_id, [])
+    captured = _tls.captured.get(tab_id, [])
     result = list(captured)
     if consume:
-        _captured[tab_id] = []
+        _tls.captured[tab_id] = []
     return result
 
 
 def close_all_tabs(config: dict[str, Any]) -> None:
     """Close all tracked browser tabs (pages only, not the shared browser)."""
-    for tab_id in list(_tabs.keys()):
+    for tab_id in list(_tls.tabs.keys()):
         close_tab(tab_id, config)
 
 
 # ---------------------------------------------------------------------------
 # Netscape cookie parser (shared utility)
 # ---------------------------------------------------------------------------
+
+def close_attempt_tabs() -> None:
+    """Release this worker's tabs without disconnecting its CDP session."""
+    close_all_tabs({})
+    borrowed = getattr(_tls, "borrowed", None)
+    if borrowed is not None:
+        borrowed.close_pages()
+
 
 def _parse_netscape_cookies(text: str) -> list[dict[str, Any]]:
     """Parse Netscape-format cookie file into structured cookie objects."""

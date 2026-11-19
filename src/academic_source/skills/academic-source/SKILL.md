@@ -55,6 +55,17 @@ with the same papers.
 Exit code 0 means every paper succeeded. Exit code 1 with a JSON document on
 stdout means some papers failed; the rest are saved and usable.
 
+## Fetch supplementary material
+
+Use `asource supp DOI --output papers` to fetch just the supplementary files.
+Pass a file with one DOI per line instead of a single DOI for a batch. Use
+`--supplementary` with `get` or `batch` to fetch both the main PDF and its
+supplements. Add `--markdown` to convert supplementary PDFs too.
+
+Each supplementary file carries a `note` with its title and caption when
+available. Europe PMC files are marked with their PMCID; they may differ from
+the publisher's version. Check `warnings` for missing files.
+
 ## Read the results
 
 Read the Markdown files the command saved. They are converted on the server; do

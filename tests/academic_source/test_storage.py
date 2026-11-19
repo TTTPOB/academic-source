@@ -11,6 +11,12 @@ from academic_source.infrastructure.storage import Store
 from academic_source.settings import Settings
 
 
+def test_database_uses_write_ahead_logging(tmp_path):
+    store = Store(Settings(data_dir=tmp_path))
+    with store._connect() as db:
+        assert db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+
 def test_upload_and_artifact_survive_reopen(tmp_path):
     settings = Settings(data_dir=tmp_path, max_upload_bytes=8)
     store = Store(settings)

@@ -48,6 +48,8 @@ class Settings(BaseModel):
     )
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, gt=0)
     interactive: bool = False
+    paper_workers: int = Field(default=1, gt=0, strict=True)
+    browser_tabs: int = Field(default=10, gt=0, strict=True)
     source_config: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("api_keys", mode="before")
@@ -61,7 +63,7 @@ class Settings(BaseModel):
         if isinstance(value, dict) and "job_workers" in value:
             if value["job_workers"] != 1:
                 raise ValueError(
-                    "job_workers is no longer configurable (only 1 supported)"
+                    "job_workers is no longer configurable; use paper_workers instead"
                 )
             return {key: item for key, item in value.items() if key != "job_workers"}
         return value

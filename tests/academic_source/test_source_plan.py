@@ -26,7 +26,7 @@ PUBLISHER_CASES = [
     ("10.1098", "RoyalSocietyBrowser Crossref"),
     ("10.1103", "APSBrowser Crossref"),
     ("10.1109", "IEEEBrowser Crossref"),
-    ("10.1126", "ScienceDirect ScienceBrowser Crossref"),
+    ("10.1126", "ScienceBrowser Crossref"),
     ("10.1145", "ACMBrowser Crossref"),
     ("10.1177", "SAGEBrowser Crossref"),
     ("10.1186", "BMCDirect Crossref"),

@@ -27,6 +27,7 @@ class Artifact(BaseModel):
     size: int
     identifier: str | None = None
     provenance: Provenance
+    note: str = ""
 
 
 class Upload(BaseModel):
@@ -60,6 +61,10 @@ class AcquisitionRequest(BaseModel):
     policy: Policy = "fastest"
     markdown: bool = False
     supplementary: bool = False
+    supplementary_only: bool = Field(
+        default=False,
+        description="Fetch only publisher supplementary files, without the main PDF or BibTeX.",
+    )
     bibtex: bool = False
     resolve_titles: bool = True
 

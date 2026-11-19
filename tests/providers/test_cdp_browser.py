@@ -1,5 +1,6 @@
 """CDP lifecycle and page-origin byte transport; no real browser is launched."""
 
+import base64
 import logging
 import sys
 from types import ModuleType, SimpleNamespace
@@ -59,7 +60,7 @@ class FakeSession:
         self.position = 0
         self.disposed = False
 
-    def evaluate(self, script):
+    def evaluate(self, script, limit=None):
         if "s.response.ok" in script:
             return {
                 "ok": self.page.status == 200,
@@ -78,9 +79,15 @@ class FakeSession:
             raise TimeoutError("browser AbortController reached deadline")
         if self.page.broken and self.position:
             raise OSError("stream interrupted")
-        data = self.page.payload[self.position : self.position + 32768]
+        assert 0 < limit <= 1024 * 1024
+        data = self.page.payload[self.position : self.position + min(32768, limit)]
         self.position += len(data)
-        return {"done": not data, "bytes": list(data)}
+        exhausted = self.position == len(self.page.payload)
+        return {
+            "done": exhausted
+            and not (self.page.broken or self.page.timeout_after_chunk),
+            "data": base64.b64encode(data).decode("ascii"),
+        }
 
     def dispose(self):
         self.disposed = True
@@ -294,6 +301,7 @@ def test_public_science_handler_uses_verified_pdf_entry(
     from scansci_pdf.publisher_strategies import science
 
     monkeypatch.setattr(science, "_wait_for_science_reader", lambda *a, **kw: None)
+    monkeypatch.setattr(science, "_science_fetch_download", lambda *a, **kw: False)
     monkeypatch.setattr(browser_engine, "is_available", lambda config: True)
     monkeypatch.setattr(browser_engine, "close_tab", lambda *args: None)
 
@@ -498,6 +506,48 @@ def test_stream_pdf_and_reject_errors(monkeypatch, tmp_path):
     assert "status=200; mime=application/pdf" in browser_engine.last_pdf_fetch_error()
 
 
+@pytest.mark.parametrize("scenario", ["complete", "truncated", "oversized"])
+def test_pdf_base64_batches_validate_and_clean_up(monkeypatch, tmp_path, scenario):
+    with pymupdf.open() as document:
+        document.new_page()
+        payload = document.tobytes()
+
+    class BatchSession(FakeSession):
+        def evaluate(self, script, limit=None):
+            if limit is None:
+                return super().evaluate(script)
+            assert "toBase64" in script and "btoa" in script
+            limits.append(limit)
+            if len(limits) == 1:
+                return {"done": False, "data": base64.b64encode(payload[:5]).decode()}
+            encoded = base64.b64encode(payload[5:]).decode()
+            if scenario == "truncated":
+                encoded = encoded[:-1]
+            return {"done": True, "data": encoded}
+
+    limits = []
+    page = FakePage()
+    session = BatchSession(page)
+    monkeypatch.setattr(page, "evaluate_handle", lambda *args: session)
+    monkeypatch.setattr(browser_engine, "_resolve_tab", lambda tab: page)
+    output = tmp_path / "batches.pdf"
+    max_bytes = 8 if scenario == "oversized" else len(payload)
+    result = browser_engine.fetch_pdf_in_tab(
+        "tab", page.result_url, output, {"browser_pdf_max_bytes": max_bytes}
+    )
+    assert limits == [max_bytes + 1, max_bytes - 4]
+    assert session.disposed and page.aborted and page.cancelled
+    assert not output.with_name(output.name + ".part").exists()
+    if scenario == "complete":
+        assert result and output.read_bytes() == payload
+    else:
+        assert not result and not output.exists()
+        reason = (
+            "PDF exceeds configured byte limit" if scenario == "oversized" else "Error"
+        )
+        assert f"body: {reason}; bytes=5;" in browser_engine.last_pdf_fetch_error()
+
+
 # ============================================================
 # Science server-signed ePDF transport
 # ============================================================
@@ -688,264 +738,139 @@ def test_science_missing_reader_config_falls_back_to_watermarked_pdf(
     assert fetched == ["/doi/pdf/10.1126/adh2586"]
 
 
-class FakeScienceResponse:
-    def __init__(self, payload, content_type, status=200, extra_headers=None):
-        self.status_code = status
-        self.headers = {"content-type": content_type, **(extra_headers or {})}
-        self.text = payload.decode("utf-8", "replace")
-        self._payload = payload
-        self.closed = False
+class FakeScienceTab:
+    def __init__(self, url, *, scenario="success"):
+        self.url = url
+        self.scenario = scenario
+        self.requests = []
 
-    def close(self):
-        self.closed = True
-
-    def iter_content(self, chunk_size):
-        yield self._payload
-
-
-class FakeScienceSession:
-    """requests.Session stand-in for the plain-HTTP Science transport."""
-
-    def __init__(self, html, pdf_bytes=b"", html_headers=None):
-        self.html = html
-        self.pdf_bytes = pdf_bytes
-        self.html_headers = html_headers or {}
-        self.urls = []
-        self.responses = []
-        self.closed = False
-
-    def close(self):
-        self.closed = True
-
-    def get(self, url, **kwargs):
-        self.urls.append(url)
-        if kwargs.get("stream"):
-            response = FakeScienceResponse(self.pdf_bytes, "application/pdf")
-        else:
-            response = FakeScienceResponse(
-                self.html.encode(), "text/html", extra_headers=self.html_headers
-            )
-        self.responses.append(response)
-        return response
+    def evaluate(self, script, args):
+        self.requests.append(args["url"])
+        assert "same-origin" in script and "AbortSignal.timeout" in script
+        path = args["url"].split("/doi/epdf/", 1)[1]
+        html = (
+            '{"epubConfig":{"epubUrl":"/doi/pdfdirect/' + path + '?hmac=fixture"}}'
+            if self.scenario != "unsigned"
+            else "<html>Reader not ready</html>"
+        )
+        return {"status": 200, "challenge": self.scenario == "challenge", "html": html}
 
 
-def _pdf_bytes():
-    """A payload large enough to satisfy is_pdf_file's size floor."""
-    document = pymupdf.open()
-    for index in range(3):
-        page = document.new_page()
-        page.insert_text((72, 72), f"Signed Science fixture page {index} " * 40)
-    payload = document.tobytes()
-    document.close()
-    return payload
-
-
-def test_science_plain_http_transport_resolves_and_validates(
-    monkeypatch, tmp_path, caplog
-):
-    from scansci_pdf import science_transport as transport
-
-    signed = "/doi/pdfdirect/10.1126/adh2586?hmac=1790266406-QUJDREVGR0g%3D"
-    payload = _pdf_bytes()
-    session = FakeScienceSession('{"epubConfig":{"epubUrl":"' + signed + '"}}', payload)
-    monkeypatch.setattr(
-        transport, "_science_http_session", lambda config, state: session
-    )
-
-    output = tmp_path / "http.pdf"
-    assert transport._science_http_download("10.1126/adh2586", output, {}, {})
-    assert output.read_bytes() == payload
-    assert session.urls[-1].endswith(signed)
-    assert session.closed and all(response.closed for response in session.responses)
-
-    # A challenge response must be vetoed by its mitigation header even when the
-    # body happens to carry a reader-looking payload.
-    challenged = FakeScienceSession(
-        '{"epubConfig":{"epubUrl":"' + signed + '"}}',
-        payload,
-        {"cf-mitigated": "challenge"},
-    )
-    monkeypatch.setattr(
-        transport, "_science_http_session", lambda config, state: challenged
-    )
-    assert not transport._science_http_download(
-        "10.1126/adh2586", tmp_path / "a.pdf", {}, {}
-    )
-    assert challenged.closed and all(
-        response.closed for response in challenged.responses
-    )
-    assert "HTTP reader challenge" in caplog.text
-    assert "HTTP reader status=" not in caplog.text
-    caplog.clear()
-
-    unsigned = FakeScienceSession(
-        '{"epubConfig":{"epubUrl":"/doi/pdf/10.1126/x"}}', payload
-    )
-    monkeypatch.setattr(
-        transport, "_science_http_session", lambda config, state: unsigned
-    )
-    assert not transport._science_http_download(
-        "10.1126/adh2586", tmp_path / "b.pdf", {}, {}
-    )
-    assert "HTTP reader unsupported epub URL" in caplog.text
-    assert "HTTP reader challenge" not in caplog.text
-    assert "hmac=" not in caplog.text
-    assert "QUJDREVGR0g" not in caplog.text
-
-
-def test_science_clearance_capture_enables_and_gates_the_fast_path(
-    monkeypatch, tmp_path
-):
-    from scansci_pdf import browser_cookies
-    from scansci_pdf import science_transport as transport
-
-    config = {"cache_dir": str(tmp_path)}
-    monkeypatch.setattr(
-        browser_engine, "evaluate_js", lambda tab, js, config, **kw: "Agent/1.0 Chrome"
-    )
-    monkeypatch.setattr(
-        browser_engine,
-        "context_cookies",
-        lambda url, config: [
-            {
-                "name": "cf_clearance",
-                "value": "token",
-                "domain": ".www.science.org",
-                "path": "/",
-            },
-            {"name": "tracker", "value": "x", "domain": ".example.com", "path": "/"},
-        ],
-    )
-    assert browser_cookies.load_science_http_state(config) is None
-    transport._capture_science_clearance("tab", config)
-    assert (
-        browser_cookies.load_science_http_state(config)["user_agent"]
-        == "Agent/1.0 Chrome"
-    )
-    assert [c["name"] for c in browser_cookies.load_saved_cookies(config)] == [
-        "cf_clearance"
-    ]
+def _science_test_pdf(path):
+    with pymupdf.open() as document:
+        for _ in range(7):
+            document.new_page()
+        document.save(path)
 
 
 @pytest.mark.parametrize(
-    "backend,override,expected,browser_proxy",
-    [
-        ("patchright", None, "http://browser:8080", "http://browser:8080"),
-        ("patchright", None, "http://network:8080", "   "),
-        ("cdp", None, "http://global:8080", "http://browser:8080"),
-        ("patchright", "", None, "http://browser:8080"),
-        ("cdp", "http://explicit:8080", "http://explicit:8080", "http://browser:8080"),
-    ],
+    "scenario", ["success", "challenge", "unsigned", "invalid_pdf"]
 )
-def test_science_session_proxy_selection(
-    monkeypatch, backend, override, expected, browser_proxy
+def test_science_fetch_reuses_owned_tab_and_falls_back(
+    monkeypatch, tmp_path, caplog, scenario
 ):
-    from scansci_pdf import science_transport as transport
+    import requests
 
-    monkeypatch.setenv("SCANSCI_PDF_PROXY", "http://global:8080")
-    config = {
-        "browser_backend": backend,
-        "browser_static_proxy": browser_proxy,
-        "network_proxy": "http://network:8080",
-        "science_http_proxy": override,
-    }
-    state = {"user_agent": "Agent/paired", "cookies": []}
-    session = transport._science_http_session(config, state)
-    try:
-        assert session.trust_env is False
-        assert session.headers["User-Agent"] == "Agent/paired"
-        assert session.proxies == (
-            {"http": expected, "https": expected} if expected else {}
-        )
-    finally:
-        session.close()
-
-
-def test_science_snapshot_rejects_wrong_scope_and_expired_clearance(
-    monkeypatch, tmp_path, caplog
-):
-    from scansci_pdf import browser_cookies
-
-    monkeypatch.setattr(browser_cookies.time, "time", lambda: 100.0)
-    config = {"cache_dir": str(tmp_path)}
-    clearance = {
-        "name": "cf_clearance",
-        "value": "token",
-        "domain": ".science.org",
-        "path": "/",
-        "expires": -1,
-    }
-    browser_cookies.save_science_http_state("Agent/2", [clearance], config)
-    state = browser_cookies.load_science_http_state(config)
-    assert state["user_agent"] == "Agent/2" and state["cookies"][0]["expires"] == -1
-    for bad in (
-        {**clearance, "domain": ".evilscience.org"},
-        {**clearance, "path": "/doi/epdf"},
-        {**clearance, "expires": 1},
-    ):
-        browser_cookies.save_science_http_state("Agent/3", [bad], config)
-        assert (
-            browser_cookies.load_science_http_state(config)["user_agent"] == "Agent/2"
-        )
-    browser_cookies.save_science_http_state(
-        "Agent/4", [{**clearance, "expires": 200}], config
-    )
-    assert browser_cookies.load_science_http_state(config)["user_agent"] == "Agent/4"
-    monkeypatch.setattr(browser_cookies.time, "time", lambda: 201.0)
-    assert browser_cookies.load_science_http_state(config) is None
-    assert "clearance expired or invalid" in caplog.text
-    (tmp_path / browser_cookies.SCIENCE_HTTP_STATE_FILE).unlink()
-    caplog.clear()
-    assert browser_cookies.load_science_http_state(config) is None
-    assert "snapshot missing" in caplog.text
-
-
-def test_science_fast_path_skips_the_browser(monkeypatch, tmp_path):
     from scansci_pdf import _publisher_strategies_core as core
-    from scansci_pdf import browser_cookies
+    from scansci_pdf.publisher_strategies.science import ScienceStrategy
 
-    monkeypatch.setattr(
-        browser_cookies,
-        "load_science_http_state",
-        lambda config: {"user_agent": "Agent", "cookies": []},
-    )
-    monkeypatch.setattr(
-        browser_engine,
-        "create_tab",
-        lambda *a, **kw: pytest.fail("browser must not open"),
-    )
+    def unexpected(*args, **kwargs):
+        pytest.fail(
+            "must not create/navigate/close the supplied tab or open a Python HTTP session"
+        )
 
-    def http_download(doi, path, config, state):
-        path.write_bytes(_pdf_bytes())
+    tab = FakeScienceTab(
+        "https://www.science.org/doi/epdf/10.1126/first", scenario=scenario
+    )
+    monkeypatch.setattr(browser_engine, "_resolve_tab", lambda tab_id: tab)
+    monkeypatch.setattr(
+        browser_engine, "get_owned_tab_for_origin", lambda origin: "owned"
+    )
+    for method in ("create_tab", "navigate_tab", "close_tab"):
+        monkeypatch.setattr(browser_engine, method, unexpected)
+    monkeypatch.setattr(requests, "Session", unexpected)
+    downloads = []
+    fallback = []
+
+    def download(tab_id, url, path, cfg):
+        downloads.append((tab_id, url))
+        if scenario == "invalid_pdf":
+            return False  # The real browser_engine rejects invalid PDF bytes.
+        _science_test_pdf(path)
         return True
 
-    from scansci_pdf.publisher_strategies import science
+    def dom_download(doi, url, path, cfg, publisher):
+        fallback.append((doi, url, publisher))
+        _science_test_pdf(path)
+        return True
 
-    monkeypatch.setattr(science, "_science_http_download", http_download)
-    result = core.try_science_browser(
-        "10.1126/adh2586", tmp_path / "fast.pdf", {"browser_backend": "cdp"}
+    monkeypatch.setattr(browser_engine, "fetch_pdf_in_tab", download)
+    monkeypatch.setattr(core, "_browser_download_with_fallback", dom_download)
+    doi = "10.1126/next"
+    reader = f"https://www.science.org/doi/epdf/{doi}"
+    out = tmp_path / "paper.pdf"
+    result = ScienceStrategy().download_sync(doi, out, {"browser_backend": "cdp"})
+    assert result and out.is_file()
+    assert tab.requests == [reader]
+    if scenario == "success":
+        assert result["source"] == "Science(Fetch)" and not fallback
+    else:
+        assert result["source"] == "Science(Browser)" and fallback == [
+            (doi, reader, "Science")
+        ]
+    assert downloads == (
+        [("owned", f"/doi/pdfdirect/{doi}?hmac=fixture")]
+        if scenario in {"success", "invalid_pdf"}
+        else []
     )
-    assert result and result["success"]
-    assert result["source"] == "Science(Signed)"
+    assert "hmac=" not in caplog.text
 
 
-def test_science_without_clearance_still_uses_the_browser(monkeypatch, tmp_path):
+@pytest.mark.parametrize("has_tab", [False, True])
+def test_science_fetch_bootstraps_origin_once(monkeypatch, tmp_path, has_tab):
     from scansci_pdf import _publisher_strategies_core as core
-    from scansci_pdf import browser_cookies
+    from scansci_pdf.publisher_strategies.science import ScienceStrategy
 
-    monkeypatch.setattr(browser_cookies, "load_science_http_state", lambda config: None)
-    from scansci_pdf.publisher_strategies import science
+    tab = FakeScienceTab("about:blank")
+    nav, opened, closed = [], [], []
 
+    def create(url, config, *, timeout):
+        opened.append(url)
+        tab.url = url
+        return "tab"
+
+    def navigate(tab_id, url, config, *, timeout):
+        nav.append(url)
+        tab.url = url
+        return True
+
+    def fetch(tab_id, url, path, config):
+        _science_test_pdf(path)
+        return True
+
+    monkeypatch.setattr(browser_engine, "_resolve_tab", lambda tab_id: tab)
+    monkeypatch.setattr(browser_engine, "get_owned_tab_for_origin", lambda origin: None)
+    monkeypatch.setattr(browser_engine, "create_tab", create)
+    monkeypatch.setattr(browser_engine, "navigate_tab", navigate)
     monkeypatch.setattr(
-        science,
-        "_science_http_download",
-        lambda *a: pytest.fail("fast path must not run"),
+        browser_engine, "close_tab", lambda tab_id, cfg: closed.append(tab_id)
     )
-    monkeypatch.setattr(browser_engine, "is_available", lambda config: True)
-    monkeypatch.setattr(browser_engine, "create_tab", lambda *a, **kw: None)
-    assert (
-        core.try_science_browser(
-            "10.1126/adh2586", tmp_path / "slow.pdf", {"browser_backend": "cdp"}
-        )
-        is None
+    monkeypatch.setattr(browser_engine, "fetch_pdf_in_tab", fetch)
+    monkeypatch.setattr(
+        core,
+        "_browser_download_with_fallback",
+        lambda *a: pytest.fail("unexpected fallback"),
+    )
+    doi = "10.1126/next"
+    reader = f"https://www.science.org/doi/epdf/{doi}"
+    result = ScienceStrategy().download_sync(
+        doi,
+        tmp_path / "paper.pdf",
+        {"browser_backend": "cdp"},
+        tab_id="tab" if has_tab else None,
+    )
+    assert result and result["source"] == "Science(Fetch)"
+    assert tab.requests == [reader]
+    assert (nav, opened, closed) == (
+        ([reader], [], []) if has_tab else ([], [reader], ["tab"])
     )

@@ -1,0 +1,41 @@
+<!-- Trimmed Elsevier Article Retrieval XML: 10.1016/j.celrep.2023.112768. -->
+<ns0:full-text-retrieval-response xmlns:ns0="http://www.elsevier.com/xml/svapi/article/dtd" xmlns:ns1="http://www.elsevier.com/xml/xocs/dtd" xmlns:ns2="http://www.elsevier.com/xml/common/dtd">
+  <ns1:attachments>
+    <ns1:attachment>
+      <ns1:attachment-eid>1-s2.0-S2211124723007799-mmc2.xlsx</ns1:attachment-eid>
+      <ns1:file-basename>mmc2</ns1:file-basename>
+      <ns1:filename>mmc2.xlsx</ns1:filename>
+      <ns1:attachment-type>APPLICATION</ns1:attachment-type>
+    </ns1:attachment>
+    <ns1:attachment>
+      <ns1:attachment-eid>1-s2.0-S2211124723007799-mmc1.pdf</ns1:attachment-eid>
+      <ns1:file-basename>mmc1</ns1:file-basename>
+      <ns1:filename>mmc1.pdf</ns1:filename>
+      <ns1:attachment-type>APPLICATION</ns1:attachment-type>
+    </ns1:attachment>
+    <ns1:attachment>
+      <ns1:attachment-eid>1-s2.0-S2211124723007799-mmc3.pdf</ns1:attachment-eid>
+      <ns1:file-basename>mmc3</ns1:file-basename>
+      <ns1:filename>mmc3.pdf</ns1:filename>
+      <ns1:attachment-type>APPLICATION</ns1:attachment-type>
+    </ns1:attachment>
+  </ns1:attachments>
+  <ns2:display>
+    <ns2:e-component>
+      <ns2:label>Document S1. Figures S1–S7 and Table S1</ns2:label>
+      <ns2:link locator="mmc1" />
+    </ns2:e-component>
+  </ns2:display>
+  <ns2:display>
+    <ns2:e-component>
+      <ns2:label>Table S2. N and p values, related to Figures 1–6</ns2:label>
+      <ns2:link locator="mmc2" />
+    </ns2:e-component>
+  </ns2:display>
+  <ns2:display>
+    <ns2:e-component>
+      <ns2:label>Document S2. Article plus supplemental information</ns2:label>
+      <ns2:link locator="mmc3" />
+    </ns2:e-component>
+  </ns2:display>
+</ns0:full-text-retrieval-response>

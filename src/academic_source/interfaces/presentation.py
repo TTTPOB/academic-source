@@ -4,6 +4,7 @@ from collections.abc import Callable
 from typing import Any
 
 from academic_source.domain import AcquisitionResult, Artifact, Job
+from academic_source.services.scheduler import ParallelJob
 
 DownloadFactory = Callable[[str], dict[str, Any]]
 
@@ -14,7 +15,9 @@ def artifact_data(
     downloadable: bool = True,
     download_factory: DownloadFactory | None = None,
 ) -> dict[str, Any]:
-    data = artifact.model_dump(mode="json")
+    data = artifact.model_dump(
+        mode="json", exclude={"note"} if not artifact.note else None
+    )
     if downloadable:
         if download_factory is None:
             data["download_url"] = f"/api/v1/artifacts/{artifact.id}/content"
@@ -87,11 +90,17 @@ def job_data(
     if job.status == "queued" and job.queue_ahead is not None:
         data["queue"] = {"ahead": job.queue_ahead}
     elif job.status == "running":
-        data["progress"] = {
-            "current": min(job.completed + 1, job.total),
-            "total": job.total,
-            "identifier": job.current_identifier,
-        }
+        current = (
+            job.current_paper
+            if isinstance(job, ParallelJob)
+            else min(job.completed + 1, job.total)
+        )
+        if current is not None:
+            data["progress"] = {
+                "current": current,
+                "total": job.total,
+                "identifier": job.current_identifier,
+            }
     data["results"] = [
         _result_data(result, downloadable=downloadable, download_factory=factory)
         for result in job.results

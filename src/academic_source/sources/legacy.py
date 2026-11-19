@@ -72,7 +72,7 @@ def call_legacy(
     path: Path,
     config: dict[str, Any],
 ) -> ProviderOutcome:
-    # Only borrowed publisher browsers report a miss through this process-global slot.
+    # Only borrowed publisher browsers report a miss through a thread-local slot.
     diagnostics = None
     if label.endswith("Browser") and label != "InstitutionalBrowser":
         from scansci_pdf import _publisher_strategies_core

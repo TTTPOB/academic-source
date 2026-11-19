@@ -1,5 +1,11 @@
 """Oxford Academic publisher strategy."""
 
+from posixpath import basename
+from urllib.parse import unquote, urljoin, urlsplit
+
+from bs4 import BeautifulSoup
+
+from ..supplementary import SupplementaryItem
 from .base import BasePublisherStrategy
 from .registry import StrategyRegistry
 
@@ -25,3 +31,19 @@ class OxfordStrategy(BasePublisherStrategy):
     sso_url_patterns = ("/shibboleth", "/institutional")
     institution_input_selectors = ("#searchInstitution", "input[name='query']")
     institution_result_selectors = ("#searchInstitution",)
+
+    def supplementary_items(self, html: str, page_url: str) -> list[SupplementaryItem]:
+        soup = BeautifulSoup(html, "html.parser")
+        items = []
+        for holder in soup.select(".dataSuppLink"):
+            link = holder.select_one("a[href]")
+            if link is None:
+                continue
+            # The links are signed; the query string must reach the download intact.
+            url = urljoin(page_url, str(link["href"]))
+            label = link.get_text().strip()
+            # The text after the link names the file type, e.g. "- pdf file".
+            description = holder.get_text().strip().removeprefix(label).strip(" -\n")
+            filename = unquote(basename(urlsplit(url).path))
+            items.append(SupplementaryItem(url, label, description, filename))
+        return items

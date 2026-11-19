@@ -109,7 +109,7 @@ def create_mcp(application: Application, *, stdio: bool = False) -> FastMCP:
     async def acquire(
         request: AcquisitionRequest, ctx: Context, wait_seconds: float = 2.0
     ) -> dict[str, Any]:
-        """Submit one acquisition job and briefly wait for completion."""
+        """Submit an acquisition job; set supplementary_only to skip the main PDF."""
         factory = downloads(ctx)
 
         def submit_and_wait() -> dict[str, Any]:

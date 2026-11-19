@@ -139,6 +139,47 @@ def test_files_are_saved_only_when_asked(server, tmp_path, capsys):
     assert job["results"][0]["artifacts"][0]["path"] == str(saved[0])
 
 
+@pytest.mark.parametrize("uploaded", [False, True])
+def test_supp_over_loopback(server, tmp_path, monkeypatch, capsys, uploaded):
+    from scansci_pdf import supplementary as supp
+    from tests.academic_source.test_supplementary import save_one
+
+    url, source = server
+    seen = []
+
+    def fetch(doi, output_dir, config, **options):
+        seen.append(doi)
+        return supp.SupplementaryResult(pages_read=1, saved=[save_one(output_dir)])
+
+    monkeypatch.setattr(supp, "fetch_supplementary", fetch)
+    monkeypatch.setattr(
+        "scansci_pdf.md_export.pdf_to_markdown_detailed",
+        lambda *args, **kwargs: ("# Supplement", []),
+    )
+    doi = "10.1234/missing"
+    output = tmp_path / "supplements"
+    args = ["supp", doi, "--server", url, "--output", str(output), "--markdown"]
+    if uploaded:
+        listing = tmp_path / "dois.txt"
+        listing.write_text(f"{doi}\n10.1234/second\n", encoding="utf-8")
+        args[1] = str(listing)
+        args.append("--no-download")
+    code, out, err = run(capsys, *args)
+    job = json.loads(out)
+    assert code == 0 and job["status"] == "succeeded"
+    assert f"[{1}/{2 if uploaded else 1}] {doi} succeeded" in err
+    assert source.calls == []
+    assert seen == ([doi, "10.1234/second"] if uploaded else [doi])
+    original, markdown = job["results"][0]["artifacts"]
+    assert original["kind"] == "supplementary"
+    assert original["note"].startswith("Movie S1\nExact caption text.")
+    assert markdown["provenance"]["derived_from"] == original["id"]
+    assert output.exists() != uploaded
+    if not uploaded:
+        assert len(list(output.iterdir())) == 2
+        assert job["artifacts"][0]["path"] == original["path"]
+
+
 def test_a_title_without_a_doi_fails_with_an_instruction(server, monkeypatch, capsys):
     url, _source = server
     monkeypatch.setattr(

@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from threading import RLock
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -34,7 +35,10 @@ class CDPSetupError(RuntimeError):
 
 
 class OwnedTargets:
-    """Persist only exact target IDs created by this application."""
+    """Persist exact target IDs; recovery skips tabs owned by live connections."""
+
+    _lock = RLock()
+    _live: set[tuple[Path, str, str]] = set()
 
     def __init__(self, config: dict[str, Any], endpoint: str):
         self.path = Path(config.get("cache_dir") or DATA_DIR / "cache") / "cdp_owned_targets.json"
@@ -52,9 +56,15 @@ class OwnedTargets:
         temporary.replace(self.path)
 
     def recover(self, browser: Any) -> None:
+        with self._lock:
+            self._recover(browser)
+
+    def _recover(self, browser: Any) -> None:
         data = self.load()
         recorded = data.get(self.endpoint, [])
-        if not recorded:
+        active = [key for key in recorded if self._key(key) in self._live]
+        stale = [key for key in recorded if key not in active]
+        if not stale:
             return
         session = browser.new_browser_cdp_session()
         try:
@@ -62,8 +72,8 @@ class OwnedTargets:
                 target["targetId"]
                 for target in session.send("Target.getTargets")["targetInfos"]
             }
-            remaining = []
-            for target_id in recorded:
+            remaining = active
+            for target_id in stale:
                 if target_id not in present:
                     continue
                 try:
@@ -81,21 +91,36 @@ class OwnedTargets:
         finally:
             session.detach()
 
+    def _key(self, target_id: str) -> tuple[Path, str, str]:
+        return self.path, self.endpoint, target_id
+
+    def claim(self, target_id: str) -> None:
+        with self._lock:
+            self.add(target_id)
+            self._live.add(self._key(target_id))
+
+    def release(self, target_id: str) -> None:
+        with self._lock:
+            self._live.discard(self._key(target_id))
+
     def add(self, target_id: str) -> None:
-        data = self.load()
-        targets = data.setdefault(self.endpoint, [])
-        if target_id not in targets:
-            targets.append(target_id)
-            self.save(data)
+        with self._lock:
+            data = self.load()
+            targets = data.setdefault(self.endpoint, [])
+            if target_id not in targets:
+                targets.append(target_id)
+                self.save(data)
 
     def remove(self, target_id: str) -> None:
-        data = self.load()
-        targets = data.get(self.endpoint, [])
-        if target_id in targets:
-            targets.remove(target_id)
-            if not targets:
-                data.pop(self.endpoint, None)
-            self.save(data)
+        with self._lock:
+            self.release(target_id)
+            data = self.load()
+            targets = data.get(self.endpoint, [])
+            if target_id in targets:
+                targets.remove(target_id)
+                if not targets:
+                    data.pop(self.endpoint, None)
+                self.save(data)
 
 
 class BorrowedCDPSession:
@@ -118,7 +143,7 @@ class BorrowedCDPSession:
                 session = self.context.new_cdp_session(page)
                 try:
                     target_id = session.send("Target.getTargetInfo")["targetInfo"]["targetId"]
-                    self.registry.add(target_id)
+                    self.registry.claim(target_id)
                     self.target_ids[page] = target_id
                 finally:
                     session.detach()
@@ -138,12 +163,18 @@ class BorrowedCDPSession:
             self.registry.remove(target_id)
             self.target_ids.pop(page, None)
 
-    def close(self) -> None:
-        for page in tuple(self.pages):
+    def close_pages(self) -> None:
+        for page in self.pages | self.target_ids.keys():
             try:
                 self.close_page(page)
             except Exception:
-                pass
+                logger.warning("CDP owned tab cleanup failed; will retry on disconnect")
+
+    def close(self) -> None:
+        self.close_pages()
+        if self.registry is not None:
+            for target_id in self.target_ids.values():
+                self.registry.release(target_id)
         try:
             self.browser.close()  # CDP connection disconnects; Chrome stays running.
         finally:

@@ -9,11 +9,14 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from tempfile import NamedTemporaryFile
+from threading import Lock
 from typing import Any
 
 from .log import get_logger
 
 log = get_logger()
+_cookie_write_lock = Lock()
 
 # Publisher domains that benefit from institutional cookies
 PUBLISHER_DOMAINS = [
@@ -64,9 +67,21 @@ PUBLISHER_LOGIN_URLS = {
 }
 
 
-def _save_cookies_json(cookies: list[dict[str, Any]], output_path: Path) -> None:
+def _publish_cookie_snapshot(output_path: Path, text: str) -> None:
+    """Publish complete snapshots to readers while writers share the cache."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(cookies, indent=2, ensure_ascii=False), encoding="utf-8")
+    with NamedTemporaryFile(mode="w", encoding="utf-8", dir=output_path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(text)
+            stream.close()
+            temporary.replace(output_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def _save_cookies_json(cookies: list[dict[str, Any]], output_path: Path) -> None:
+    _publish_cookie_snapshot(output_path, json.dumps(cookies, indent=2, ensure_ascii=False))
 
 
 def cookies_to_netscape(cookies: list[dict[str, Any]]) -> str:
@@ -85,7 +100,7 @@ def cookies_to_netscape(cookies: list[dict[str, Any]]) -> str:
 
 
 def _save_cookies_netscape(cookies: list[dict[str, Any]], output_path: Path) -> None:
-    output_path.write_text(cookies_to_netscape(cookies), encoding="utf-8")
+    _publish_cookie_snapshot(output_path, cookies_to_netscape(cookies))
 
 
 def _is_publisher_cookie(cookie: dict[str, Any]) -> bool:
@@ -183,8 +198,9 @@ def extract_via_browser(
         save_cookies = publisher_cookies if publisher_cookies else all_cookies
 
         # Save
-        _save_cookies_json(save_cookies, cookie_file)
-        _save_cookies_netscape(save_cookies, netscape_file)
+        with _cookie_write_lock:
+            _save_cookies_json(save_cookies, cookie_file)
+            _save_cookies_netscape(save_cookies, netscape_file)
 
         # Import into CloakBrowser server if running
         browser_imported = 0
@@ -229,91 +245,6 @@ def load_saved_cookies(config: dict[str, Any]) -> list[dict[str, Any]]:
     return [c for c in cookies if _is_cookie_valid(c, now)]
 
 
-SCIENCE_HTTP_ORIGIN = "https://www.science.org/"
-SCIENCE_HTTP_STATE_FILE = "science_http_state.json"
-
-
-def _science_cookie_applies(cookie: dict[str, Any]) -> bool:
-    """Match the Science origin with cookie domain and path boundaries."""
-    domain = cookie.get("domain")
-    path = cookie.get("path", "/")
-    if not isinstance(cookie.get("name"), str) or not isinstance(cookie.get("value"), str):
-        return False
-    if not isinstance(domain, str) or not isinstance(path, str):
-        return False
-    host = "www.science.org"
-    bare = domain.lstrip(".").lower()
-    if not bare or not (host == bare or host.endswith("." + bare)):
-        return False
-    return path.startswith("/") and all(
-        target == path or target.startswith(path.rstrip("/") + "/")
-        for target in ("/doi/epdf/10.1126/example", "/doi/pdfdirect/10.1126/example")
-    )
-
-
-def save_science_http_state(
-    user_agent: str, cookies: list[dict[str, Any]], config: dict[str, Any]
-) -> None:
-    """Save the browser context's matched Science identity in one file."""
-    from .config import DATA_DIR
-
-    matched = [
-        c
-        for c in cookies
-        if isinstance(c, dict) and _science_cookie_applies(c) and _is_cookie_valid(c)
-    ]
-    if not isinstance(user_agent, str) or not user_agent.strip() or not any(
-        c.get("name") == "cf_clearance" and c.get("value") for c in matched
-    ):
-        return
-    path = Path(config.get("cache_dir", str(DATA_DIR / "cache"))) / SCIENCE_HTTP_STATE_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {"origin": SCIENCE_HTTP_ORIGIN, "user_agent": user_agent, "cookies": matched},
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-
-
-def load_science_http_state(config: dict[str, Any]) -> dict[str, Any] | None:
-    """Load only a paired, currently usable Science clearance identity."""
-    from .config import DATA_DIR
-
-    path = Path(config.get("cache_dir", str(DATA_DIR / "cache"))) / SCIENCE_HTTP_STATE_FILE
-    if not path.exists():
-        log.info("   [Science] HTTP fast path skipped: snapshot missing")
-        return None
-    try:
-        state = json.loads(path.read_text(encoding="utf-8"))
-        cookies = state["cookies"]
-        if (
-            state["origin"] != SCIENCE_HTTP_ORIGIN
-            or not isinstance(state["user_agent"], str)
-            or not state["user_agent"].strip()
-            or not isinstance(cookies, list)
-        ):
-            log.info("   [Science] HTTP fast path skipped: snapshot invalid")
-            return None
-        valid = [
-            c
-            for c in cookies
-            if isinstance(c, dict) and _science_cookie_applies(c) and _is_cookie_valid(c)
-        ]
-        if not any(c.get("name") == "cf_clearance" and c.get("value") for c in valid):
-            log.info("   [Science] HTTP fast path skipped: clearance expired or invalid")
-            return None
-        return {
-            "origin": SCIENCE_HTTP_ORIGIN,
-            "user_agent": state["user_agent"],
-            "cookies": valid,
-        }
-    except (OSError, ValueError, KeyError, TypeError):
-        log.info("   [Science] HTTP fast path skipped: snapshot invalid")
-        return None
-
-
 def _is_cookie_valid(cookie: dict[str, Any], now: float | None = None) -> bool:
     """Check expiry; Playwright uses -1 for session cookies."""
     expires = cookie.get("expires", 0)
@@ -346,24 +277,25 @@ def merge_cookies(new_cookies: list[dict[str, Any]], config: dict[str, Any]) -> 
     cookie_file = cache_dir / "publisher_cookies.json"
     netscape_file = cache_dir / "publisher_cookies.txt"
 
-    existing = load_saved_cookies(config)
+    with _cookie_write_lock:
+        existing = load_saved_cookies(config)
 
-    # Build index of existing cookies by (name, domain, path)
-    key = lambda c: (c.get("name", ""), c.get("domain", ""), c.get("path", "/"))
-    merged: dict[tuple, dict[str, Any]] = {key(c): c for c in existing}
+        # Build index of existing cookies by (name, domain, path)
+        key = lambda c: (c.get("name", ""), c.get("domain", ""), c.get("path", "/"))
+        merged: dict[tuple, dict[str, Any]] = {key(c): c for c in existing}
 
-    for c in new_cookies:
-        if not _is_publisher_cookie(c):
-            continue
-        merged[key(c)] = c
+        for c in new_cookies:
+            if not _is_publisher_cookie(c):
+                continue
+            merged[key(c)] = c
 
-    result = list(merged.values())
+        result = list(merged.values())
 
-    if result:
-        _save_cookies_json(result, cookie_file)
-        _save_cookies_netscape(result, netscape_file)
+        if result:
+            _save_cookies_json(result, cookie_file)
+            _save_cookies_netscape(result, netscape_file)
 
-    return result
+        return result
 
 
 def _is_doi(text: str) -> bool:

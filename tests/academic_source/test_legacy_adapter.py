@@ -61,9 +61,8 @@ def test_first_ranked_failure_wins(tmp_path):
     )
 
 
-def test_browser_reads_diagnostic_only_after_returning_none(monkeypatch, tmp_path):
-    monkeypatch.setattr(browser, "_last_error_type", "paywall")
-    monkeypatch.setattr(browser, "_last_error_action", "stale")
+def test_browser_reads_diagnostic_only_after_returning_none(tmp_path):
+    browser._set_error("paywall", "stale")
 
     def run(handler):
         return call_legacy(

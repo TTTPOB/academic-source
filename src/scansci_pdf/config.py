@@ -39,7 +39,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "cache_dir": str(DATA_DIR / "cache"),
     "network_proxy": "",
     # Optional Science-only egress override; empty string explicitly selects direct.
-    "science_http_proxy": None,
     "science_reader_grace": 5,
     "science_reader_timeout": 60,
     "proxy_pool": "",  # 逗号分隔的代理列表；非空时批量下载按代理轮换出口 IP

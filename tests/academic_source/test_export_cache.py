@@ -79,13 +79,23 @@ def test_partial_supplementary_import_does_not_cache_success(tmp_path, monkeypat
 
     calls = 0
 
-    def fetch(identifier, output_dir, config):
+    def fetch(identifier, output_dir, config, **options):
         nonlocal calls
         calls += 1
         output_dir.mkdir(parents=True, exist_ok=True)
         first, missing = output_dir / "first.txt", output_dir / "missing.txt"
         first.write_text("present")
-        return [str(first), str(missing)]
+        return supplementary.SupplementaryResult(
+            pages_read=1,
+            saved=[
+                supplementary.SavedSupplementary(
+                    path,
+                    supplementary.SupplementaryItem(f"https://example.org/{path.name}"),
+                    "https://example.org/paper",
+                )
+                for path in (first, missing)
+            ],
+        )
 
     monkeypatch.setattr(supplementary, "fetch_supplementary", fetch)
     app = Application(Settings(data_dir=tmp_path), source=RecordingSource())
@@ -95,7 +105,10 @@ def test_partial_supplementary_import_does_not_cache_success(tmp_path, monkeypat
         )
         for _ in range(2):
             result = app.wait(app.submit(request).id, 5).results[0]
-            assert "Supplementary unavailable; see server logs" in result.warnings
+            assert result.warnings == [
+                "Supplementary material via publisher: 2 found, 1 saved",
+                "Supplementary material not saved: Unlabeled file (https://example.org/missing.txt): could not store file",
+            ]
         assert calls == 2
     finally:
         app.close()
@@ -106,10 +119,10 @@ def test_supplementary_empty_response_retries(tmp_path, monkeypatch):
 
     calls = 0
 
-    def fetch(*args):
+    def fetch(*args, **options):
         nonlocal calls
         calls += 1
-        return []
+        return supplementary.SupplementaryResult(pages_read=1)
 
     monkeypatch.setattr(supplementary, "fetch_supplementary", fetch)
     app = Application(Settings(data_dir=tmp_path), source=RecordingSource())
@@ -119,7 +132,9 @@ def test_supplementary_empty_response_retries(tmp_path, monkeypatch):
         )
         for _ in range(2):
             result = app.wait(app.submit(request).id, 5).results[0]
-            assert "No supplementary material retrieved" in result.warnings
+            assert (
+                "No supplementary material found (0 found, 0 saved)" in result.warnings
+            )
         assert calls == 2
     finally:
         app.close()

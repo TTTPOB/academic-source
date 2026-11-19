@@ -24,6 +24,7 @@ from . import acm            # noqa: F401
 from . import aip            # noqa: F401
 from . import aps            # noqa: F401
 from . import asce           # noqa: F401
+from . import biorxiv        # noqa: F401
 from . import copernicus     # noqa: F401
 from . import elsevier       # noqa: F401
 from . import generic        # noqa: F401
@@ -31,6 +32,7 @@ from . import ieee           # noqa: F401
 from . import iop            # noqa: F401
 from . import nature         # noqa: F401
 from . import oxford         # noqa: F401
+from . import plos           # noqa: F401
 from . import royalsociety   # noqa: F401
 from . import rsc            # noqa: F401
 from . import sage           # noqa: F401

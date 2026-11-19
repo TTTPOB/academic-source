@@ -30,6 +30,9 @@ class Store:
             folder.mkdir(parents=True, exist_ok=True)
         self._database = self.root / "catalog.sqlite"
         with self._connect() as db:
+            # Status polling reads while workers write; in WAL mode neither waits
+            # for the other. The mode is stored in the database file.
+            db.execute("PRAGMA journal_mode=WAL")
             db.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS uploads (
@@ -98,6 +101,7 @@ class Store:
         source: str,
         url: str | None = None,
         derived_from: str | None = None,
+        note: str = "",
     ) -> Artifact:
         filename = _safe_filename(path.name)
         artifact_id = uuid4().hex
@@ -113,6 +117,7 @@ class Store:
                 filename=filename,
                 size=destination.stat().st_size,
                 identifier=identifier,
+                note=note,
                 provenance=Provenance(
                     source=source,
                     url=url,

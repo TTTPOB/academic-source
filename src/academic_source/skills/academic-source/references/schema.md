@@ -3,7 +3,7 @@
 Every command prints one JSON document on stdout. This file lists the fields an
 agent needs and gives a query for each common question.
 
-## Job document (`get`, `batch`, `status`, `download`, `cancel`)
+## Job document (`get`, `batch`, `supp`, `status`, `download`, `cancel`)
 
 ```text
 id            job id
@@ -24,7 +24,7 @@ identifier        the DOI or arXiv ID as submitted
 status            succeeded | failed
 cached            true when the server already had the paper      (succeeded only)
 elapsed_seconds   time spent on this paper
-warnings[]        conversion warnings, for example unreadable symbols
+warnings[]        retrieval and conversion warnings
 artifacts[]       files for this paper                             (succeeded only)
 reason            short failure code                               (failed only)
 message, action   present for failures the caller can act on
@@ -41,10 +41,12 @@ Common `reason` values: `network_error`, `rate_limited`, `auth_required`,
 kind                pdf | markdown | supplementary | bibtex
 identifier          the paper this file belongs to
 filename            server-side name, for example oa-1.pdf
-path                local file, present after get, batch or download saved it
+path                local file, present after get, batch, supp or download saved it
 size                bytes
-provenance.source   where the PDF came from, for example Unpaywall
-provenance.url      the URL it was fetched from
+note                optional free-form text, such as the publisher's title and caption
+provenance.source   where the file came from, for example Unpaywall
+provenance.url      the URL it was fetched from, when available
+provenance.derived_from  artifact id of the input PDF for a Markdown conversion
 ```
 
 Local files are named `<artifact id>-<filename>`. Use `path`; do not build the
@@ -62,6 +64,12 @@ Markdown path for each paper:
 
 ```bash
 jq -r '.results[] | select(.status=="succeeded") | .identifier as $d | .artifacts[] | select(.kind=="markdown") | "\($d)\t\(.path)"' job.json
+```
+
+Supplementary files with their notes:
+
+```bash
+jq -r '.artifacts[] | select(.kind=="supplementary") | "\(.path // .filename)\n\(.note // "")\n"' job.json
 ```
 
 Failed papers with reasons:
