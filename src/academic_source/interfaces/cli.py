@@ -233,7 +233,13 @@ def _serve(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    server = DrainServer(uvicorn.Config(app, host=args.host, port=args.port))
+    # An idle MCP stream never closes on its own; without a limit it holds the
+    # server in shutdown until the service manager kills it.
+    server = DrainServer(
+        uvicorn.Config(
+            app, host=args.host, port=args.port, timeout_graceful_shutdown=10
+        )
+    )
     with graceful_signals(lambda: setattr(server, "should_exit", True)):
         server.run()
     return 0
