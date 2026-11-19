@@ -66,7 +66,7 @@ attempt identifier=10.1126/science.aad8559 source=EuropePMC status=failed reason
 
 日志行不含 `message`，因为它可能引用下载地址。`serve` 命令把 `academic_source` 日志器设为 INFO 并输出到 stderr。
 
-OA 元数据查询成功时 `Attempt.status` 为 `discovered`，表示服务返回了这篇文献的记录。`Attempt.candidates` 是从该记录得到的候选地址数：0 表示有记录但没有开放版本。
+OA 元数据服务有回应时，`Attempt.status` 是 `located`（给出了候选地址）或 `no_open_copy`（服务没有这篇的开放版本），`Attempt.candidates` 是候选地址数。2026-11-19 之前保存的任务记录里，这两种情况都写作 `discovered`。
 
 `started_at`、`elapsed_seconds`、`seconds`、`candidates` 在旧任务记录里不存在，读取时为空，对外投影省略空值。
 

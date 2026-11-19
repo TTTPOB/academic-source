@@ -143,12 +143,17 @@ def test_oa_attempts_carry_duration_and_candidate_count_and_are_logged(
         result = oa.acquire_oa("10.1234/paper", tmp_path, {"email": "a@uni.edu"})
     assert isinstance(result, SourceFailure)
     assert all(item.seconds is not None for item in result.attempts)
-    discovered = {
-        item.source: item.candidates
+    answered = {
+        item.source: (item.status, item.candidates)
         for item in result.attempts
-        if item.status == "discovered"
+        if item.status in ("located", "no_open_copy")
     }
-    assert discovered == {"Unpaywall": 1, "OpenAlexOA": 0, "EuropePMC": 0, "PMC": 0}
+    assert answered == {
+        "Unpaywall": ("located", 1),
+        "OpenAlexOA": ("no_open_copy", 0),
+        "EuropePMC": ("no_open_copy", 0),
+        "PMC": ("no_open_copy", 0),
+    }
     downloads = [item for item in result.attempts if item.status == "failed"]
     assert [item.candidates for item in downloads] == [None]
     lines = [record.getMessage() for record in caplog.records]

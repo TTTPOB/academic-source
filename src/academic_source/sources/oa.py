@@ -355,7 +355,8 @@ def acquire_oa(
         else:
             attempt = Attempt(
                 source=step.source,
-                status="discovered",
+                # The service answered either way; only "located" has addresses to try.
+                status="located" if step.candidates else "no_open_copy",
                 candidates=len(step.candidates),
                 open_access=step.open_access,
             )
