@@ -293,3 +293,24 @@ def test_stopping_the_client_cancels_the_job_on_the_server(
         # Cancelling a finished job is a no-op that still reports it.
         code, out, _ = run(capsys, "cancel", job["id"], "--server", url)
         assert code == 0 and json.loads(out)["status"] == "cancelled"
+
+
+def test_progress_reports_each_paper_once_when_results_arrive_out_of_order(capsys):
+    from academic_source.client import Progress
+
+    def result(identifier):
+        return {"identifier": identifier, "status": "succeeded", "elapsed_seconds": 1.0}
+
+    progress = Progress()
+    job = {"id": "j", "status": "running", "total": 3, "results": [result("c")]}
+    progress.update(job)
+    progress.update({**job, "results": [result("b"), result("c")]})
+    progress.update({**job, "results": [result("a"), result("b"), result("c")]})
+    lines = [
+        line for line in capsys.readouterr().err.splitlines() if line.startswith("[")
+    ]
+    assert lines == [
+        "[1/3] c succeeded 1.0s",
+        "[2/3] b succeeded 1.0s",
+        "[3/3] a succeeded 1.0s",
+    ]

@@ -297,12 +297,11 @@ def fetch_supplementary(
             if not get_api_key(config.get("elsevier_api_key", "")):
                 continue
             fetched = _fetch_page(page_url, session, config, timeout)
-            if fetched is not None and process_page(*fetched, session, api=True):
-                if seen:
-                    result.route = "Elsevier API"
-                    break
-            else:
+            if fetched is None:
                 result.pages_unread += 1
+            elif process_page(*fetched, session, api=True) and seen:
+                result.route = "Elsevier API"
+                break
     return result
 
 

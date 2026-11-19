@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import sys
 import time
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -135,12 +136,19 @@ class Progress:
 
     def __init__(self) -> None:
         self._state = ""
-        self._reported = 0
+        self._reported: Counter[str] = Counter()
 
     def update(self, job: dict[str, Any]) -> None:
-        results = job.get("results", [])
-        for index, result in enumerate(results[self._reported :], self._reported + 1):
-            parts = [f"[{index}/{job.get('total', '?')}]", result["identifier"]]
+        # Papers finish out of order, so new results can appear anywhere in the list.
+        seen: Counter[str] = Counter()
+        for result in job.get("results", []):
+            identifier = result["identifier"]
+            seen[identifier] += 1
+            if seen[identifier] <= self._reported[identifier]:
+                continue
+            self._reported[identifier] += 1
+            done = sum(self._reported.values())
+            parts = [f"[{done}/{job.get('total', '?')}]", identifier]
             parts.append(result["status"])
             if result.get("reason"):
                 parts.append(result["reason"])
@@ -149,7 +157,6 @@ class Progress:
             if result.get("elapsed_seconds") is not None:
                 parts.append(f"{result['elapsed_seconds']:.1f}s")
             _say(" ".join(parts))
-        self._reported = len(results)
         state = job["status"]
         if state == "queued" and "queue" in job:
             state = f"queued: {job['queue']['ahead']} job(s) ahead"

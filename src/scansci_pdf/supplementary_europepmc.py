@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 import zlib
 from collections import defaultdict
 from collections.abc import Callable
@@ -29,6 +30,29 @@ _REST = "https://www.ebi.ac.uk/europepmc/webservices/rest"
 _XLINK_HREF = "{http://www.w3.org/1999/xlink}href"
 _Fetch = Callable[[str], Response]
 _CHUNK_BYTES = 64 * 1024
+_ATTEMPTS = 3
+_RETRY_DELAY = 2.0
+
+
+def _retrying(fetch: _Fetch) -> _Fetch:
+    """Europe PMC intermittently answers 503 or stalls; a retry usually succeeds."""
+
+    def call(url: str) -> Response:
+        for attempt in range(_ATTEMPTS):
+            last = attempt == _ATTEMPTS - 1
+            try:
+                response = fetch(url)
+            except RequestException:
+                if last:
+                    raise
+            else:
+                if last or response.status_code not in {500, 502, 503, 504}:
+                    return response
+                response.close()
+            time.sleep(_RETRY_DELAY * (attempt + 1))
+        raise AssertionError("unreachable")
+
+    return call
 
 
 def _resolve_pmcid(doi: str, fetch: _Fetch) -> str | None:
@@ -247,6 +271,7 @@ def fetch_europepmc_supplementary(
 ) -> SupplementaryResult:
     """Read JATS metadata and stream its supplementary bundle within the caller's limits."""
     result = SupplementaryResult(source="Europe PMC", route="Europe PMC")
+    fetch = _retrying(fetch)
     try:
         pmcid = _resolve_pmcid(doi.strip(), fetch)
     except (RequestException, RateLimited):

@@ -205,3 +205,28 @@ def test_europepmc_retains_item_metadata_on_zip_failure(tmp_path):
     assert not result.saved
     assert [entry.item.filename for entry in result.unsaved] == [HTML, PDF]
     assert all("could not fetch" in entry.reason for entry in result.unsaved)
+
+
+def test_transient_server_errors_are_retried(monkeypatch):
+    from requests import ConnectionError as RequestsConnectionError
+
+    from scansci_pdf import supplementary_europepmc as route
+
+    monkeypatch.setattr(route, "_RETRY_DELAY", 0)
+    outcomes = [503, RequestsConnectionError("stalled"), 200]
+
+    def fetch(url):
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        response = Response()
+        response.status_code = outcome
+        response.raw = BytesIO()
+        return response
+
+    assert route._retrying(fetch)("https://example.org").status_code == 200
+    assert outcomes == []
+
+    outcomes[:] = [503, 503, 503]
+    assert route._retrying(fetch)("https://example.org").status_code == 503
+    assert outcomes == []
