@@ -119,7 +119,7 @@ Elsevier API key 可用时，`10.1016/` 的 DOI 在 `fastest` 和 `legal_only` �
 | 标签 | 来源名，如 `Unpaywall`、`ElsevierBrowser`，出现在尝试记录和日志里 |
 | 类别 | `oa`、`publisher`、`grey`、`institutional`，策略按类别排序 |
 | 归属 | `owned`：在 `academic_source/sources/` 下的自有实现；`borrowed`：`scansci_pdf` 的函数经适配器接入 |
-| 后端 | `http` 或 `browser`。只有[逐函数核对过](HTTP_SOURCE_AUDIT.md)的来源标 `http` |
+| 后端 | `browser`：至少一条路径驱动浏览器（含 CDP 和 Camofox）；`http`：无浏览器，HTTP 经 `network.fetch`，也包含空实现；`http_ungated`：无浏览器，但至少一条 HTTP 路径绕过闸门。见[来源核对清单](HTTP_SOURCE_AUDIT.md) |
 | 站点键 | 这个来源主要访问的域名或服务名 |
 | 启用条件 | 依赖配置的来源在什么条件下参与，例如 OpenAlexContent 需要 API key |
 
@@ -137,7 +137,7 @@ Elsevier API key 可用时，`10.1016/` 的 DOI 在 `fastest` 和 `legal_only` �
 
 一个数据目录由一个运行实例使用，由 Application 的跨进程文件锁确保同一时间只有一个实例；锁在中断历史任务前取得，关闭时释放。SQLite 的 `catalog.sqlite` 保存上传、产物、任务、逐项结果和获取缓存；上传、产物和工作文件位于同一数据目录的独立子目录。SQLite 连接按操作创建，不在线程间共享。
 
-任务在进程内执行并持久化状态：`queued`、`running`、`succeeded`、`partial`、`failed`、`interrupted`。当前任务执行器只有一个工作线程，批量任务逐项保存进度；来源尝试按顺序执行，浏览器及会话操作仍在所属任务线程中执行。PDF 缓存按标识符、策略、来源与访问相关配置区分；精确排除输出目录、会话缓存目录、已禁用的来源并发参数及阅读器等待配置。可选导出逐项按 PDF 产物 ID、种类与相关配置缓存，成功项跨请求组合复用，失败项单独重试；返回缓存前检查登记文件仍存在。补充材料返回空列表不能证实永久没有材料，因此不缓存空结果。任务的顶层 artifacts 从逐篇结果派生，不在任务 JSON 重复保存；历史含此字段的 JSON 仍可读取。
+任务在进程内执行并持久化状态：`queued`、`running`、`succeeded`、`partial`、`failed`、`interrupted`。默认一次处理一篇论文；`paper_workers` 大于 1 时多篇并行，同一站点默认仍只有一个请求，规则见[论文并行调度](PARALLEL_SCHEDULING.md)。一篇论文内部的来源尝试始终按顺序执行。PDF 缓存按标识符、策略、来源与访问相关配置区分；精确排除输出目录、会话缓存目录、已禁用的来源并发参数及阅读器等待配置。可选导出逐项按 PDF 产物 ID、种类与相关配置缓存，成功项跨请求组合复用，失败项单独重试；返回缓存前检查登记文件仍存在。补充材料返回空列表不能证实永久没有材料，因此不缓存空结果。任务的顶层 artifacts 从逐篇结果派生，不在任务 JSON 重复保存；历史含此字段的 JSON 仍可读取。
 
 来源接口返回明确的成功/失败模型，准备与清理由任务工作线程执行，应用层不直接管理浏览器模块。应用正常关闭时停止接收任务并排空已接受的任务队列；不承诺强行终止第三方调用或恢复浏览器执行现场。启动时将上次遗留的未完成任务标为 `interrupted`，不自动续跑；已完成且仍存在的产物可以继续下载。停止服务后可用 `prune` 预览或 `prune --apply` 清理 30 天以上无任务引用的上传、失效缓存、无任务/有效缓存引用产物及空工作目录；保留任务记录与有效缓存引用，运行实例占用目录时拒绝清理。
 
@@ -147,11 +147,26 @@ CLI 独占进程信号处理：首个 SIGINT 或 SIGTERM 请求优雅排空，�
 
 本地 Patchright、CloakBrowser、Camoufox 后端由应用按配置启动并拥有浏览器/上下文生命周期。`cdp` 启动时在工作线程安排一次非致命预检（`browser_cdp_timeout` 默认 5 秒），只连接、检查默认 context 并断开，不开页、不清理；预检失败不阻断 HTTP 来源，也不缓存为永久状态。正式浏览器获取按需连接并借用 Chrome 已存在的默认持久 context。`cache_dir/cdp_owned_targets.json` 登记确切创建的 target，下一次正式连接恢复、只关闭登记页；历史未知归属页不清理，`SIGKILL` 落在建页与登记之间也无法保证回收。断开 CDP 客户端连接不关闭 Chrome、默认 context 或 profile；同步 Playwright 对象只在所属工作线程操作。普通 CDP 路径不适用 `browser_restart_every`，不建议设为非零；CDP forward 保留。
 
-Science HTTP 快路径使用 `cache_dir/science_http_state.json` 中成对的 UA/cookie 快照；不迁移旧全局 UA 缓存，下一次浏览器成功后重获。快照不保证站点接受。`science_http_proxy` 非空显式值优先；未设置或为 `null` 时，本地浏览器沿 `browser_static_proxy` → `network_proxy`，CDP 沿 `SCANSCI_PDF_PROXY` → `network_proxy`；空串表示直连，不假设外部 Chrome 出口。Science 阅读器普通加载宽限 `science_reader_grace` 默认 5 秒，遇到 challenge 的等待上限 `science_reader_timeout` 默认 60 秒。HTTP 快路径成功不需要 CDP 工作连接，但不排除应用启动时的预检。
+Science 的主 PDF 全程在已登录的标签页里取得：先用同源 `fetch` 读取阅读器页面并解析带签名的 PDF 地址，再把 PDF 流式取回；这一步失败时回退到导航阅读器页面的流程（[ADR 0011](adr/0011-science-in-tab-fetch.md)）。回退流程里，阅读器普通加载的宽限 `science_reader_grace` 默认 5 秒，遇到验证页的等待上限 `science_reader_timeout` 默认 60 秒。
 
 浏览器从已认证文章页发起同源 PDF 流请求，不依赖浏览器 PDF 阅读器或客户端与服务端共享文件路径。默认总时限为 120 秒、大小上限为 100 MiB，可通过 `source_config` 调整；超时、超限或内容校验失败会清理临时文件，不登记半成品。配置的 CDP 端点必须能从应用进程访问。具体外部 Chrome 参考部署和配置见 [专题文档](SOURCES_AND_CDP.md)；原生浏览器探针不等同于应用 HTTP/MCP 生产全链路验收。
 
 应用没有额外的浏览器 MCP 工具、远程桌面或浏览器管理接口。HTTP MCP 产物通过 HTTP 下载；独立 stdio 通过本机 `export_artifacts` 复制产物。
+
+## 补充材料
+
+补充材料按论文获取，每个文件登记为一个产物（[ADR 0012](adr/0012-supplementary-files.md)）。请求里带 `supplementary` 时在主 PDF 成功后获取；`supplementary_only` 只取补充材料，不要求主 PDF。
+
+查找顺序固定为两步，第一步拿到文件就不走第二步：
+
+1. **Europe PMC。** 用 DOI 查到 PMCID 后，从全文 XML 读取每个文件的标题和说明，再下载该文献的补充材料压缩包。全程是普通 HTTP，不需要浏览器。
+2. **出版商。** 各出版商策略给出要读的页面和页面上的文件清单：Nature 读文章页，Elsevier 走官方 API，PLOS 读文章页和同行评审页，bioRxiv/medRxiv 读补充材料标签页，Science 和 Oxford 读文章页。没有专门规则的出版商使用通用的链接识别。页面先用普通 HTTP 读，被拦截时改用浏览器。
+
+页面是用浏览器读到的时，同源文件在同一个标签页里用 `fetch` 下载，沿用页面的登录状态，不为每个文件另开页面；跨域文件（例如带签名的 CDN 地址）用携带浏览器 Cookie 的普通 HTTP 下载。页内下载失败时改用普通 HTTP 再试一次。
+
+每个文件按类型校验：空文件、HTML 错误页、被截断的文件、扩展名与内容不符的文件都不登记。单个文件上限 200 MB，一篇论文合计上限 600 MB，文件个数不限。没有保存的文件连同原因写进该篇结果的 `warnings`。
+
+产物的 `note` 是一段自由文本，按原样记录文件的标题、说明、原始文件名和来源页面，供读者判断每个文件是什么。补充材料中的 PDF 可以随 `markdown` 选项转成 Markdown。
 
 ## 范围与保证
 

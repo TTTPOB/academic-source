@@ -162,6 +162,15 @@ asource batch ./references.bib --output ./papers --markdown
 
 `get` 和 `batch` 另有 `--policy`、`--markdown`、`--supplementary`、`--bibtex`，以及 `--no-download`（等任务完成，但不把文件取回本机）。
 
+只要补充材料时用 `supp`，它不获取主 PDF：
+
+```bash
+asource supp 10.1234/example --output ./papers
+asource supp ./dois.txt --output ./papers --markdown
+```
+
+每个补充文件是一个产物，`note` 字段记录它的标题、说明和原始文件名。没能保存的文件及原因列在该篇的 `warnings` 里。单个文件上限 200 MB，一篇论文合计上限 600 MB。
+
 **输出。** 结果是 stdout 上的一份 JSON。文件存到本机后，JSON 里对应的产物多一个 `path` 字段，值是本机文件路径。`get` 和 `batch` 运行期间在 stderr 报告进度，状态变化时才打印一行：
 
 ```text
@@ -246,7 +255,7 @@ MCP 下载 URL 默认从当前请求的 scheme、host 与部署前缀生成，�
 
 也可直接提交 `{"identifiers":["10.1234/example"]}` 或内联文献列表 `{"text":"..."}`。三种输入只能选择一种。只支持 MCP 调用、不能发普通 HTTP 的客户端，可以使用内联文本；上传 XLSX 等二进制文件需 CLI 或 HTTP 客户端。
 
-可选请求字段：`markdown`、`supplementary`、`bibtex`。PDF 获取成功与附加转换是否成功分开报告。原生 JATS 与模型清洗尚未实现。
+可选请求字段：`markdown`、`supplementary`、`bibtex`；`supplementary_only` 只取补充材料，不取主 PDF。PDF 获取成功与附加转换是否成功分开报告。原生 JATS 与模型清洗尚未实现。
 
 MCP、HTTP 和 CLI 的任务结果使用同一精简投影：成功单篇保留产物、命中的 `artifacts[].provenance.source/url`、非空元数据和警告；不返回逐来源未命中或重复尝试的 `attempts`。失败单篇不会消失，即使任务为 `partial`，仍保留其 `identifier`、`status` 和一个汇总 `reason`；只有配置、鉴权、带明确 `action` 的阻塞、需检查服务日志的内部错误，以及 `unsupported`（标识符不是 DOI 或 arXiv 号）保留非空 `message/action`。转换/导出警告和任务级 `error` 不受影响。空的单篇 `artifacts/metadata/warnings/message/action/rate_limit` 字段省略；顶层 `artifacts` 始终为列表；HTTP API 使用受保护的永久地址，HTTP MCP 使用一次性绝对 URL，stdio 使用本地导出。
 
@@ -269,6 +278,8 @@ MCP、HTTP 和 CLI 的任务结果使用同一精简投影：成功单篇保留�
   }
 }
 ```
+
+默认一次处理一篇论文。要并行处理，在顶层加 `"paper_workers": 4`（同时处理的论文数），并保持 `scihub_enabled` 为 `false`；同一站点默认仍然一次只发一个请求。`browser_tabs` 和按站点的并发上限见[论文并行调度](docs/PARALLEL_SCHEDULING.md)。
 
 `auth_mode`（默认 `required`）和 `public_base_url`（默认空、使用当前请求地址）可写入普通配置。`Settings.load()` 中 `ACADEMIC_SOURCE_AUTH_MODE`、`ACADEMIC_SOURCE_PUBLIC_BASE_URL`、`ACADEMIC_SOURCE_API_KEYS` 优先于文件；显式空 keys 不会回退到文件密钥。程序式 `Settings(...)` 使用传入值，不被这三个环境变量隐式覆盖。服务密钥使用环境变量注入，避免明文写入普通配置。
 
