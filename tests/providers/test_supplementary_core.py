@@ -921,3 +921,18 @@ def test_elsevier_api_credentials_stay_on_the_official_origin(
         else [START, "https://publisher.example/final/supp_1.zip"]
     )
     assert result.route == ("Elsevier API" if key_present else "publisher")
+
+
+def test_placeholder_disposition_name_does_not_override_the_listed_filename():
+    from scansci_pdf import supplementary
+
+    item = supplementary.SupplementaryItem(
+        "https://api.elsevier.com/content/object/eid/1-s2.0-S0-mmc1.xlsx",
+        "Table S1",
+        "",
+        "mmc1.xlsx",
+    )
+    named, extension = supplementary._download_name(
+        item, item.url, 'attachment; filename="f.txt"'
+    )
+    assert (named.filename, extension) == ("mmc1.xlsx", ".xlsx")

@@ -591,6 +591,9 @@ def _download_name(
     if header:
         disposition["Content-Disposition"] = header
     header_name = disposition.get_filename()
+    if header_name == "f.txt":
+        # Elsevier's object API sends this placeholder for every file type.
+        header_name = None
     if header_name:
         header_name = header_name.replace("\\", "/").rsplit("/", 1)[-1]
     url_name = _url_filename(item.url) or _url_filename(final_url)
