@@ -283,13 +283,6 @@ def fetch_supplementary(
             return pmc
         if strategy is None:
             return pmc
-        result.pages_read = pmc.pages_read
-        result.pages_unread = pmc.pages_unread
-        result.unsaved.extend(pmc.unsaved)
-        result.route_warnings.extend(pmc.route_warnings)
-        result.route_warnings.append(
-            "Europe PMC did not provide supplementary files; tried the publisher route"
-        )
         for page_url in strategy.supplementary_pages(doi):
             if not _elsevier_origin(page_url):
                 visit(page_url, session, follow_tab=True)
@@ -302,6 +295,13 @@ def fetch_supplementary(
             elif process_page(*fetched, session, api=True) and seen:
                 result.route = "Elsevier API"
                 break
+    if not result.saved:
+        # Europe PMC's failures explain the outcome only when the publisher
+        # route did not produce the files either.
+        result.pages_read += pmc.pages_read
+        result.pages_unread += pmc.pages_unread
+        result.unsaved.extend(pmc.unsaved)
+        result.route_warnings.extend(pmc.route_warnings)
     return result
 
 

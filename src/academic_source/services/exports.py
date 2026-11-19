@@ -125,19 +125,28 @@ def add_supplementary(
         )
         result.warnings.append("Supplementary material unavailable; see server logs")
         return SupplementaryExport(failure="supplementary_unavailable")
-    result.warnings.extend(fetched.route_warnings)
-    if not fetched.pages_read:
-        result.warnings.append("Could not read any supplementary material pages")
-    elif fetched.pages_unread:
-        result.warnings.append(
-            f"Could not read {fetched.pages_unread} supplementary material page(s)"
-        )
+    # Warnings say only what changes the reader's next step: whether the list
+    # may be incomplete, and which files are missing and why.
+    incomplete = bool(fetched.pages_unread or fetched.route_warnings)
     found = len(fetched.saved) + len(fetched.unsaved)
     if not found:
         if not fetched.pages_read:
+            result.warnings.append(
+                "Could not read the pages that list supplementary material"
+            )
             return SupplementaryExport(failure="supplementary_page_unavailable")
-        result.warnings.append("No supplementary material found (0 found, 0 saved)")
+        result.warnings.append(
+            "No supplementary material found, but some pages could not be read; "
+            "a later attempt may find files"
+            if incomplete
+            else "No supplementary material found"
+        )
         return SupplementaryExport()
+    if fetched.saved and fetched.pages_unread:
+        result.warnings.append(
+            "Some pages that list supplementary material could not be read; "
+            "files may be missing"
+        )
 
     unsaved = list(fetched.unsaved)
     saved_count = 0
@@ -174,9 +183,6 @@ def add_supplementary(
         else:
             result.artifacts.append(artifact)
             saved_count += 1
-    result.warnings.append(
-        f"Supplementary material via {fetched.route}: {found} found, {saved_count} saved"
-    )
     for skipped in unsaved:
         label = (
             " ".join((skipped.item.label or skipped.item.filename).split())

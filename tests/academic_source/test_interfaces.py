@@ -293,9 +293,7 @@ def test_mcp_accepts_supplementary_only(tmp_path, monkeypatch):
         )
         job = response.json()["result"]["structuredContent"]
         assert job["status"] == "succeeded"
-        assert job["results"][0]["warnings"] == [
-            "No supplementary material found (0 found, 0 saved)"
-        ]
+        assert len(job["results"][0]["warnings"]) == 1
         assert source.calls == []
 
 

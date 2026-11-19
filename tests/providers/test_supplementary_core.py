@@ -234,10 +234,8 @@ def test_europepmc_runs_first_and_skips_publisher_when_it_delivers(
     else:
         assert calls == ["Europe PMC", START, publisher_file]
         assert saved.item.label == "Publisher supplement"
-        assert result.unsaved == [supp.UnsavedSupplementary(item, "HTTP 503")]
-        assert result.route_warnings == [
-            "Europe PMC did not provide supplementary files; tried the publisher route"
-        ]
+        # The publisher delivered, so Europe PMC's failure is not reported.
+        assert result.unsaved == [] and result.route_warnings == []
 
 
 def test_file_type_validation_for_publisher_downloads(tmp_path, monkeypatch, publisher):

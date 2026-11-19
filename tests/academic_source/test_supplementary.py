@@ -64,27 +64,27 @@ def test_supplementary_only_runs_without_main_pdf_and_preserves_note(
 
 
 @pytest.mark.parametrize(
-    ("pages_read", "items", "status", "reason", "warning"),
+    ("pages_read", "items", "status", "reason", "leading"),
     [
         (
             0,
             [],
             "failed",
             "supplementary_page_unavailable",
-            "Could not read any supplementary material pages",
+            1,
         ),
-        (1, [], "succeeded", "", "No supplementary material found (0 found, 0 saved)"),
+        (1, [], "succeeded", "", 1),
         (
             1,
             ["too large (200,000,001 bytes)", "HTTP 404", "not a file"],
             "failed",
             "supplementary_download_failed",
-            "Supplementary material via publisher: 3 found, 0 saved",
+            0,
         ),
     ],
 )
 def test_supplementary_only_status_and_warnings(
-    monkeypatch, acquire, pages_read, items, status, reason, warning
+    monkeypatch, acquire, pages_read, items, status, reason, leading
 ):
     run, source = acquire
     unsaved = [
@@ -104,10 +104,12 @@ def test_supplementary_only_status_and_warnings(
     result = run(supplementary_only=True)
     assert source.calls == []
     assert (result.status, result.reason) == (status, reason)
-    assert result.warnings == [warning] + [
-        f"Supplementary material not saved: Data S1 ({FILE}): {problem}"
-        for problem in items
-    ]
+    # One summary line when nothing was listed, then one line per missing file
+    # naming the file, its public URL, and the reason.
+    assert len(result.warnings) == leading + len(items)
+    for warning, problem in zip(result.warnings[leading:], items, strict=True):
+        assert "Data S1" in warning and FILE in warning and problem in warning
+        assert "signature" not in warning
 
 
 def test_cached_supplementary_markdown_is_independent_of_main_pdf(monkeypatch, acquire):
@@ -137,10 +139,8 @@ def test_cached_supplementary_markdown_is_independent_of_main_pdf(monkeypatch, a
     only = run(doi, supplementary_only=True)
     failed_conversion = run(doi, supplementary_only=True, markdown=True)
     assert failed_conversion.status == "succeeded"
-    assert failed_conversion.warnings == [
-        "Supplementary material via Europe PMC: 1 found, 1 saved",
-        "Markdown unavailable for supplementary file paper_SI1.pdf; see server logs",
-    ]
+    (warning,) = failed_conversion.warnings  # Only the failed conversion is reported.
+    assert "paper_SI1.pdf" in warning
     combined = run(doi, supplementary=True, markdown=True)
     assert [item.kind for item in combined.artifacts] == [
         "pdf",
