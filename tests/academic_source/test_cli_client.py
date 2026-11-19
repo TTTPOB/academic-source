@@ -127,12 +127,44 @@ def test_files_are_saved_only_when_asked(server, tmp_path, capsys):
     assert code == 0 and json.loads(out)["status"] == "succeeded"
     assert not output.exists()
 
-    code, _, _ = run(
+    code, out, _ = run(
         capsys, "download", job_id, "--server", url, "--output", str(output)
     )
     assert code == 0
     saved = list(output.glob("*.pdf"))
     assert len(saved) == 1 and saved[0].read_bytes() == source.content
+    # The printed job names the local file, so a caller never rebuilds its name.
+    job = json.loads(out)
+    assert job["artifacts"][0]["path"] == str(saved[0])
+    assert job["results"][0]["artifacts"][0]["path"] == str(saved[0])
+
+
+def test_a_title_without_a_doi_fails_with_an_instruction(server, monkeypatch, capsys):
+    url, _source = server
+    monkeypatch.setattr(
+        "scansci_pdf.resolver.resolve_title_to_doi", lambda title, config: None
+    )
+    code, out, _ = run(
+        capsys, "get", "A title nobody indexed", "--server", url, "--no-download"
+    )
+    assert code == 1
+    result = json.loads(out)["results"][0]
+    assert result["reason"] == "unsupported"
+    assert result["action"] == "provide_doi_or_arxiv_id"
+    assert "DOI" in result["message"]
+
+
+def test_setup_installs_the_bundled_skill(tmp_path, capsys):
+    stale = tmp_path / "academic-source" / "stale.md"
+    stale.parent.mkdir()
+    stale.write_text("old", encoding="utf-8")
+    code, out, _ = run(capsys, "setup", "skill", "--skill-dir", str(tmp_path))
+    assert code == 0
+    target = tmp_path / "academic-source"
+    assert out.strip() == str(target)
+    assert (target / "SKILL.md").read_text(encoding="utf-8").startswith("---\nname: ")
+    assert (target / "references" / "schema.md").is_file()
+    assert not stale.exists()
 
 
 def test_search_and_metadata_go_to_the_server(server, monkeypatch, capsys):

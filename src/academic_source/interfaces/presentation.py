@@ -49,6 +49,7 @@ def _result_data(
             "config_needed",
             "auth_required",
             "internal_error",
+            "unsupported",
         }
         if not actionable:
             data.pop("message")

@@ -151,6 +151,7 @@ export ACADEMIC_SOURCE_API_KEY_FILE="$HOME/.config/academic-source/api-key"
 | `asource status JOB_ID` | 查看任务状态 |
 | `asource download JOB_ID` | 把一个任务已完成的文件存到 `--output` |
 | `asource cancel JOB_ID` | 取消任务 |
+| `asource setup skill` | 安装随包附带的 agent skill |
 
 ```bash
 asource get '10.1234/example' --output ./papers --policy legal_only
@@ -161,7 +162,7 @@ asource batch ./references.bib --output ./papers --markdown
 
 `get` 和 `batch` 另有 `--policy`、`--markdown`、`--supplementary`、`--bibtex`，以及 `--no-download`（等任务完成，但不把文件取回本机）。
 
-**输出。** 结果是 stdout 上的一份 JSON。`get` 和 `batch` 运行期间在 stderr 报告进度，状态变化时才打印一行：
+**输出。** 结果是 stdout 上的一份 JSON。文件存到本机后，JSON 里对应的产物多一个 `path` 字段，值是本机文件路径。`get` 和 `batch` 运行期间在 stderr 报告进度，状态变化时才打印一行：
 
 ```text
 job 916d26e6… queued: 2 job(s) ahead
@@ -175,6 +176,17 @@ job 916d26e6… partial
 `get` 和 `batch` 在任务状态为 `succeeded` 时退出码为 0，否则为 1。
 
 **中断。** `get` 或 `batch` 运行中收到 Ctrl+C 或 SIGTERM 时，客户端先请求服务端取消这个任务，等任务停下后再退出，已完成的文件照常保存。取消的规则见[取消任务](#取消任务)。再按一次 Ctrl+C 立即退出，不再等待。
+
+### 给 agent 用的 skill
+
+包里附带一份 skill，告诉 agent 怎样用 `asource` 搜索和获取论文：
+
+```bash
+asource setup skill                      # 装到 $DSH_AGENTS_HOME/skills，没设时为 ~/.agents/skills
+asource setup skill --skill-dir ./.agents/skills
+```
+
+命令把 skill 复制到所选目录下的 `academic-source/`，并打印这个路径。目标目录已存在时整个替换，所以升级 `asource` 后重跑一次即可更新；不要在安装出来的副本里手工改动。skill 的源文件在 `src/academic_source/skills/academic-source/`。
 
 ### 不经过服务，在本进程里获取
 
@@ -236,7 +248,7 @@ MCP 下载 URL 默认从当前请求的 scheme、host 与部署前缀生成，�
 
 可选请求字段：`markdown`、`supplementary`、`bibtex`。PDF 获取成功与附加转换是否成功分开报告。原生 JATS 与模型清洗尚未实现。
 
-MCP、HTTP 和 CLI 的任务结果使用同一精简投影：成功单篇保留产物、命中的 `artifacts[].provenance.source/url`、非空元数据和警告；不返回逐来源未命中或重复尝试的 `attempts`。失败单篇不会消失，即使任务为 `partial`，仍保留其 `identifier`、`status` 和一个汇总 `reason`；只有配置、鉴权、带明确 `action` 的阻塞及需检查服务日志的内部错误保留非空 `message/action`。转换/导出警告和任务级 `error` 不受影响。空的单篇 `artifacts/metadata/warnings/message/action/rate_limit` 字段省略；顶层 `artifacts` 始终为列表；HTTP API 使用受保护的永久地址，HTTP MCP 使用一次性绝对 URL，stdio 使用本地导出。
+MCP、HTTP 和 CLI 的任务结果使用同一精简投影：成功单篇保留产物、命中的 `artifacts[].provenance.source/url`、非空元数据和警告；不返回逐来源未命中或重复尝试的 `attempts`。失败单篇不会消失，即使任务为 `partial`，仍保留其 `identifier`、`status` 和一个汇总 `reason`；只有配置、鉴权、带明确 `action` 的阻塞、需检查服务日志的内部错误，以及 `unsupported`（标识符不是 DOI 或 arXiv 号）保留非空 `message/action`。转换/导出警告和任务级 `error` 不受影响。空的单篇 `artifacts/metadata/warnings/message/action/rate_limit` 字段省略；顶层 `artifacts` 始终为列表；HTTP API 使用受保护的永久地址，HTTP MCP 使用一次性绝对 URL，stdio 使用本地导出。
 
 任务响应带有耗时和进度：`started_at` 是开始执行的时间，与 `created_at` 之差即排队时间；每篇结果的 `elapsed_seconds` 不含排队。任务为 `queued` 时 `queue.ahead` 给出前面的任务数，为 `running` 时 `progress` 给出正在处理第几篇及其标识符。每个来源各花了多久写在服务日志里，每次尝试一行，以 `attempt identifier=` 开头。
 

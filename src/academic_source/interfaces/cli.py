@@ -18,6 +18,7 @@ import httpx
 
 from academic_source import client as remote
 from academic_source.interfaces.signals import graceful_signals
+from academic_source.skill_setup import install_skill
 
 _SERVER_EXTRA = (
     "This command runs the service itself and needs the server extra: "
@@ -83,6 +84,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     cancel = commands.add_parser("cancel", help="Cancel a job on the server")
     cancel.add_argument("job_id")
+    setup = commands.add_parser("setup", help="Install agent integrations")
+    setup.add_argument("component", choices=["skill"])
+    setup.add_argument(
+        "--skill-dir",
+        type=Path,
+        help="Skills directory to install into "
+        "(default: $DSH_AGENTS_HOME/skills, else ~/.agents/skills)",
+    )
     for command in (get, batch, search, metadata, status, download, cancel):
         command.add_argument(
             "--server",
@@ -248,6 +257,9 @@ def main(argv: list[str] | None = None) -> int:
             return _mcp()
         if args.command == "prune":
             return _prune(args)
+        if args.command == "setup":
+            print(install_skill(args.skill_dir))
+            return 0
         if args.server:
             data = _remote(args)
         elif args.command in ("status", "download", "cancel"):

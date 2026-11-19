@@ -35,3 +35,4 @@
 | [0006：已知非开放获取时跳过纯 OA 来源](0006-skip-oa-only-sources.md) | Proposed | 已实现 |
 | [0007：取消任务时做完当前这篇再停](0007-job-cancellation.md) | Accepted | 已实现 |
 | [0008：默认安装是命令行客户端，服务端是可选项](0008-client-first-packaging.md) | Accepted | 已实现 |
+| [0009：agent skill 随包发布](0009-bundled-agent-skill.md) | Accepted | 已实现 |

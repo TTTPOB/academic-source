@@ -97,7 +97,13 @@ def save_path(output: Path, item: dict[str, Any]) -> Path:
 
 
 def download(client: httpx.Client, job: dict[str, Any], output: Path) -> list[Path]:
+    """Save every artifact and record its local `path` in the job data."""
     saved = []
+    per_paper = {
+        item["id"]: item
+        for result in job.get("results", [])
+        for item in result.get("artifacts", [])
+    }
     for item in job["artifacts"]:
         path = save_path(output, item)
         partial = path.with_suffix(path.suffix + ".part")
@@ -111,6 +117,9 @@ def download(client: httpx.Client, job: dict[str, Any], output: Path) -> list[Pa
         finally:
             partial.unlink(missing_ok=True)
         saved.append(path)
+        item["path"] = str(path)
+        if item["id"] in per_paper:
+            per_paper[item["id"]]["path"] = str(path)
     return saved
 
 

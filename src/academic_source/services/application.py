@@ -295,7 +295,11 @@ class Application:
                 identifier=identifier,
                 status="failed",
                 reason="unsupported",
-                message="Identifier could not be resolved",
+                message=(
+                    "Not a DOI or arXiv ID, and no DOI was found for it as a "
+                    "title. Find the DOI with search and submit that."
+                ),
+                action="provide_doi_or_arxiv_id",
             )
         key_data = {
             "identifier": identifier.lower(),
@@ -312,7 +316,10 @@ class Application:
         cached_pdf = self.store.get_cached(base_key)
         if not cached_pdf and not self.source.supports(identifier, request):
             return AcquisitionResult(
-                identifier=identifier, status="failed", reason="unsupported"
+                identifier=identifier,
+                status="failed",
+                reason="unsupported",
+                message="No source can fetch this identifier under the requested policy.",
             )
         parent = self.store.root / "work" / job_id
         parent.mkdir(parents=True, exist_ok=True)

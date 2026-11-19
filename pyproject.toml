@@ -51,6 +51,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 scansci_pdf = ["data/*.json"]
+academic_source = ["skills/**/*.md"]
 
 [dependency-groups]
 dev = ["pytest>=8.0", "ruff>=0.15", "pyrefly>=0.50", "pre-commit>=4.0"]
