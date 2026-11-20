@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import socket
 import subprocess
 import sys
+import threading
 from threading import Event
 
 import pytest
@@ -39,7 +41,31 @@ def run(capsys, *argv):
     return code, captured.out, captured.err
 
 
-def test_default_installation_runs_client_commands_without_server_packages():
+@pytest.fixture
+def closing_server():
+    """A local port that accepts and drops connections at once.
+
+    A closed port is not enough: with WSL mirrored networking, connecting to it
+    waits for the client timeout instead of being refused.
+    """
+    listener = socket.create_server(("127.0.0.1", 0))
+
+    def drop() -> None:
+        while True:
+            try:
+                connection, _ = listener.accept()
+            except OSError:
+                return
+            connection.close()
+
+    threading.Thread(target=drop, daemon=True).start()
+    yield f"http://127.0.0.1:{listener.getsockname()[1]}"
+    listener.close()
+
+
+def test_default_installation_runs_client_commands_without_server_packages(
+    closing_server,
+):
     blocked = [
         "pydantic",
         "fastapi",
@@ -63,7 +89,7 @@ sys.meta_path.insert(0, Block())
 from academic_source.interfaces import cli
 
 codes = [
-    cli.main(["search", "x", "--server", "http://127.0.0.1:1"]),
+    cli.main(["search", "x", "--server", {closing_server!r}]),
     cli.main(["serve"]),
     cli.main(["get", "10.1234/x"]),
 ]

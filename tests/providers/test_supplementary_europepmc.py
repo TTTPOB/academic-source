@@ -18,6 +18,13 @@ PDF = "supp_gkt922_nar-01762-r-2013-File006.pdf"
 HTML = "supp_42_2_1341__index.html"
 
 
+@pytest.fixture(autouse=True)
+def no_retry_delay(monkeypatch):
+    from scansci_pdf import supplementary_europepmc
+
+    monkeypatch.setattr(supplementary_europepmc, "_RETRY_DELAY", 0)
+
+
 def make_zip(members):
     data = BytesIO()
     with ZipFile(data, "w", ZIP_DEFLATED) as bundle:
