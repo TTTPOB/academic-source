@@ -492,7 +492,8 @@ class Application:
         # Supplements belong to the DOI, not to any particular main PDF.
         key = self._cache_key(
             {
-                "supplementary_version": 1,
+                # 2: warnings report only what changes the reader's next step.
+                "supplementary_version": 2,
                 "identifier": result.identifier.lower(),
                 "config": self._cache_config(config),
             }
