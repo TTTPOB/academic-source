@@ -106,13 +106,13 @@ curl -H @- \
 
 OpenAlex 拒绝 `filter` 时，它的错误说明会原样返回：HTTP 400、MCP 工具错误或命令行非零退出。
 
-默认排除审稿报告、补充材料、数据集、书籍、勘误和撤稿通知、会议摘要等非论文条目，以及已撤稿的论文；指定了 `type` 时不再排除类型，`filter` 里出现 `is_retracted` 时不再排除撤稿论文。`limit` 不超过 100 时只向 OpenAlex 取一页；更大时按 OpenAlex 的游标连续取页，直到够数或没有更多结果。不带 DOI 的条目和重复条目会被去掉，所以结果可能少于 `limit`。每条结果带完整摘要（OpenAlex 有的话）。
+默认排除审稿报告、补充材料、数据集、书籍、勘误和撤稿通知、会议摘要等非论文条目，以及已撤稿的论文；指定了 `type` 时不再排除类型，`filter` 里出现 `is_retracted` 时不再排除撤稿论文。`limit` 不超过 100 时只向 OpenAlex 取一页；更大时按 OpenAlex 的游标连续取页，直到够数或没有更多结果。不带 DOI 的条目和重复条目会被去掉，所以结果可能少于 `limit`。每条结果带完整摘要：先用 OpenAlex 的，没有的按 DOI 批量从 PubMed 补；PubMed 只收生物医学论文，其他领域可能仍缺。
 
 按期刊和日期筛选时注意 OpenAlex 数据的两个特点：有些期刊（例如 Cell）的 `publication_date` 只精确到月，一律记为当月 1 日，日期窗口应按整月划分；新闻、社论等常被标成 `article`，需要按标题或 DOI 前缀另行剔除。
 
 结果保留已有书目信息，以及可用的 OpenAlex `type`、`is_retracted` 和 ISO `publication_date`；缺失字段省略，false/0 仍保留。不承诺上游类型准确、覆盖所有编辑材料或消除短词/基因名称歧义。真实无命中返回 `[]`；OpenAlex 网络、HTTP 或 JSON 错误通过 HTTP 502 或 MCP 工具错误返回，不伪装无命中。
 
-HTTP `POST /api/v1/metadata` 与 MCP `get_metadata(id_type="doi", doi="...")` / `get_metadata(id_type="arxiv", arxiv_id="...")` 按必填的 `id_type` 选择元数据来源：`doi` 查询 **Crossref**（Crossref 没有摘要时，从 OpenAlex 补摘要），`arxiv` 查询 **arXiv 原生 API**。请求示例：
+HTTP `POST /api/v1/metadata` 与 MCP `get_metadata(id_type="doi", doi="...")` / `get_metadata(id_type="arxiv", arxiv_id="...")` 按必填的 `id_type` 选择元数据来源：`doi` 查询 **Crossref**（Crossref 没有摘要时，依次从 OpenAlex、PubMed 补），`arxiv` 查询 **arXiv 原生 API**。请求示例：
 
 ```json
 {"id_type":"doi","doi":"10.1234/example"}
