@@ -43,6 +43,5 @@
 - 单元测试：`limit` 超过 100 时依次带上 `*` 和返回的游标，够数或没有下一页时停止；摘要不截断；`metadata` 的摘要分别取自 Crossref（去掉标签和 Abstract 标题）、OpenAlex 和 PubMed；PubMed 按 DOI 匹配、保留段名、每 100 个一批，请求失败时返回空。
 - 线上（PubMed 补摘要之前）：按 Cell 的 ISSN 检索 2026-07-01 至 2026-11-30，`--limit 1000` 一次拿到 230 条，没有重复；最长的摘要约 1400 字符。`asource metadata --doi 10.1016/j.cell.2026.08.053` 返回完整摘要。
 
-部署后验证：
-
-- 同一 Cell 检索和 Nature 9–10 月检索，缺摘要的条目大多由 PubMed 补上；`asource metadata --doi 10.1038/s41586-026-11300-1` 返回摘要。
+- 线上（加入 PubMed 之后）：同一 Cell 检索 246 条中 237 条有摘要（之前约 56%），耗时 15 s；Nature 9–10 月 230 篇研究论文中 229 篇有摘要（之前 149 篇），连同新闻共 768 条，耗时 30 s；10 条的普通检索约 4 s。`asource metadata --doi 10.1038/s41586-026-11300-1` 返回 PubMed 的摘要。
+- PubMed 查询必须用 POST：100 个 DOI 拼成的 GET 地址超长，E-utilities 返回 414。
