@@ -390,7 +390,8 @@ class Application:
             # preprints stored for a published DOI.
             # 3: downloads are also checked for preprint stamps, which catches
             # OpenAlex's archived copies.
-            "pdf_version": 3,
+            # 4: the OA browser retry is gone; it had stored a brochure as a paper.
+            "pdf_version": 4,
             "identifier": identifier.lower(),
             "policy": request.policy,
             "config": self._cache_config(config),
