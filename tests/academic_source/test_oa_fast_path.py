@@ -237,7 +237,8 @@ def test_openalex_versioned_arxiv_pdf_stops_before_later_metadata(
         return Response(url, body=pdf_bytes())
 
     monkeypatch.setattr(oa, "fetch", fetch)
-    result = oa.acquire_oa("10.1234/paper", tmp_path, {})
+    # An arXiv DOI asks for the preprint, so it is not held back.
+    result = oa.acquire_oa("10.48550/arXiv.2401.01234", tmp_path, {})
     assert isinstance(result, SourceSuccess)
     assert result.source == "OpenAlexOA"
     assert result.url == pdf

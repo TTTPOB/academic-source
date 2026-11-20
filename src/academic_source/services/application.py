@@ -386,6 +386,9 @@ class Application:
             return result
 
         key_data = {
+            # 2: preprints are held back; about a fifth of earlier results were
+            # preprints stored for a published DOI.
+            "pdf_version": 2,
             "identifier": identifier.lower(),
             "policy": request.policy,
             "config": self._cache_config(config),
@@ -442,6 +445,7 @@ class Application:
                     attempts=outcome.attempts
                     or [Attempt(source=outcome.source, status="succeeded")],
                     metadata=self._public_metadata(outcome.metadata),
+                    warnings=list(outcome.warnings),
                 )
                 self.store.put_cached(base_key, result)
             cached_kinds = set()

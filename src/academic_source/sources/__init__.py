@@ -19,7 +19,7 @@ from .models import (
     failed_attempt,
     observe,
 )
-from .oa import acquire_oa
+from .oa import acquire_oa, acquire_preprint
 from .registry import FAST_POLICIES, PROVIDERS
 from .registry import plan as _plan
 
@@ -108,6 +108,7 @@ class LegacySources:
         attempts: list[Attempt] = []
         errors: list[SourceError] = []
         closed_access = False
+        preprints = []
         if not self._arxiv(identifier) and request.policy in FAST_POLICIES:
             config["_acquisition_attempted_urls"] = set()
             oa_result = (
@@ -122,6 +123,7 @@ class LegacySources:
             attempts.extend(oa_result.attempts)
             errors.extend(oa_result.errors)
             closed_access = oa_result.closed_access
+            preprints = oa_result.preprints
         if self._arxiv(identifier):
             handlers = [("arXiv", PROVIDERS["arXiv"].resolve())]
         else:
@@ -138,4 +140,11 @@ class LegacySources:
                 result.attempts = attempts
                 return result
             errors.append(result)
+        if preprints:
+            late = acquire_preprint(identifier, preprints, work_dir, config)
+            attempts.extend(late.attempts)
+            if isinstance(late, SourceSuccess):
+                late.attempts = attempts
+                return late
+            errors.extend(late.errors)
         return SourceFailure.summarize(errors, attempts)

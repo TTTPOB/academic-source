@@ -6,7 +6,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..domain import Attempt
 from .errors import (
@@ -16,6 +16,9 @@ from .errors import (
     UnknownLegacyError,
     present_error,
 )
+
+if TYPE_CHECKING:
+    from .oa_candidates import Candidate
 
 log = logging.getLogger("academic_source.sources")
 
@@ -45,6 +48,7 @@ class SourceSuccess:
     url: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     attempts: list[Attempt] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 ProviderOutcome = SourceSuccess | SourceError
@@ -71,6 +75,8 @@ class SourceFailure:
     # Unpaywall and OpenAlex both say "not open access" and nothing was located.
     closed_access: bool = False
     errors: list[SourceError] = field(default_factory=list, repr=False)
+    # Preprint locations held back until every other source has failed.
+    preprints: list[Candidate] = field(default_factory=list, repr=False)
 
     @classmethod
     def summarize(

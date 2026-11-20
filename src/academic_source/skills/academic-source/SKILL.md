@@ -72,6 +72,9 @@ Each supplementary file carries a `note` with its title and caption when
 available. Files taken from PMC are marked with their PMCID; they may differ
 from the publisher's version. Check `warnings` for missing files.
 
+A main PDF that is only a preprint carries a warning saying so; tell the user
+when you rely on such a PDF, since it is not the peer-reviewed version.
+
 ## Read the results
 
 Read the Markdown files the command saved. They are converted on the server; do

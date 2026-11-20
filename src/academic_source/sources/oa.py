@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -40,6 +40,7 @@ from .models import (
 from .oa_candidates import (
     Candidate,
     expand_candidate,
+    is_preprint_doi,
     openalex_candidates,
     unpaywall_candidates,
 )
@@ -371,6 +372,9 @@ def acquire_oa(
         attempts.append(observe(doi, attempt, started))
 
     blocked: list[Candidate] = []
+    preprints: list[Candidate] = []
+    # Asking for a preprint DOI means the preprint is the wanted version.
+    hold_preprints = not is_preprint_doi(doi)
     located = 0
     verdicts: dict[str, bool] = {}
     discovery = discover(doi, config)
@@ -402,6 +406,10 @@ def acquire_oa(
         for candidate, depth in queue:
             if urlsplit(candidate.url).scheme not in {"http", "https"}:
                 continue
+            if hold_preprints and candidate.preprint:
+                if candidate not in preprints:
+                    preprints.append(candidate)
+                continue
             if not claim_download_url(candidate.url, config):
                 continue
             path = work_dir / f"oa-{len(attempts)}.pdf"
@@ -416,7 +424,9 @@ def acquire_oa(
             # Follow declared PDF links once, not an unbounded HTML crawl.
             if depth == 0:
                 queue.extend(
-                    (item, 1) for link in links[:3] for item in expand_candidate(link)
+                    (replace(item, preprint=item.preprint or candidate.preprint), 1)
+                    for link in links[:3]
+                    for item in expand_candidate(link)
                 )
     if PROVIDERS["OACDP"].is_enabled(doi, config):
 
@@ -446,5 +456,42 @@ def acquire_oa(
         and verdicts.get("OpenAlexOA") is False
     )
     return SourceFailure(
-        reason="not_found", attempts=attempts, closed_access=closed, errors=errors
+        reason="not_found",
+        attempts=attempts,
+        closed_access=closed,
+        errors=errors,
+        preprints=preprints,
     )
+
+
+PREPRINT_WARNING = (
+    "Only a preprint could be fetched: this PDF is the version submitted "
+    "before peer review, not the published article."
+)
+
+
+def acquire_preprint(
+    doi: str, candidates: list[Candidate], work_dir: Path, config: dict[str, Any]
+) -> SourceSuccess | SourceFailure:
+    """Try the preprint locations held back by acquire_oa, as a last resort."""
+    attempts: list[Attempt] = []
+    errors: list[SourceError] = []
+    for candidate in candidates:
+        if not claim_download_url(candidate.url, config):
+            continue
+        started = time.monotonic()
+        result, _ = _http_candidate(
+            candidate, work_dir / f"preprint-{len(attempts)}.pdf", config
+        )
+        if isinstance(result, SourceSuccess):
+            attempts.append(
+                observe(
+                    doi, Attempt(source=candidate.source, status="succeeded"), started
+                )
+            )
+            result.attempts = attempts
+            result.warnings.append(PREPRINT_WARNING)
+            return result
+        errors.append(result)
+        attempts.append(observe(doi, failed_attempt(candidate.source, result), started))
+    return SourceFailure(reason="not_found", attempts=attempts, errors=errors)
