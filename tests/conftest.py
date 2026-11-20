@@ -9,3 +9,14 @@ if str(SRC) not in sys.path:
 import os
 
 os.environ.setdefault("SCANSCI_PROGRESS_BAR", "0")  # pytest 不得弹出 GUI
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def no_pubmed(request, monkeypatch):
+    """Search and metadata tests mock one upstream; PubMed stays out unless asked for."""
+    if request.node.get_closest_marker("pubmed") is None:
+        from scansci_pdf import pubmed
+
+        monkeypatch.setattr(pubmed, "pubmed_abstracts", lambda dois, config: {})

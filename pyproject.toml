@@ -68,3 +68,4 @@ project-includes = ["src/academic_source/**/*.py"]
 # Manual network/browser scripts in the repo root (e.g. test_download_pnas.py)
 # must not be collected as tests.
 testpaths = ["tests/academic_source", "tests/providers"]
+markers = ["pubmed: let the test reach the real PubMed abstract lookup"]

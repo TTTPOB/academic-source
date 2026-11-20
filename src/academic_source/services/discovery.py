@@ -97,8 +97,14 @@ def _doi_metadata(doi: str, config: dict[str, Any]) -> dict[str, Any]:
             "metadata_error": "Crossref returned an invalid or mismatched DOI record",
         }
     fields = _crossref_fields(message)
-    if "abstract" not in fields and (abstract := _openalex_abstract(doi, config)):
-        fields["abstract"] = abstract
+    if "abstract" not in fields:
+        from scansci_pdf.pubmed import pubmed_abstracts
+
+        abstract = _openalex_abstract(doi, config) or pubmed_abstracts(
+            [doi], config
+        ).get(doi.lower(), "")
+        if abstract:
+            fields["abstract"] = abstract
     return {**result, "metadata_status": "found", **fields}
 
 

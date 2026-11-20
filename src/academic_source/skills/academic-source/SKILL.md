@@ -29,8 +29,9 @@ asource metadata --arxiv 2401.01234
 
 `search` returns a JSON array; each entry has `doi`, `title`, `authors`, `year`,
 `publication_date`, `journal`, `cited_by_count`, `is_oa`, `type` and the full
-`abstract` when OpenAlex has one. `metadata` also returns the abstract when
-Crossref or OpenAlex has it. Narrow results with
+`abstract` (from OpenAlex, or PubMed when OpenAlex has none; papers outside
+biomedicine may still lack one). `metadata` also returns the abstract.
+Narrow results with
 `--journal` (ISSN or exact name), `--year`, `--type`, `--oa`,
 `--min-citations`, `--author` and `--in title`; anything else goes into
 `--filter` as an OpenAlex filter expression. Run `asource search --help` for the

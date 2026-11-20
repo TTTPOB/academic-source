@@ -426,9 +426,23 @@ def search_papers(
         exclude_non_papers=exclude_non_papers,
         exclude_retracted=exclude_retracted,
     )
+    _fill_abstracts(results, config or {})
     if results and author_match:
         results[0]["_author_match"] = author_match
     return results
+
+
+def _fill_abstracts(results: list[dict[str, Any]], config: dict[str, Any]) -> None:
+    """OpenAlex lacks abstracts for many publishers; PubMed has most biomedical ones."""
+    from .pubmed import pubmed_abstracts
+
+    missing = [item["doi"] for item in results if not item["abstract"]]
+    if not missing:
+        return
+    found = pubmed_abstracts(missing, config)
+    for item in results:
+        if not item["abstract"]:
+            item["abstract"] = found.get(item["doi"].lower(), "")
 
 
 def _search_pages(

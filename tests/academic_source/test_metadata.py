@@ -761,3 +761,20 @@ def test_metadata_abstract_comes_from_crossref_or_else_openalex(transport):
     transport(from_openalex)
     abstract = discovery.get_metadata("doi", {}, doi="10.1234/a")["abstract"]
     assert abstract.split() == [f"word{i}" for i in range(200)]
+
+
+def test_metadata_abstract_falls_back_to_pubmed(transport, monkeypatch):
+    from scansci_pdf import pubmed
+
+    def upstream(request):
+        if urlsplit(request.url).hostname == "api.openalex.org":
+            return response(request, {"abstract_inverted_index": None})
+        return response(request, {"message": {"DOI": "10.1234/a", "title": ["T"]}})
+
+    transport(upstream)
+    monkeypatch.setattr(
+        pubmed, "pubmed_abstracts", lambda dois, config: {"10.1234/a": "From PubMed."}
+    )
+    assert (
+        discovery.get_metadata("doi", {}, doi="10.1234/a")["abstract"] == "From PubMed."
+    )
