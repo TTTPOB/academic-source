@@ -44,3 +44,4 @@
 | [0015：预印本只在其他版本都拿不到时才用](0015-preprint-last-resort.md) | Accepted | 已实现 |
 | [0016：OA 快路径只用 HTTP，删除浏览器重试](0016-no-browser-in-oa-fast-path.md) | Accepted | 已实现 |
 | [0017：检索返回完整摘要并支持多页，缺的摘要从 PubMed 补](0017-full-abstracts-and-paging.md) | Accepted | 已实现 |
+| [0018：Unpaywall 和 OpenAlex 给出的 PMC 位置先从 PMC Cloud 取](0018-pmc-locations-bucket-first.md) | Accepted | 已实现 |

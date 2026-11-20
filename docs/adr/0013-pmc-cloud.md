@@ -26,7 +26,7 @@ NCBI 在 2026-02-12 宣布，从 2026 年 8 月起，PMC Cloud Service 成为 PM
 3. **正文 PDF**：
    - `PMC` 来源下载桶里的 `PMCID.N.pdf`。
    - `EuropePMC` 来源下载 Europe PMC 网站的 `europepmc.org/api/getPdf?pmcid=...`。作者手稿在桶里没有 PDF，这个接口有。
-   - OA 快路径对每篇只查一次 PMCID，先试桶里的 PDF，再试 getPdf。Unpaywall 和 OpenAlex 给出的 PMC 位置只换算成 getPdf，不再尝试 Europe PMC 文章页、`?pdf=render` 和 PMC 的 `/pdf/` 页面。
+   - OA 快路径对每篇只查一次 PMCID，先试桶里的 PDF，再试 getPdf。Unpaywall 和 OpenAlex 给出的 PMC 位置只换算成 getPdf（后改为先试桶，见 [ADR 0018](0018-pmc-locations-bucket-first.md)），不再尝试 Europe PMC 文章页、`?pdf=render` 和 PMC 的 `/pdf/` 页面。
 4. **补充材料第一步改为 PMC Cloud**，不再回退到 Europe PMC：
    - 从桶里读 JATS XML，取每个文件的标题和说明；
    - 跳过文章正文自己的插图；
