@@ -292,8 +292,11 @@ def fetch_supplementary(
             fetched = _fetch_page(page_url, session, config, timeout)
             if fetched is None:
                 result.pages_unread += 1
-            elif process_page(*fetched, session, api=True) and seen:
-                result.route = "Elsevier API"
+            elif process_page(*fetched, session, api=True):
+                # A full-text API response lists every attachment, so the
+                # website (usually behind a challenge) cannot add anything.
+                if seen:
+                    result.route = "Elsevier API"
                 break
     if not result.saved:
         # Europe PMC's failures explain the outcome only when the publisher

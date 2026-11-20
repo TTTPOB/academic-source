@@ -25,6 +25,9 @@ def _api_supplementary_items(xml: str) -> list[SupplementaryItem] | None:
         return None
     if root.tag.rsplit("}", 1)[-1] != "full-text-retrieval-response":
         return None
+    if root.find(".//{*}attachments") is None:
+        # Without entitlement the API returns metadata only; ask the website.
+        return None
 
     metadata: dict[str, tuple[str, str]] = {}
     for component in root.findall(".//{*}e-component"):

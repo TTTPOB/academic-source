@@ -230,3 +230,10 @@ def test_transient_server_errors_are_retried(monkeypatch):
     outcomes[:] = [503, 503, 503]
     assert route._retrying(fetch)("https://example.org").status_code == 503
     assert outcomes == []
+
+
+def test_europepmc_without_deposited_supplements_is_not_queried_further(tmp_path):
+    search = b'{"resultList":{"result":[{"doi":"10.1093/nar/gkt922","pmcid":"PMC3902920","hasSuppl":"N"}]}}'
+    result, calls = run_route(tmp_path, search=search)
+    assert len(calls) == 1
+    assert not result.pmcid and not result.route_warnings

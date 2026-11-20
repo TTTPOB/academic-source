@@ -1,4 +1,5 @@
 """Ensure tests import the repo's own source tree, not an installed copy."""
+
 import sys
 from pathlib import Path
 

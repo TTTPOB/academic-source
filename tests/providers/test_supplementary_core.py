@@ -934,3 +934,26 @@ def test_placeholder_disposition_name_does_not_override_the_listed_filename():
         item, item.url, 'attachment; filename="f.txt"'
     )
     assert (named.filename, extension) == ("mmc1.xlsx", ".xlsx")
+
+
+def test_elsevier_full_text_without_attachments_skips_the_website(
+    tmp_path, monkeypatch, publisher
+):
+    api_page = "https://api.elsevier.com/content/article/doi/10.1016/paper"
+    publisher.supplementary_pages = lambda doi: [api_page, START]
+    publisher.supplementary_items = lambda html, url: [] if url == api_page else None
+    monkeypatch.setenv("ELSEVIER_API_KEY", "fixture-api-key")
+    calls = []
+
+    def get(self, url, **options):
+        calls.append(url)
+        return Response(url, text="<full-text-retrieval-response/>")
+
+    monkeypatch.setattr(supp.requests.Session, "get", get)
+    monkeypatch.setattr(supp, "_fetch_europepmc", lambda *_: supp.SupplementaryResult())
+    result = supp.fetch_supplementary(
+        "10.1016/paper", tmp_path, {}, run_browser=lambda *_: pytest.fail("no browser")
+    )
+    assert calls == [api_page]
+    assert (result.pages_read, result.pages_unread) == (1, 0)
+    assert not result.saved and not result.unsaved

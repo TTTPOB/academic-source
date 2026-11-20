@@ -71,6 +71,9 @@ def _resolve_pmcid(doi: str, fetch: _Fetch) -> str | None:
             or str(record.get("doi", "")).casefold() != doi.casefold()
         ):
             continue
+        if record.get("hasSuppl") == "N":
+            # Europe PMC holds no supplementary files for this article.
+            return None
         pmcid = record.get("pmcid")
         if isinstance(pmcid, str) and re.fullmatch(r"PMC[0-9]+", pmcid):
             return pmcid

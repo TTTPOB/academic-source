@@ -139,3 +139,10 @@ def test_elsevier_web_page_uses_generic_discovery(host):
     assert (
         strategy.supplementary_items("<html></html>", f"https://{host}/article") is None
     )
+
+
+def test_elsevier_metadata_only_api_response_allows_web_fallback():
+    strategy = StrategyRegistry.get_for_doi(ELSEVIER_DOI)
+    assert strategy is not None
+    xml = "<full-text-retrieval-response><coredata/></full-text-retrieval-response>"
+    assert strategy.supplementary_items(xml, ELSEVIER_PAGE) is None
