@@ -388,6 +388,8 @@ class Application:
         key_data = {
             # 2: preprints are held back; about a fifth of earlier results were
             # preprints stored for a published DOI.
+            # 3: downloads are also checked for preprint stamps, which catches
+            # OpenAlex's archived copies.
             "pdf_version": 3,
             "identifier": identifier.lower(),
             "policy": request.policy,
