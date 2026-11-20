@@ -426,57 +426,6 @@ def test_cdp_errors_tabs_and_connections_belong_to_each_worker(tmp_path, monkeyp
     assert len(tabs_closed) == len(sessions_closed) == 2
 
 
-def test_oa_browser_fallback_uses_candidate_site_and_browser_thread(
-    tmp_path, monkeypatch
-):
-    from academic_source.sources import oa
-    from academic_source.sources.errors import Blocked
-    from academic_source.sources.models import SourceSuccess
-    from scansci_pdf import browser_backend
-
-    monkeypatch.setattr(browser_backend, "probe_cdp", lambda _config: None)
-    url = "https://repository.example/paper"
-    monkeypatch.setattr(
-        oa, "discover", lambda *_: iter([oa.Discovery("OA", [oa.Candidate(url, "OA")])])
-    )
-    events = []
-    content = paper_bytes()
-
-    def http(*_):
-        events.append(("http", get_ident()))
-        return Blocked(), []
-
-    def browser(candidate, path, _config):
-        events.append(("browser", get_ident()))
-        path.write_bytes(content)
-        return SourceSuccess(path=path, source=candidate.source, url=candidate.url)
-
-    monkeypatch.setattr(oa, "_http_candidate", http)
-    monkeypatch.setattr(oa, "_browser_candidate", browser)
-    app = _application(tmp_path, browser_backend="cdp")
-    assert app._lanes is not None
-    route = app._lanes.browser
-
-    def record_route(site, call):
-        events.append((site, get_ident()))
-        return route(site, call)
-
-    monkeypatch.setattr(app._lanes, "browser", record_route)
-    try:
-        job = app.submit(
-            AcquisitionRequest(identifiers=["10.1234/paper"], policy="oa_first")
-        )
-        assert app.wait(job.id, 5).status == "succeeded"
-        assert [label for label, _ in events] == [
-            "http",
-            "repository.example",
-            "browser",
-        ]
-        assert events[0][1] == events[1][1] != events[2][1]
-    finally:
-        app.close()
-
-
 class HeldSource(RecordingSource):
     def __init__(self, *blocked):
         super().__init__()

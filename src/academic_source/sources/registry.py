@@ -148,14 +148,6 @@ PROVIDERS: dict[str, ProviderSpec] = {
         backend="http",
         fast_path_backend="http",
     ),
-    "OACDP": ProviderSpec(
-        "oa",
-        "candidate-origin",
-        ownership="owned",
-        enabled=lambda _doi, config: (
-            str(config.get("browser_backend", "")).lower() == "cdp"
-        ),
-    ),
     "Crossref": ProviderSpec("publisher", "crossref", backend="http"),
     "NatureDirect": ProviderSpec("publisher", "nature.com", backend="http"),
     "PublisherDirect": ProviderSpec(

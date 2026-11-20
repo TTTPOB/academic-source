@@ -296,7 +296,7 @@ def test_duplicate_candidates_and_html_links_download_once_then_early_stop(
     assert any(item.reason == "no_pdf_found" for item in result.attempts)
 
 
-def test_html_challenge_waits_for_other_http_before_bounded_cdp(monkeypatch, tmp_path):
+def test_html_challenge_is_blocked_and_never_opens_a_browser(monkeypatch, tmp_path):
     from scansci_pdf import browser_engine
 
     events = []
@@ -318,45 +318,13 @@ def test_html_challenge_waits_for_other_http_before_bounded_cdp(monkeypatch, tmp
     monkeypatch.setattr(
         browser_engine,
         "create_tab",
-        lambda url, config, **kwargs: events.append("create") or "owned",
-    )
-    monkeypatch.setattr(browser_engine, "navigate_tab", lambda *args, **kwargs: True)
-    monkeypatch.setattr(browser_engine, "get_snapshot", lambda *args: {})
-    monkeypatch.setattr(
-        browser_engine,
-        "fetch_pdf_in_tab",
-        lambda tab, url, path, config: events.append("browser:" + url) or False,
-    )
-    monkeypatch.setattr(
-        browser_engine, "close_tab", lambda tab, config: events.append("close:" + tab)
+        lambda *args, **kwargs: pytest.fail("the fast path opened a browser"),
     )
     result = oa.acquire_oa("10.1234/paper", tmp_path, {"browser_backend": "cdp"})
     assert isinstance(result, SourceFailure)
-    assert events[:3] == urls
-    assert events.count("create") == 2
-    assert events.count("close:owned") == 2
+    assert events == urls
     assert all(
         item.reason == "blocked" for item in result.attempts if item.status == "failed"
-    )
-
-
-def test_http_success_never_opens_cdp(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        oa,
-        "discover",
-        lambda *args: iter(
-            [oa.Discovery("OA", [Candidate("https://repo.org/file", "OA")])]
-        ),
-    )
-    monkeypatch.setattr(
-        oa, "fetch", lambda url, *args, **kwargs: Response(url, body=pdf_bytes())
-    )
-    monkeypatch.setattr(
-        oa, "_browser_candidate", lambda *args: pytest.fail("CDP opened")
-    )
-    assert isinstance(
-        oa.acquire_oa("10.1234/paper", tmp_path, {"browser_backend": "cdp"}),
-        SourceSuccess,
     )
 
 
@@ -471,45 +439,6 @@ def test_dedupe_scope_ends_with_each_acquisition(monkeypatch, tmp_path):
     assert "_acquisition_attempted_urls" not in config
 
 
-def test_cdp_can_retry_same_http_url_and_keeps_query_and_owned_tab(
-    monkeypatch, tmp_path
-):
-    from scansci_pdf import browser_engine
-
-    url = "https://repo.org/api/getPdf?pmcid=PMC134036&token=keep-this"
-    events = []
-    monkeypatch.setattr(
-        oa,
-        "discover",
-        lambda *args: iter([oa.Discovery("OA", [Candidate(url, "OA")])]),
-    )
-    monkeypatch.setattr(oa, "fetch", lambda *args, **kwargs: Response(url, status=403))
-    monkeypatch.setattr(browser_engine, "create_tab", lambda *args, **kwargs: "owned")
-    monkeypatch.setattr(browser_engine, "navigate_tab", lambda *args, **kwargs: True)
-    monkeypatch.setattr(browser_engine, "get_snapshot", lambda *args: {})
-
-    def fetch_pdf(tab, target, path, config):
-        assert target == url
-        assert tab == "owned"
-        assert config["browser_pdf_timeout"] == 20
-        path.write_bytes(pdf_bytes())
-        return True
-
-    monkeypatch.setattr(browser_engine, "fetch_pdf_in_tab", fetch_pdf)
-    monkeypatch.setattr(
-        browser_engine, "close_tab", lambda tab, config: events.append(tab)
-    )
-    monkeypatch.setattr(
-        browser_engine,
-        "close_shared_browser",
-        lambda *args: pytest.fail("Browser was closed"),
-    )
-    result = oa.acquire_oa("10.1234/paper", tmp_path, {"browser_backend": "cdp"})
-    assert isinstance(result, SourceSuccess)
-    assert result.url == url
-    assert events == ["owned"]
-
-
 def test_truncated_pdf_is_not_a_success(monkeypatch, tmp_path):
     monkeypatch.setattr(
         oa,
@@ -553,75 +482,6 @@ def test_openalex_content_reuses_metadata_without_another_query(monkeypatch, tmp
     assert result.source == "OpenAlexContent"
     # OpenAlex metadata, the PMC lookup, then the archived copy: no second OpenAlex query.
     assert len(visited) == 3
-
-
-@pytest.mark.parametrize("source", ["Unpaywall", "OpenAlexOA"])
-def test_cdp_navigates_metadata_landing_and_reads_real_article_snapshot(
-    monkeypatch, tmp_path, source
-):
-    from academic_source.sources.oa_candidates import (
-        openalex_candidates,
-        unpaywall_candidates,
-    )
-    from scansci_pdf import browser_engine
-
-    landing = "https://repository.example/articles/42"
-    pdf = "https://repository.example/download?token=article-only"
-    if source == "Unpaywall":
-        candidates = unpaywall_candidates(
-            {"best_oa_location": {"url_for_landing_page": landing}}
-        )
-    else:
-        candidates = openalex_candidates(
-            {"locations": [{"is_oa": True, "landing_page_url": landing}]}
-        )
-
-    navigated = []
-    closed = []
-
-    class Page:
-        url = "about:blank"
-
-        def goto(self, url, **kwargs):
-            self.url = url
-            navigated.append(url)
-
-        def content(self):
-            if self.url == landing:
-                return '<html><meta name="citation_pdf_url" content="/download?token=article-only"></html>'
-            return "<html>Repository homepage</html>"
-
-    page = Page()
-    monkeypatch.setattr(
-        oa,
-        "discover",
-        lambda *args: iter([oa.Discovery(source, candidates)]),
-    )
-    monkeypatch.setattr(
-        oa,
-        "fetch",
-        lambda *args, **kwargs: Response(landing, body=b"<html>reCAPTCHA</html>"),
-    )
-    monkeypatch.setattr(browser_engine, "create_tab", lambda *args, **kwargs: "owned")
-    monkeypatch.setattr(
-        browser_engine, "_resolve_tab", lambda tab: page if tab == "owned" else None
-    )
-    monkeypatch.setattr(
-        browser_engine, "close_tab", lambda tab, config: closed.append(tab)
-    )
-
-    def fetch_pdf(tab, url, path, config):
-        if url != pdf or page.url != landing:
-            return False
-        path.write_bytes(pdf_bytes())
-        return True
-
-    monkeypatch.setattr(browser_engine, "fetch_pdf_in_tab", fetch_pdf)
-    result = oa.acquire_oa("10.1234/paper", tmp_path, {"browser_backend": "cdp"})
-    assert isinstance(result, SourceSuccess)
-    assert result.url == pdf
-    assert landing in navigated
-    assert set(closed) == {"owned"}
 
 
 def test_landing_pdf_link_decodes_html_entities_without_changing_signed_query(
@@ -935,99 +795,3 @@ def test_legacy_openalex_lookup_limit_reaches_safe_source_failure(
     assert "retry at" in outcome.message
     assert key not in outcome.message + str(outcome.attempts)
     assert "private raw body" not in outcome.message + str(outcome.attempts)
-
-
-def test_content_cdp_success_keeps_credentials_out_of_public_and_cached_provenance(
-    monkeypatch, tmp_path
-):
-    import json
-    from urllib.parse import urlencode
-
-    from fastapi.testclient import TestClient
-
-    from academic_source.app import create_app
-    from academic_source.services.application import Application
-    from academic_source.settings import Settings
-    from scansci_pdf import browser_backend, browser_engine
-    from tests.providers.test_cdp_browser import FakePage
-
-    key = "fake-cdp-key+with/reserved="
-    encoded_key = urlencode({"api_key": key}).split("=", 1)[1]
-    public_url = "https://content.openalex.org/works/W42.pdf"
-    pdf = pdf_bytes()
-
-    class ContentPage(FakePage):
-        def goto(self, url, **kwargs):
-            self.url = url
-
-        def content(self):
-            return "<html>OpenAlex Content</html>"
-
-        def evaluate_handle(self, script, argument):
-            self.result_url = argument["url"]
-            assert parse_qs(urlsplit(self.result_url).query)["api_key"] == [key]
-            return super().evaluate_handle(script, argument)
-
-    page = ContentPage()
-    page.payload = pdf
-
-    def send(_adapter, request, **kwargs):
-        parsed = urlsplit(request.url)
-        result = requests.Response()
-        result.request = request
-        result.url = request.url
-        result._content_consumed = True
-        if parsed.hostname == "api.openalex.org":
-            result.status_code = 200
-            result._content = json.dumps(
-                {"id": "https://openalex.org/W42", "open_access": {"is_oa": True}}
-            ).encode()
-        else:
-            result.status_code = (
-                403 if parsed.hostname == "content.openalex.org" else 404
-            )
-            if parsed.hostname == "content.openalex.org":
-                assert parse_qs(parsed.query)["api_key"] == [key]
-            result._content = b"{}"
-        return result
-
-    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
-    monkeypatch.setattr(browser_backend, "probe_cdp", lambda config: None)
-    monkeypatch.setattr(browser_engine, "create_tab", lambda *args, **kwargs: "owned")
-    monkeypatch.setattr(
-        browser_engine, "_resolve_tab", lambda tab: page if tab == "owned" else None
-    )
-    monkeypatch.setattr(
-        browser_engine, "close_tab", lambda *args, **kwargs: page.close()
-    )
-    application = Application(
-        Settings(
-            data_dir=tmp_path,
-            auth_mode="off",
-            source_config={"browser_backend": "cdp", "openalex_api_key": key},
-        )
-    )
-    with TestClient(create_app(application=application)) as client:
-        request = AcquisitionRequest(
-            identifiers=["10.1234/content"], policy="legal_only"
-        )
-        job = application.wait(application.submit(request).id, 10)
-        assert job.status == "succeeded"
-        artifact = job.results[0].artifacts[0]
-        assert artifact.provenance.source == "OpenAlexContent"
-        assert artifact.provenance.url == public_url
-        assert application.store.artifact_path(artifact.id).read_bytes() == pdf
-        assert any(
-            item.source == "OACDP" and item.status == "succeeded"
-            for item in job.results[0].attempts
-        )
-        http = client.get(f"/api/v1/jobs/{job.id}")
-        assert http.json()["artifacts"][0]["provenance"]["url"] == public_url
-        assert key not in http.text and encoded_key not in http.text
-        persisted = application.job(job.id).model_dump_json()
-        assert key not in persisted and encoded_key not in persisted
-        cached = application.wait(application.submit(request).id, 10)
-        assert cached.results[0].cached is True
-        assert cached.results[0].artifacts[0].provenance == artifact.provenance
-        cached_record = application.job(cached.id).model_dump_json()
-        assert key not in cached_record and encoded_key not in cached_record

@@ -118,13 +118,7 @@ class LegacySources:
         hold_preprints = not self._arxiv(identifier) and not is_preprint_doi(identifier)
         if not self._arxiv(identifier) and request.policy in FAST_POLICIES:
             config["_acquisition_attempted_urls"] = set()
-            oa_result = (
-                acquire_oa(
-                    identifier, work_dir, config, run_browser=self._lanes.browser
-                )
-                if self._lanes is not None
-                else acquire_oa(identifier, work_dir, config)
-            )
+            oa_result = acquire_oa(identifier, work_dir, config)
             if isinstance(oa_result, SourceSuccess):
                 return oa_result
             attempts.extend(oa_result.attempts)

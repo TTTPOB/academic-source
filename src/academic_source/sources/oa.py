@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -44,7 +44,6 @@ from .oa_candidates import (
     openalex_candidates,
     unpaywall_candidates,
 )
-from .registry import PROVIDERS
 
 # Metadata lookups return small JSON; a slow one should not hold the whole chain.
 OA_METADATA_READ_TIMEOUT = 8
@@ -304,65 +303,10 @@ def _http_candidate(
             response.close()
 
 
-def _browser_candidate(
-    candidate: Candidate, path: Path, config: dict[str, Any]
-) -> ProviderOutcome:
-    """Borrow a CDP tab for one bounded, same-origin retry; never restart the browser."""
-    from scansci_pdf import browser_engine as browser
-
-    tab = None
-    browser_config = dict(config)
-    browser_config["browser_pdf_timeout"] = min(
-        float(config.get("browser_pdf_timeout", 120)), 20
-    )
-    origin = urlsplit(candidate.url)
-    landing = candidate.landing_url
-    if not landing or urlsplit(landing).netloc != origin.netloc:
-        landing = f"{origin.scheme}://{origin.netloc}/"
-    try:
-        tab = browser.create_tab("about:blank", browser_config, timeout=10)
-        if not tab or not browser.navigate_tab(
-            tab, landing, browser_config, timeout=10
-        ):
-            return NetworkError(
-                message="CDP candidate navigation failed",
-                action="check_browser_session",
-            )
-        snapshot = browser.get_snapshot(tab, browser_config)
-        links = _html_candidates(
-            snapshot.get("snapshot", ""),
-            snapshot.get("url") or landing,
-            candidate.source,
-        )
-        for url in dict.fromkeys([candidate.url, *(item.url for item in links[:1])]):
-            if browser.fetch_pdf_in_tab(
-                tab, url, path, browser_config
-            ) and is_readable_pdf(path):
-                return SourceSuccess(
-                    path=path,
-                    source=candidate.source,
-                    url=_public_candidate_url(candidate, url),
-                )
-        return Blocked(
-            message="CDP did not return a readable PDF", action="check_browser_session"
-        )
-    except Exception as exc:  # noqa: BLE001 - optional CDP failure must preserve HTTP fallback
-        return NetworkError(
-            message=f"CDP unavailable: {type(exc).__name__}",
-            action="check_browser_session",
-        )
-    finally:
-        if tab:
-            browser.close_tab(tab, browser_config)
-
-
 def acquire_oa(
     doi: str,
     work_dir: Path,
     config: dict[str, Any],
-    *,
-    run_browser: Callable[[str, Callable[[], ProviderOutcome]], ProviderOutcome]
-    | None = None,
 ) -> SourceSuccess | SourceFailure:
     config = dict(config)
     config.setdefault("_acquisition_attempted_urls", set())
@@ -377,7 +321,6 @@ def acquire_oa(
             attempt = failed_attempt(source, result)
         attempts.append(observe(doi, attempt, started))
 
-    blocked: list[Candidate] = []
     preprints: list[Candidate] = []
     held: SourceSuccess | None = None
     # Asking for a preprint DOI means the preprint is the wanted version.
@@ -438,8 +381,6 @@ def acquire_oa(
             if isinstance(result, SourceSuccess):
                 result.attempts = attempts
                 return result
-            if isinstance(result, Blocked):
-                blocked.append(candidate)
             # Follow declared PDF links once, not an unbounded HTML crawl.
             if depth == 0:
                 queue.extend(
@@ -447,27 +388,6 @@ def acquire_oa(
                     for link in links[:3]
                     for item in expand_candidate(link)
                 )
-    if PROVIDERS["OACDP"].is_enabled(doi, config):
-
-        def retry(candidate: Candidate) -> ProviderOutcome:
-            started = time.monotonic()
-            result = _browser_candidate(
-                candidate, work_dir / f"oa-{len(attempts)}.pdf", config
-            )
-            record("OACDP", result, started)
-            return result
-
-        for candidate in blocked[:2]:
-            result = (
-                run_browser(
-                    urlsplit(candidate.url).hostname or "", lambda c=candidate: retry(c)
-                )
-                if run_browser is not None
-                else retry(candidate)
-            )
-            if isinstance(result, SourceSuccess):
-                result.attempts = attempts
-                return result
     # Conservative: one service alone is not enough, and any location overrides both.
     closed = (
         located == 0
