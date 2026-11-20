@@ -41,3 +41,4 @@
 | [0012：补充材料先查 Europe PMC，再按出版商规则获取](0012-supplementary-files.md) | Accepted（第 1 条被 0013 取代） | 已实现 |
 | [0013：PMC 收录的论文从 PMC Cloud 下载](0013-pmc-cloud.md) | Accepted | 已实现 |
 | [0014：搜索提供常用筛选参数和原样转发的 OpenAlex filter](0014-search-filters.md) | Accepted | 已实现 |
+| [0015：预印本只在其他版本都拿不到时才用](0015-preprint-last-resort.md) | Accepted | 已实现 |

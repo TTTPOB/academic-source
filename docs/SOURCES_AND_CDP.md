@@ -4,6 +4,8 @@
 
 `fastest`、`oa_first`、`legal_only` 先用公开元数据渐进发现候选：Unpaywall → OpenAlex → PMC（PMC Cloud 桶里的 PDF，再试 Europe PMC 的 getPdf）。每个服务发现候选后马上执行 HTTP 下载与可读 PDF 检查，有可用文件立即停止；API 声明的 PDF、公开落地页、仓储入口不因 URL 缺少 `.pdf` 后缀而丢弃。同一次获取内去重 HTTP 候选，回退阶段不再查询这些服务；没有新增持久失败缓存。
 
+预印本候选（位置的 `version` 为 `submittedVersion`，或版本缺失但地址在 bioRxiv、arXiv 等预印本服务器上）先放到一边，等快路径和后面的出版商、机构来源都失败后才试；用上时结果带一条警告。请求的标识本身是预印本时不受此限。详见 [ADR 0015](adr/0015-preprint-last-resort.md)。
+
 OpenAlex 的公开仓储位置保留 arXiv PDF/落地页（包括版本号）；OpenAlex 和 Unpaywall 给出的 PMC 落地页转成 getPdf 候选。直接提交 DOI 或 arXiv 标识的获取路径照常可用，候选发现不保证覆盖每篇论文的预印本。
 
 OpenAlex 检索、精确 DOI 查询与 Content 下载复用同一请求控制与上游身份。配置的 `source_config.openalex_api_key` 在各 API 路径使用 `api_key`，联系邮箱继续使用 `mailto`。Content 与检索共享日预算；免费精确查询不因计费预算耗尽而被整体禁用。单个来源限流会记录安全的重试信息并继续其他来源，不做立即自动重试。恢复与对外错误字段见 [README 的限流说明](../README.md#上游限流与恢复)。

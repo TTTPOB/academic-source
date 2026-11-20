@@ -106,7 +106,7 @@ HTTP MCP 的 `acquire`、`job_status` 为已登记产物返回绝对 `download_u
 
 `LegacySources` 在新的统一来源边界中调度保留的站点实现，包括开放获取服务、出版商 URL/HTML/浏览器规则、arXiv，以及配置后可用的机构访问通道（如 CARSI、WebVPN、EZProxy、机构会话和浏览器批量路径）。这保留有效站点知识，不代表所有来源、浏览器依赖或订阅能力在每个环境均可用。
 
-来源策略由获取请求决定。`fastest`、`oa_first`、`legal_only` 先执行轻量 OA 快路径：依次查询 Unpaywall、OpenAlex 和 PMC，发现候选即验证文件，取得可读 PDF 后立即停止，不等待其余元数据。PMC 一步先把 DOI 转成 PMCID，再试 PMC Cloud 桶里的 PDF，最后试 Europe PMC 网站的 `api/getPdf?pmcid=...`（作者手稿只有这里有 PDF，见 [ADR 0013](adr/0013-pmc-cloud.md)）。Unpaywall 和 OpenAlex 给出的 PMC 位置也换算成 getPdf。同一次获取内 HTTP 候选去重，回退阶段不重复查询已完成的 OA 服务；失败仍接原有合法、灰色及已配置机构渠道。`scihub_first`、`grey_only`、`scihub_only` 等显式策略保持原顺序。
+来源策略由获取请求决定。`fastest`、`oa_first`、`legal_only` 先执行轻量 OA 快路径：依次查询 Unpaywall、OpenAlex 和 PMC，发现候选即验证文件，取得可读 PDF 后立即停止，不等待其余元数据。PMC 一步先把 DOI 转成 PMCID，再试 PMC Cloud 桶里的 PDF，最后试 Europe PMC 网站的 `api/getPdf?pmcid=...`（作者手稿只有这里有 PDF，见 [ADR 0013](adr/0013-pmc-cloud.md)）。Unpaywall 和 OpenAlex 给出的 PMC 位置也换算成 getPdf。预印本候选先放到一边，等整条来源链都失败后才试，用上时结果带警告（[ADR 0015](adr/0015-preprint-last-resort.md)）。同一次获取内 HTTP 候选去重，回退阶段不重复查询已完成的 OA 服务；失败仍接原有合法、灰色及已配置机构渠道。`scihub_first`、`grey_only`、`scihub_only` 等显式策略保持原顺序。
 
 Elsevier API key 可用时，`10.1016/` 的 DOI 在 `fastest` 和 `legal_only` 的 OA 快路径未成功后，仍优先尝试 Elsevier API，再继续其他出版商来源。API/XML 成功不等于正文授权，最终仍以可读 PDF 校验为准。
 
