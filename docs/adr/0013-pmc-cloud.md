@@ -69,7 +69,7 @@ PMC Cloud 各步骤的实测（2026-11-19 至 20 日，NAS 和本机）：
 ## 后果
 
 - PMC 收录的开放获取论文，正文和补充材料都不再经过浏览器或 Europe PMC REST。
-- 作者手稿的正文仍靠 getPdf。这是 Europe PMC 网站使用的接口，没有公开承诺，以后可能变化；它失败时，获取流程照常进入后面的来源。
+- 作者手稿的正文仍靠 getPdf。这是 Europe PMC 网站使用的接口，没有公开承诺，以后可能变化。它并不是每篇作者手稿都有：部署后抽查 3 篇，PMC6687398 返回 PDF，PMC6407643 和 PMC6690346 返回 HTTP 500 和 `{"error": "Failed to retrieve PDF for pmcid: ..."}`；短时间连续请求还会收到 429。失败在尝试日志里记为 `network_error`，获取流程照常进入后面的来源（PMC6407643 最后由 OpenAlexContent 取得）。
 - 作者手稿在 PMC Cloud 里没有补充文件，补充材料会走出版商规则。
 - ID Converter 请求只带 `tool=academic-source`，没有带 NCBI 建议的 `email` 参数，响应里会有一条提醒，目前不影响结果。
 - 桶里的文件由 NCBI 定期更新，新收录的论文可能晚几天出现。
@@ -82,9 +82,12 @@ PMC Cloud 各步骤的实测（2026-11-19 至 20 日，NAS 和本机）：
 - 本机实测：PMC8371605、PMC3902920、PMC6687398 能查到 PMCID 并列出文件；10.1093/bioinformatics/btz076 不在 PMC，返回空。
 - 全仓搜索不再有 Europe PMC REST 和旧 ID Converter 的调用。
 
-部署后在 NAS 上验证：
+部署后在 NAS 上验证（2026-11-20，版本 2a7c47e）：
 
-- PMC8371605 的补充材料从 PMC 取得，不含正文插图，耗时在 10 s 以内；
-- PMC3902920 的补充材料和正文 PDF 从 PMC 取得；
-- 作者手稿 10.1016/j.cell.2019.05.031 的正文从 EuropePMC（getPdf）取得，补充材料走出版商；
-- 不在 PMC 的论文直接进入出版商规则。
+- PMC8371605：6 个补充文件全部来自 PMC，没有正文插图，服务端耗时 9.1 s（原来 Europe PMC 的压缩包仅首字节就要 33–53 s）；
+- PMC3902920：2 个补充文件来自 PMC，服务端耗时 6.1 s；
+- 作者手稿 10.1016/j.cell.2019.05.031：PMC 没有补充文件，3 个文件经 Elsevier API 取得；
+- 不在 PMC 的 10.1093/bioinformatics/btz076：补充文件经 Oxford 出版商页面取得；
+- 4 篇未缓存的 PMC 论文正文都取得了，其中 3 篇由 Unpaywall 给出的地址先成功，没有走到 PMC 这一步；作者手稿 PMC6407643 的 getPdf 返回 500，最后由 OpenAlexContent 取得。
+
+还没在线上看到 `PMC` 来源本身取得正文的例子：这一步排在 Unpaywall 和 OpenAlex 之后，常见论文在前两步就已成功。
