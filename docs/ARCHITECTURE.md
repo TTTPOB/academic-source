@@ -29,11 +29,11 @@ stdio MCP / CLI ────────────┴─> Application ─> Sou
 
 HTTP/MCP 的 search 通过 Application → services.discovery → scansci_pdf.search，只使用 OpenAlex。Python 入口为 search_papers，与公开服务共用本项目的单一检索实现。关键词、期刊、年份、类型、开放获取、被引次数、作者等参数换算成 OpenAlex 的 search 和 filter，原样转发的 `filter` 表达式用逗号接在后面（[ADR 0014](adr/0014-search-filters.md)）。期刊名先在 OpenAlex 的期刊列表里解析成 ID。顺序沿用 OpenAlex 的相关度或调用方指定的排序，不做本地重排。
 
-每次获取 min(100, max(30, limit × 3)) 条候选，不翻页。非论文类型和撤稿论文的排除条件随请求发给 OpenAlex；本地再按旧类型标签和少量完整泛标题兜底过滤，只保留带 DOI 的结果，然后应用 limit（1–100）。保留综述、预印本、完整会议论文及未知类型，排除明确非论文对象和 is_retracted=true 的原文。结果投影保留 type、撤稿状态和有效 ISO 发布日期，缺值省略。空结果与来源故障分开：真实无命中为列表，预期网络/HTTP/JSON 故障为 DiscoveryError，HTTP 翻译为 502；OpenAlex 返回 400（例如 filter 字段写错）时，HTTP 也返回 400 并带上 OpenAlex 的错误说明。MCP 使用 SDK 工具错误机制。
+limit 不超过 100 时只取一页 min(100, max(30, limit × 3)) 条候选；更大时用 OpenAlex 游标每页 100 条连续取，直到候选比 limit 多出约 10 条或没有下一页（[ADR 0017](adr/0017-full-abstracts-and-paging.md)）。非论文类型和撤稿论文的排除条件随请求发给 OpenAlex；本地再按旧类型标签和少量完整泛标题兜底过滤，只保留带 DOI 的结果，然后应用 limit（1–1000）。摘要由 OpenAlex 的倒排索引还原，不截断。保留综述、预印本、完整会议论文及未知类型，排除明确非论文对象和 is_retracted=true 的原文。结果投影保留 type、撤稿状态和有效 ISO 发布日期，缺值省略。空结果与来源故障分开：真实无命中为列表，预期网络/HTTP/JSON 故障为 DiscoveryError，HTTP 翻译为 502；OpenAlex 返回 400（例如 filter 字段写错）时，HTTP 也返回 400 并带上 OpenAlex 的错误说明。MCP 使用 SDK 工具错误机制。
 
 MCP get_metadata(id_type='doi', doi='...') / get_metadata(id_type='arxiv', arxiv_id='...') 和 HTTP POST /api/v1/metadata {id_type, doi} / {id_type, arxiv_id} 通过 Application → services.discovery.get_metadata 显式分流：doi 经 normalize_doi 查 Crossref，arxiv 经局部严格规范化并保留请求版本后查 arXiv 原生 API 的 id_list。两者通过 scansci_pdf.upstream_client 的 get_json/get_text 复用现有网络会话、request_timeout、代理和 User-Agent；Atom 使用 stdlib ElementTree，无独立 transport 或缓存层。
 
-请求的 id_type 必填，只允许对应的 doi 或 arxiv_id；服务层统一拒绝缺失、错配或同时提供两种 ID。所有响应保留 id_type、metadata_source、metadata_status，以及类型专属的规范请求 doi 或 arxiv_id。Crossref 保留现有书目、类型和有向 DOI 关系/更新证据；arXiv 返回精简书目、摘要、日期和实际 version，真实发表 DOI 单列 published_doi。metadata_status 区分匹配记录 found、Crossref 404 / arXiv 合法空 feed 的 not_found、网络/HTTP/JSON/XML/错误 entry/记录不匹配的 unavailable；意外内部错误直接传播。请求身份和 arXiv 版本语义见 README。
+请求的 id_type 必填，只允许对应的 doi 或 arxiv_id；服务层统一拒绝缺失、错配或同时提供两种 ID。所有响应保留 id_type、metadata_source、metadata_status，以及类型专属的规范请求 doi 或 arxiv_id。Crossref 保留现有书目、期刊、摘要、类型和有向 DOI 关系/更新证据，Crossref 没有摘要时用 OpenAlex 单条查询补上，查不到不影响 found 状态；arXiv 返回精简书目、摘要、日期和实际 version，真实发表 DOI 单列 published_doi。metadata_status 区分匹配记录 found、Crossref 404 / arXiv 合法空 feed 的 not_found、网络/HTTP/JSON/XML/错误 entry/记录不匹配的 unavailable；意外内部错误直接传播。请求身份和 arXiv 版本语义见 README。
 
 get_metadata 不做标题推断，来源只由 id_type 决定。标题搜索使用 OpenAlex；内部获取直接复用现有标题相似度匹配，匹配失败保留原标题，不新增元数据查询依赖。直接 DOI/arXiv 获取无需先查元数据。获取时内部会用 NCBI ID Converter 把 DOI 转成 PMCID（[ADR 0013](adr/0013-pmc-cloud.md)），但不接受 PMID 或 PMCID 作为输入。关键词检索与按需元数据查询互不阻塞，元数据来源不参与候选召回或排序。
 

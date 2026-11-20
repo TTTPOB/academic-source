@@ -43,3 +43,4 @@
 | [0014：搜索提供常用筛选参数和原样转发的 OpenAlex filter](0014-search-filters.md) | Accepted | 已实现 |
 | [0015：预印本只在其他版本都拿不到时才用](0015-preprint-last-resort.md) | Accepted | 已实现 |
 | [0016：OA 快路径只用 HTTP，删除浏览器重试](0016-no-browser-in-oa-fast-path.md) | Accepted | 已实现 |
+| [0017：检索返回完整摘要并支持多页，元数据补摘要](0017-full-abstracts-and-paging.md) | Accepted | 已实现 |
