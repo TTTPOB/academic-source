@@ -237,3 +237,34 @@ def test_europepmc_without_deposited_supplements_is_not_queried_further(tmp_path
     result, calls = run_route(tmp_path, search=search)
     assert len(calls) == 1
     assert not result.pmcid and not result.route_warnings
+
+
+def test_europepmc_drops_the_articles_own_figures_from_the_bundle(tmp_path):
+    xml = b"""<article xmlns:xlink="http://www.w3.org/1999/xlink"><body>
+      <fig id="fig1"><graphic xlink:href="gr1_lrg"/></fig>
+      <p><inline-graphic xlink:href="um1.jpg"/></p>
+      <supplementary-material id="mmc1" xlink:href="mmc1.xlsx">
+        <label>Table S1</label>
+      </supplementary-material>
+      <supplementary-material id="mmc2">
+        <label>Figure S9</label><graphic xlink:href="figs9"/>
+        <media xlink:href="figs9.jpg"/>
+      </supplementary-material>
+    </body></article>"""
+    bundle = make_zip(
+        {
+            "mmc1.xlsx": b"PK\x03\x04 workbook",
+            "figs9.jpg": b"\xff\xd8\xff supplementary figure",
+            "gr1_lrg.jpg": b"\xff\xd8\xff figure",
+            "gr1_lrg.gif": b"GIF89a figure",
+            "um1.jpg": b"\xff\xd8\xff formula",
+            "readme.txt": b"unlisted but kept",
+        }
+    )
+    result, _ = run_route(tmp_path, xml=xml, bundle=bundle)
+    assert sorted(entry.path.name for entry in result.saved) == [
+        "figs9.jpg",
+        "mmc1.xlsx",
+        "readme.txt",
+    ]
+    assert not result.unsaved

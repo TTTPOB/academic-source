@@ -115,6 +115,29 @@ def _attachments(article: ET.Element, zip_url: str) -> dict[str, SupplementaryIt
     return files
 
 
+_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".gif", ".png", ".tif", ".tiff"}
+
+
+def _image_key(name: str) -> str:
+    path = PurePosixPath(name.casefold())
+    return path.stem if path.suffix in _IMAGE_SUFFIXES else path.name
+
+
+def _article_images(article: ET.Element) -> set[str]:
+    """Files the article body shows as figures or formulas, in any rendition."""
+    supplementary = {
+        node.get(_XLINK_HREF, "")
+        for block in article.iterfind(".//{*}supplementary-material")
+        for node in block.iter()
+    }
+    return {
+        _image_key(href)
+        for tag in ("graphic", "inline-graphic")
+        for node in article.iterfind(f".//{{*}}{tag}")
+        if (href := node.get(_XLINK_HREF, "").strip()) and href not in supplementary
+    }
+
+
 def _safe_member_path(root: Path, name: str) -> Path | None:
     windows = PureWindowsPath(name)
     relative = PurePosixPath(name)
@@ -144,6 +167,7 @@ def _extract_archive(
     max_file_bytes: int,
     max_total_bytes: int,
     result: SupplementaryResult,
+    article_images: frozenset[str] = frozenset(),
 ) -> None:
     root = out.resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -179,6 +203,10 @@ def _extract_archive(
         )
         if match is not None:
             reported.add(match)
+        elif _image_key(basename) in article_images:
+            # The bundle also carries the article's own figures; they are not
+            # supplementary material and come without any description.
+            continue
         item = (
             items[match]
             if match is not None
@@ -330,6 +358,7 @@ def fetch_europepmc_supplementary(
                     max_file_bytes,
                     max_total_bytes,
                     result,
+                    frozenset(_article_images(article)),
                 )
     except _SizeLimitError:
         failure = "Europe PMC ZIP exceeds compressed size limit"
