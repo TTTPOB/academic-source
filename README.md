@@ -88,7 +88,25 @@ curl -H @- \
 
 ## 检索与元数据
 
-HTTP `GET /api/v1/search?query=...&limit=10` 与 MCP `search(query, limit)` 只从 OpenAlex 检索，默认保留其相关性顺序。`limit` 为 1–100；只取一页有界候选（最多 100 条），当前只返回带 DOI 的候选，分类过滤后再截断，因此结果可能少于请求数量。默认排除明确的审稿报告、组件/补充材料、词条/数据对象、书籍、paratext、勘误/撤稿通知、会议摘要及已标记撤稿的原文；保留研究文章、综述、预印本、完整会议论文与未知类型。另有少量完整泛标题规则（如 `Foreword`、`Manuscript Submission Guideline`），不会因标题含 Review 或 Guideline 就排除。
+搜索只走 OpenAlex。命令行 `asource search`、HTTP `GET /api/v1/search`、MCP `search` 接受同一组参数，各条件之间是 AND（[ADR 0014](docs/adr/0014-search-filters.md)）：
+
+| 参数 | 含义 |
+|---|---|
+| `query` | 关键词；给了任一筛选条件时可以省略 |
+| `limit` | 返回条数，1–100，默认 10 |
+| `journal` | 期刊 ISSN 或准确名称；名称有歧义时报错并列出候选的 ISSN |
+| `year` | `2021`、`2020-2024`、`2020-` 或 `-2024` |
+| `type` | OpenAlex 类型，逗号分隔，满足其一即可，如 `article,review` |
+| `oa` | 只要开放获取的论文 |
+| `min_citations` | 被引次数至少为 N |
+| `author` | 作者名、OpenAlex 作者 ID 或 ORCID |
+| `sort` | `cited_by_count` 或 `publication_date`，可加 `:asc`，默认 `:desc`；不给时有关键词按相关度，没有关键词按日期从新到旧 |
+| `in` | 关键词匹配范围：`all`（标题、摘要和全文，默认）、`title`、`abstract`（标题或摘要） |
+| `filter` | 原样转发给 OpenAlex 的 [filter 表达式](https://docs.openalex.org/api-entities/works/filter-works)，例如 `authorships.countries:cn,language:en` |
+
+OpenAlex 拒绝 `filter` 时，它的错误说明会原样返回：HTTP 400、MCP 工具错误或命令行非零退出。
+
+默认排除审稿报告、补充材料、数据集、书籍、勘误和撤稿通知、会议摘要等非论文条目，以及已撤稿的论文；指定了 `type` 时不再排除类型，`filter` 里出现 `is_retracted` 时不再排除撤稿论文。每次只向 OpenAlex 取一页（最多 100 条），不带 DOI 的条目和重复条目会被去掉，所以结果可能少于 `limit`。
 
 结果保留已有书目信息，以及可用的 OpenAlex `type`、`is_retracted` 和 ISO `publication_date`；缺失字段省略，false/0 仍保留。不承诺上游类型准确、覆盖所有编辑材料或消除短词/基因名称歧义。真实无命中返回 `[]`；OpenAlex 网络、HTTP 或 JSON 错误通过 HTTP 502 或 MCP 工具错误返回，不伪装无命中。
 
@@ -146,7 +164,7 @@ export ACADEMIC_SOURCE_API_KEY_FILE="$HOME/.config/academic-source/api-key"
 |---|---|
 | `asource get DOI` | 获取一篇，等它完成，把文件存到 `--output`（默认当前目录） |
 | `asource batch FILE` | 上传本机的文献列表，获取其中每一篇，把文件存到 `--output` |
-| `asource search QUERY [--limit N]` | 按关键词搜索 |
+| `asource search [QUERY] [--journal ...] [--year ...] ...` | 按关键词和筛选条件搜索，参数见 `asource search --help` |
 | `asource metadata --doi DOI` / `--arxiv ID` | 查一篇的书目信息 |
 | `asource status JOB_ID` | 查看任务状态 |
 | `asource download JOB_ID` | 把一个任务已完成的文件存到 `--output` |

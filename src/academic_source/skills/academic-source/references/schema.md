@@ -112,7 +112,7 @@ failed = {
 A JSON array, best match first:
 
 ```text
-doi, title, authors[], year, publication_date, type
+doi, title, authors[], year, publication_date, type, journal
 cited_by_count, is_oa, oa_url, is_retracted
 ```
 

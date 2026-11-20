@@ -27,15 +27,15 @@ stdio MCP / CLI ────────────┴─> Application ─> Sou
 
 ## 检索与按类型元数据
 
-HTTP/MCP 的 search 通过 Application → services.discovery → scansci_pdf.search，只使用 OpenAlex。Python 入口为 search_papers，与公开服务共用本项目的单一检索实现。默认源内相关性顺序不做本地重排；现有 Python 引用数/发布日期排序（可选 asc/desc）和单边/双边年份范围直接传给 OpenAlex。公开 HTTP/MCP 参数仍为 query、limit。
+HTTP/MCP 的 search 通过 Application → services.discovery → scansci_pdf.search，只使用 OpenAlex。Python 入口为 search_papers，与公开服务共用本项目的单一检索实现。关键词、期刊、年份、类型、开放获取、被引次数、作者等参数换算成 OpenAlex 的 search 和 filter，原样转发的 `filter` 表达式用逗号接在后面（[ADR 0014](adr/0014-search-filters.md)）。期刊名先在 OpenAlex 的期刊列表里解析成 ID。顺序沿用 OpenAlex 的相关度或调用方指定的排序，不做本地重排。
 
-每次获取 min(100, max(30, limit × 3)) 条候选，不翻页；沿用带 DOI 的结果边界，按明确类型、撤稿状态和少量完整泛标题过滤后应用 limit（1–100）。保留综述、预印本、完整会议论文及未知类型，排除明确非论文对象和 is_retracted=true 的原文。结果投影保留 type、撤稿状态和有效 ISO 发布日期，缺值省略。空结果与来源故障分开：真实无命中为列表，预期网络/HTTP/JSON 故障为 DiscoveryError，HTTP 翻译为 502，MCP 使用 SDK 工具错误机制。
+每次获取 min(100, max(30, limit × 3)) 条候选，不翻页。非论文类型和撤稿论文的排除条件随请求发给 OpenAlex；本地再按旧类型标签和少量完整泛标题兜底过滤，只保留带 DOI 的结果，然后应用 limit（1–100）。保留综述、预印本、完整会议论文及未知类型，排除明确非论文对象和 is_retracted=true 的原文。结果投影保留 type、撤稿状态和有效 ISO 发布日期，缺值省略。空结果与来源故障分开：真实无命中为列表，预期网络/HTTP/JSON 故障为 DiscoveryError，HTTP 翻译为 502；OpenAlex 返回 400（例如 filter 字段写错）时，HTTP 也返回 400 并带上 OpenAlex 的错误说明。MCP 使用 SDK 工具错误机制。
 
 MCP get_metadata(id_type='doi', doi='...') / get_metadata(id_type='arxiv', arxiv_id='...') 和 HTTP POST /api/v1/metadata {id_type, doi} / {id_type, arxiv_id} 通过 Application → services.discovery.get_metadata 显式分流：doi 经 normalize_doi 查 Crossref，arxiv 经局部严格规范化并保留请求版本后查 arXiv 原生 API 的 id_list。两者通过 scansci_pdf.upstream_client 的 get_json/get_text 复用现有网络会话、request_timeout、代理和 User-Agent；Atom 使用 stdlib ElementTree，无独立 transport 或缓存层。
 
 请求的 id_type 必填，只允许对应的 doi 或 arxiv_id；服务层统一拒绝缺失、错配或同时提供两种 ID。所有响应保留 id_type、metadata_source、metadata_status，以及类型专属的规范请求 doi 或 arxiv_id。Crossref 保留现有书目、类型和有向 DOI 关系/更新证据；arXiv 返回精简书目、摘要、日期和实际 version，真实发表 DOI 单列 published_doi。metadata_status 区分匹配记录 found、Crossref 404 / arXiv 合法空 feed 的 not_found、网络/HTTP/JSON/XML/错误 entry/记录不匹配的 unavailable；意外内部错误直接传播。请求身份和 arXiv 版本语义见 README。
 
-get_metadata 不做标题推断，来源只由 id_type 决定。标题搜索使用 OpenAlex；内部获取直接复用现有标题相似度匹配，匹配失败保留原标题，不新增元数据查询依赖。直接 DOI/arXiv 获取无需先查元数据。内部 DOI→idconv→PMCID 与 Europe PMC/PMC 的 PDF 候选转换保持原链路，不提供公开 PMID/PMCID 输入。关键词检索与按需元数据查询互不阻塞，元数据来源不参与候选召回或排序。
+get_metadata 不做标题推断，来源只由 id_type 决定。标题搜索使用 OpenAlex；内部获取直接复用现有标题相似度匹配，匹配失败保留原标题，不新增元数据查询依赖。直接 DOI/arXiv 获取无需先查元数据。获取时内部会用 NCBI ID Converter 把 DOI 转成 PMCID（[ADR 0013](adr/0013-pmc-cloud.md)），但不接受 PMID 或 PMCID 作为输入。关键词检索与按需元数据查询互不阻塞，元数据来源不参与候选召回或排序。
 
 ## 上游请求控制与错误
 
@@ -106,7 +106,7 @@ HTTP MCP 的 `acquire`、`job_status` 为已登记产物返回绝对 `download_u
 
 `LegacySources` 在新的统一来源边界中调度保留的站点实现，包括开放获取服务、出版商 URL/HTML/浏览器规则、arXiv，以及配置后可用的机构访问通道（如 CARSI、WebVPN、EZProxy、机构会话和浏览器批量路径）。这保留有效站点知识，不代表所有来源、浏览器依赖或订阅能力在每个环境均可用。
 
-来源策略由获取请求决定。`fastest`、`oa_first`、`legal_only` 先执行轻量 OA 快路径：逐个查询 Unpaywall、OpenAlex、Europe PMC core 和 PMC 标识转换，发现候选即验证文件，取得可读 PDF 后立即停止，不等待其余元数据。保留 PDF 链接、公开落地页和仓储标识；识别 PMCID 后先尝试 Europe PMC 网站的 `api/getPdf?pmcid=...`。同一次获取内 HTTP 候选去重，回退阶段不重复查询已完成的 OA 服务；失败仍接原有合法、灰色及已配置机构渠道。`scihub_first`、`grey_only`、`scihub_only` 等显式策略保持原顺序。
+来源策略由获取请求决定。`fastest`、`oa_first`、`legal_only` 先执行轻量 OA 快路径：依次查询 Unpaywall、OpenAlex 和 PMC，发现候选即验证文件，取得可读 PDF 后立即停止，不等待其余元数据。PMC 一步先把 DOI 转成 PMCID，再试 PMC Cloud 桶里的 PDF，最后试 Europe PMC 网站的 `api/getPdf?pmcid=...`（作者手稿只有这里有 PDF，见 [ADR 0013](adr/0013-pmc-cloud.md)）。Unpaywall 和 OpenAlex 给出的 PMC 位置也换算成 getPdf。同一次获取内 HTTP 候选去重，回退阶段不重复查询已完成的 OA 服务；失败仍接原有合法、灰色及已配置机构渠道。`scihub_first`、`grey_only`、`scihub_only` 等显式策略保持原顺序。
 
 Elsevier API key 可用时，`10.1016/` 的 DOI 在 `fastest` 和 `legal_only` 的 OA 快路径未成功后，仍优先尝试 Elsevier API，再继续其他出版商来源。API/XML 成功不等于正文授权，最终仍以可读 PDF 校验为准。
 
@@ -155,11 +155,11 @@ Science 的主 PDF 全程在已登录的标签页里取得：先用同源 `fetch
 
 ## 补充材料
 
-补充材料按论文获取，每个文件登记为一个产物（[ADR 0012](adr/0012-supplementary-files.md)）。请求里带 `supplementary` 时在主 PDF 成功后获取；`supplementary_only` 只取补充材料，不要求主 PDF。
+补充材料按论文获取，每个文件登记为一个产物（[ADR 0012](adr/0012-supplementary-files.md)、[ADR 0013](adr/0013-pmc-cloud.md)）。请求里带 `supplementary` 时在主 PDF 成功后获取；`supplementary_only` 只取补充材料，不要求主 PDF。
 
 查找顺序固定为两步，第一步拿到文件就不走第二步：
 
-1. **Europe PMC。** 用 DOI 查到 PMCID 后，从全文 XML 读取每个文件的标题和说明，再下载该文献的补充材料压缩包。全程是普通 HTTP，不需要浏览器。检索结果标明该文献在 Europe PMC 没有补充材料（`hasSuppl` 为 `N`）时直接进入下一步。
+1. **PMC Cloud。** 用 DOI 查到 PMCID 后，在 NCBI 的公开 S3 桶里列出该文献最新版本的文件和大小，从桶里的 JATS XML 读取每个文件的标题和说明，跳过正文插图，再逐个下载补充文件，一篇最多 6 个并行（[ADR 0013](adr/0013-pmc-cloud.md)）。全程是普通 HTTP，不需要浏览器。作者手稿在桶里没有补充文件，直接进入下一步。
 2. **出版商。** 各出版商策略给出要读的页面和页面上的文件清单：Nature 读文章页，Elsevier 走官方 API（API 返回了全文记录时，其中的附件清单就是全部，不再读网页），PLOS 读文章页和同行评审页，bioRxiv/medRxiv 读补充材料标签页，Science 和 Oxford 读文章页。没有专门规则的出版商使用通用的链接识别。页面先用普通 HTTP 读，被拦截时改用浏览器。
 
 页面是用浏览器读到的时，同源文件在同一个标签页里用 `fetch` 下载，沿用页面的登录状态，不为每个文件另开页面；跨域文件（例如带签名的 CDN 地址）用携带浏览器 Cookie 的普通 HTTP 下载。页内下载失败时改用普通 HTTP 再试一次。

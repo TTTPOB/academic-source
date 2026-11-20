@@ -22,12 +22,18 @@ the user for the missing value. Do not look for keys yourself.
 
 ```bash
 asource search 'prime editing efficiency' --limit 10
+asource search 'base editing' --journal 'Nature Biotechnology' --year 2022- --sort cited_by_count
 asource metadata --doi 10.1126/science.aad8559
 asource metadata --arxiv 2401.01234
 ```
 
 `search` returns a JSON array; each entry has `doi`, `title`, `authors`, `year`,
-`cited_by_count`, `is_oa`, and `type`. If `search` fails with an upstream error
+`journal`, `cited_by_count`, `is_oa`, and `type`. Narrow results with
+`--journal` (ISSN or exact name), `--year`, `--type`, `--oa`,
+`--min-citations`, `--author` and `--in title`; anything else goes into
+`--filter` as an OpenAlex filter expression. Run `asource search --help` for the
+syntax and examples. If a journal name is ambiguous, the error lists candidates
+with ISSNs; retry with the right ISSN. If `search` fails with an upstream error
 such as HTTP 504, retry once, then report the failure.
 
 ## Fetch full text
@@ -63,8 +69,8 @@ Pass a file with one DOI per line instead of a single DOI for a batch. Use
 supplements. Add `--markdown` to convert supplementary PDFs too.
 
 Each supplementary file carries a `note` with its title and caption when
-available. Europe PMC files are marked with their PMCID; they may differ from
-the publisher's version. Check `warnings` for missing files.
+available. Files taken from PMC are marked with their PMCID; they may differ
+from the publisher's version. Check `warnings` for missing files.
 
 ## Read the results
 

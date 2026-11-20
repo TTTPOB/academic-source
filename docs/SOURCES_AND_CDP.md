@@ -2,17 +2,17 @@
 
 以下为来源行为、可选浏览器依赖及 Linux CDP 参考部署；返回 [README](../README.md)。
 
-`fastest`、`oa_first`、`legal_only` 先用公开元数据渐进发现候选：Unpaywall → OpenAlex → Europe PMC core → PMC 标识转换。每个服务发现候选后马上执行 HTTP 下载与可读 PDF 检查，有可用文件立即停止；API 声明的 PDF、公开落地页、仓储入口不因 URL 缺少 `.pdf` 后缀而丢弃。同一次获取内去重 HTTP 候选，回退阶段不再查询这些服务；没有新增持久失败缓存。
+`fastest`、`oa_first`、`legal_only` 先用公开元数据渐进发现候选：Unpaywall → OpenAlex → PMC（PMC Cloud 桶里的 PDF，再试 Europe PMC 的 getPdf）。每个服务发现候选后马上执行 HTTP 下载与可读 PDF 检查，有可用文件立即停止；API 声明的 PDF、公开落地页、仓储入口不因 URL 缺少 `.pdf` 后缀而丢弃。同一次获取内去重 HTTP 候选，回退阶段不再查询这些服务；没有新增持久失败缓存。
 
-OpenAlex 的公开仓储位置保留 arXiv PDF/落地页（包括版本号）；OpenAlex 的 PMC 落地页与 Europe PMC core 的 `pmcid` 都可转成直接 PDF 候选。直接提交 DOI 或 arXiv 标识的获取路径照常可用，候选发现不保证覆盖每篇论文的预印本。
+OpenAlex 的公开仓储位置保留 arXiv PDF/落地页（包括版本号）；OpenAlex 和 Unpaywall 给出的 PMC 落地页转成 getPdf 候选。直接提交 DOI 或 arXiv 标识的获取路径照常可用，候选发现不保证覆盖每篇论文的预印本。
 
 OpenAlex 检索、精确 DOI 查询与 Content 下载复用同一请求控制与上游身份。配置的 `source_config.openalex_api_key` 在各 API 路径使用 `api_key`，联系邮箱继续使用 `mailto`。Content 与检索共享日预算；免费精确查询不因计费预算耗尽而被整体禁用。单个来源限流会记录安全的重试信息并继续其他来源，不做立即自动重试。恢复与对外错误字段见 [README 的限流说明](../README.md#上游限流与恢复)。
 
-OA 快路径向 Unpaywall、OpenAlex、Europe PMC 和 PMC 发出的元数据查询使用单独的读超时 `source_config.oa_metadata_read_timeout`，默认 8 秒。PDF 下载和其他来源仍使用 `read_timeout`（默认 30 秒）。超时的元数据查询记为 `network_error`，快路径继续查下一个服务。修改这个值不会让已有的结果缓存失效。
+OA 快路径向 Unpaywall、OpenAlex、NCBI ID Converter 和 PMC Cloud 文件列表发出的元数据查询使用单独的读超时 `source_config.oa_metadata_read_timeout`，默认 8 秒。PDF 下载和其他来源仍使用 `read_timeout`（默认 30 秒）。超时的元数据查询记为 `network_error`，快路径继续查下一个服务。修改这个值不会让已有的结果缓存失效。
 
 快路径结束时，如果 Unpaywall 和 OpenAlex 都明确返回 `is_oa=false`，并且四个服务都没有给出任何候选地址，这篇文献被判为非开放获取。此时后续阶段跳过只提供开放获取版本的来源（OpenAIRE、DOAJ、CrossrefPage、CORE），直接进入出版商、灰色和机构来源。以下情况不跳过：只有一个服务给出否定；Unpaywall 或 OpenAlex 的查询失败，或 Unpaywall 因未配置邮箱而没有查询；任一服务给出了候选地址，即使下载失败。跳过时服务日志有一行 `skip identifier=... reason=closed_access`。
 
-PMC 标识支持旧式 NCBI 数字路径、新式 `PMC...` 路径、大小写及 Europe PMC `?pdf=render` 等形式；识别后先试 `https://europepmc.org/api/getPdf?pmcid=PMC...`。这是 Europe PMC 的网站接口，不保证每个 PMCID 都有 PDF，失败后继续其他候选和既有渠道。Europe PMC 查询使用 `resultType=core`；`isOpenAccess=N` 不会排除明确的 FreePDF。免费访问不代表 CC 许可。
+PMC 收录的论文先查 PMC Cloud 桶里的 PDF，再试 `https://europepmc.org/api/getPdf?pmcid=PMC...`。后者是 Europe PMC 的网站接口，作者手稿的 PDF 只在这里有；它不保证每个 PMCID 都有 PDF，失败后继续其他候选和既有渠道。Unpaywall 和 OpenAlex 给出的 PMC 位置（旧式 NCBI 路径、新式 `PMC...` 路径、Europe PMC `?pdf=render` 等）都换算成 getPdf，不直接访问这些网页：它们返回 Cloudflare 403、下载脚本页或 reCAPTCHA。详见 [ADR 0013](adr/0013-pmc-cloud.md)。
 
 OA HTTP 候选返回 HTML/challenge 不算成功。全部轻量 HTTP 候选未成功后，仅当已经配置 `browser_backend=cdp`，才对最多两个相关 blocked 候选复用已有浏览器函数兜底：每个候选只创建/关闭自己的标签页，同源导航最多 10 秒、每次 PDF 流请求最多 20 秒（不超过配置值），尝试原 URL 和至多一个页面 PDF 链接。不重启浏览器、不处理人工验证码、不承诺跨源文件流或任意网站解析；失败仍进入普通来源策略。
 

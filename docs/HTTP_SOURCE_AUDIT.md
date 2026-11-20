@@ -20,9 +20,9 @@
 | OpenAIRE | [`try_openaire` · openaire.py:58](<../src/scansci_pdf/sources/openaire.py#L58-L122>) | 普通 HTTP：有闸门 + 绕过闸门 | 两处 XML 回退使用 `Session.get`；JSON 路径 `fetch_json`，PDF 路径 `download_pdf`。此入口不是同名的 `oa_discovery.try_openaire`。 | `http_ungated` |
 | DOAJ | [`try_doaj` · oa_discovery.py:94](<../src/scansci_pdf/sources/oa_discovery.py#L94-L135>) | 普通 HTTP：有闸门 + 绕过闸门 | `Session.get` 查元数据 → `download_pdf`。 | `http_ungated` |
 | CrossrefPage | [`try_crossref_page_scrape` · crossref.py:45](<../src/scansci_pdf/sources/crossref.py#L45-L160>) | 普通 HTTP：有闸门 + 绕过闸门 | `Session.head/get` 解析 DOI、取页面 → 正则提取链接（不执行 JS）→ `download_pdf`。 | `http_ungated` |
-| EuropePMC | [`try_europepmc` · europepmc.py:34](<../src/scansci_pdf/sources/europepmc.py#L34-L49>) | 普通 HTTP：有闸门 | `fetch_json` → 提取全文链接 → `download_pdf`。 | `http` |
+| EuropePMC | [`try_europepmc` · europepmc.py:14](<../src/scansci_pdf/sources/europepmc.py#L14-L32>) | 普通 HTTP：有闸门 | `lookup_pmcid` 查 PMCID → getPdf → `download_pdf`。 | `http` |
 | CORE | [`try_core` · core_api.py:28](<../src/scansci_pdf/sources/core_api.py#L28-L46>) | 普通 HTTP：有闸门 | `fetch_json` → 枚举候选 URL → `download_pdf`。 | `http` |
-| PMC | [`try_pmc` · europepmc.py:52](<../src/scansci_pdf/sources/europepmc.py#L52-L74>) | 普通 HTTP：有闸门 | `fetch_json` 查 PMCID → `download_pdf`。 | `http` |
+| PMC | [`try_pmc` · europepmc.py:35](<../src/scansci_pdf/sources/europepmc.py#L35-L50>) | 普通 HTTP：有闸门 | `lookup_pmcid` 查 PMCID → `find_article` 列桶 → `download_pdf`。 | `http` |
 | Crossref | [`try_crossref` · crossref.py:16](<../src/scansci_pdf/sources/crossref.py#L16-L42>) | 普通 HTTP：有闸门 | `fetch_json` → 过滤 PDF 链接 → `download_pdf`。 | `http` |
 | NatureDirect | [`try_nature_direct` · nature.py:13](<../src/scansci_pdf/sources/nature.py#L13-L39>) | 普通 HTTP：有闸门 | `download_pdf` 直取；失败后 `fetch` 查 HTML → 正则取链接 → `download_pdf`。 | `http` |
 | PublisherDirect | [`try_publisher_direct` · publishers.py:207](<../src/scansci_pdf/sources/publishers.py#L207-L256>) | 普通 HTTP：绕过闸门 | [`resolve_doi`](<../src/scansci_pdf/sources/publishers.py#L184>) 用 `Session.head`，PDF 用 `Session.get`；[`_load_publisher_cookies`](<../src/scansci_pdf/sources/publishers.py#L24>) → [`inject_cookies`](<../src/scansci_pdf/browser_cookies.py#L327>) / [`load_saved_cookies`](<../src/scansci_pdf/browser_cookies.py#L218>) 只从文件载入。 | `http_ungated` |

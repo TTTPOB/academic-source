@@ -1,6 +1,6 @@
 # ADR 0012：补充材料先查 Europe PMC，再按出版商规则获取
 
-- 状态：Accepted
+- 状态：Accepted。第 1 条（先查 Europe PMC）已被 [ADR 0013](0013-pmc-cloud.md) 取代，改为先查 PMC Cloud。
 - 实施情况：已实现。Nature、Elsevier、PLOS、bioRxiv/medRxiv、Science、Oxford 有专门规则，其余出版商使用通用的链接识别。
 
 ## 背景
