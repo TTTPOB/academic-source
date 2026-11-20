@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from ..domain import AcquisitionRequest, Attempt
+from ..infrastructure.documents import looks_like_preprint
 from .errors import SourceError
 from .lanes import ProviderLanes
 from .legacy import LegacyHandler, call_legacy
@@ -19,7 +20,8 @@ from .models import (
     failed_attempt,
     observe,
 )
-from .oa import acquire_oa, acquire_preprint
+from .oa import PREPRINT_WARNING, acquire_oa, acquire_preprint
+from .oa_candidates import is_preprint_doi
 from .registry import FAST_POLICIES, PROVIDERS
 from .registry import plan as _plan
 
@@ -47,14 +49,16 @@ def _attempt(
     work_dir: Path,
     config: dict[str, Any],
     index: int,
+    hold_preprints: bool = False,
 ) -> tuple[ProviderOutcome, Attempt]:
     started = time.monotonic()
     result = call_legacy(label, fn, doi, work_dir / f"source-{index}.pdf", config)
-    attempt = (
-        Attempt(source=label, status="succeeded")
-        if isinstance(result, SourceSuccess)
-        else failed_attempt(label, result)
-    )
+    if not isinstance(result, SourceSuccess):
+        attempt = failed_attempt(label, result)
+    elif hold_preprints and looks_like_preprint(result.path):
+        attempt = Attempt(source=label, status="preprint")
+    else:
+        attempt = Attempt(source=label, status="succeeded")
     return result, observe(doi, attempt, started)
 
 
@@ -109,6 +113,9 @@ class LegacySources:
         errors: list[SourceError] = []
         closed_access = False
         preprints = []
+        held: SourceSuccess | None = None
+        # Asking for a preprint means the preprint is the wanted version.
+        hold_preprints = not self._arxiv(identifier) and not is_preprint_doi(identifier)
         if not self._arxiv(identifier) and request.policy in FAST_POLICIES:
             config["_acquisition_attempted_urls"] = set()
             oa_result = (
@@ -124,22 +131,32 @@ class LegacySources:
             errors.extend(oa_result.errors)
             closed_access = oa_result.closed_access
             preprints = oa_result.preprints
+            held = oa_result.held_preprint
         if self._arxiv(identifier):
             handlers = [("arXiv", PROVIDERS["arXiv"].resolve())]
         else:
             handlers = _plan(identifier, request, config, closed_access)
         for index, (label, fn) in enumerate(handlers):
-            call = partial(_attempt, label, fn, identifier, work_dir, config, index)
+            call = partial(
+                _attempt, label, fn, identifier, work_dir, config, index, hold_preprints
+            )
             result, attempt = (
                 self._lanes.attempt(label, PROVIDERS[label], call)
                 if self._lanes is not None
                 else call()
             )
             attempts.append(attempt)
+            if attempt.status == "preprint" and isinstance(result, SourceSuccess):
+                held = held or result
+                continue
             if isinstance(result, SourceSuccess):
                 result.attempts = attempts
                 return result
             errors.append(result)
+        if held is not None:
+            held.attempts = attempts
+            held.warnings.append(PREPRINT_WARNING)
+            return held
         if preprints:
             late = acquire_preprint(identifier, preprints, work_dir, config)
             attempts.extend(late.attempts)

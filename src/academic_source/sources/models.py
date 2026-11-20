@@ -77,6 +77,8 @@ class SourceFailure:
     errors: list[SourceError] = field(default_factory=list, repr=False)
     # Preprint locations held back until every other source has failed.
     preprints: list[Candidate] = field(default_factory=list, repr=False)
+    # A download that turned out to be a preprint, kept for the same purpose.
+    held_preprint: SourceSuccess | None = field(default=None, repr=False)
 
     @classmethod
     def summarize(

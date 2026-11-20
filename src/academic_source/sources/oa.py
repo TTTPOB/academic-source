@@ -20,7 +20,7 @@ from scansci_pdf.upstream_client import openalex_params
 from scansci_pdf.upstream_errors import RateLimited as UpstreamRateLimited
 
 from ..domain import Attempt
-from ..infrastructure.documents import is_readable_pdf
+from ..infrastructure.documents import is_readable_pdf, looks_like_preprint
 from .errors import (
     Blocked,
     ConfigNeeded,
@@ -142,9 +142,13 @@ def discover(doi: str, config: dict[str, Any]) -> Iterator[Discovery]:
         f"https://api.openalex.org/works/doi:{q}{params}", config
     )
     verdict = (payload.get("open_access") or {}).get("is_oa")
+    found = openalex_candidates(payload, str(config.get("openalex_api_key") or ""))
+    # OpenAlex's archived copy costs budget and does not say which version it is,
+    # so free sources with a known version (PMC, getPdf) go first.
+    archived = [item for item in found if item.source == "OpenAlexContent"]
     yield Discovery(
         "OpenAlexOA",
-        openalex_candidates(payload, str(config.get("openalex_api_key") or "")),
+        [item for item in found if item.source != "OpenAlexContent"],
         error,
         verdict if isinstance(verdict, bool) else None,
     )
@@ -185,6 +189,8 @@ def discover(doi: str, config: dict[str, Any]) -> Iterator[Discovery]:
             "EuropePMC",
             [Candidate(europepmc_pdf_url(pmcid), "EuropePMC")] if pmcid else [],
         )
+    if archived:
+        yield Discovery("OpenAlexContent", archived)
 
 
 def _html_candidates(html: str, base_url: str, source: str) -> list[Candidate]:
@@ -373,6 +379,7 @@ def acquire_oa(
 
     blocked: list[Candidate] = []
     preprints: list[Candidate] = []
+    held: SourceSuccess | None = None
     # Asking for a preprint DOI means the preprint is the wanted version.
     hold_preprints = not is_preprint_doi(doi)
     located = 0
@@ -403,6 +410,8 @@ def acquire_oa(
             for candidate in step.candidates
             for item in expand_candidate(candidate)
         ]
+        if not hold_preprints:
+            queue.sort(key=lambda entry: not entry[0].preprint)
         for candidate, depth in queue:
             if urlsplit(candidate.url).scheme not in {"http", "https"}:
                 continue
@@ -415,6 +424,16 @@ def acquire_oa(
             path = work_dir / f"oa-{len(attempts)}.pdf"
             started = time.monotonic()
             result, links = _http_candidate(candidate, path, config)
+            if (
+                hold_preprints
+                and isinstance(result, SourceSuccess)
+                and looks_like_preprint(result.path)
+            ):
+                # An unlabelled copy that is a preprint waits like a preprint location.
+                attempt = Attempt(source=candidate.source, status="preprint")
+                attempts.append(observe(doi, attempt, started))
+                held = held or result
+                continue
             record(candidate.source, result, started)
             if isinstance(result, SourceSuccess):
                 result.attempts = attempts
@@ -461,6 +480,7 @@ def acquire_oa(
         closed_access=closed,
         errors=errors,
         preprints=preprints,
+        held_preprint=held,
     )
 
 

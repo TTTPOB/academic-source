@@ -542,6 +542,8 @@ def test_openalex_content_reuses_metadata_without_another_query(monkeypatch, tmp
                     "open_access": {"is_oa": True},
                 },
             )
+        if "pmc.ncbi.nlm.nih.gov" in url:
+            return Response(url, payload={"records": []})
         assert url == "https://content.openalex.org/works/W42.pdf?api_key=key"
         return Response(url, body=pdf_bytes())
 
@@ -549,7 +551,8 @@ def test_openalex_content_reuses_metadata_without_another_query(monkeypatch, tmp
     result = oa.acquire_oa("10.1234/paper", tmp_path, {"openalex_api_key": "key"})
     assert isinstance(result, SourceSuccess)
     assert result.source == "OpenAlexContent"
-    assert len(visited) == 2
+    # OpenAlex metadata, the PMC lookup, then the archived copy: no second OpenAlex query.
+    assert len(visited) == 3
 
 
 @pytest.mark.parametrize("source", ["Unpaywall", "OpenAlexOA"])
@@ -668,7 +671,6 @@ def test_search_budget_exhaustion_allows_free_lookup_and_other_oa_sources(
     key = "fake-oa-budget-key"
     config = {"openalex_api_key": key}
     visited = []
-    pdf = pdf_bytes()
 
     def send(_adapter, request, **kwargs):
         parsed = urlsplit(request.url)
@@ -698,8 +700,8 @@ def test_search_budget_exhaustion_allows_free_lookup_and_other_oa_sources(
             return result
         else:
             assert parsed.hostname == "europepmc.org"
-            result._content = pdf
-            result.headers["Content-Type"] = "application/pdf"
+            result.status_code = 500
+            result._content = b'{"error": "Failed to retrieve PDF"}'
             return result
         result._content = json.dumps(payload).encode()
         return result
@@ -707,12 +709,14 @@ def test_search_budget_exhaustion_allows_free_lookup_and_other_oa_sources(
     monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
     with pytest.raises(RateLimited):
         search_papers("papers", config=config)
+    # The free lookup and the PMC sources still run; the paid archived copy,
+    # tried last, is refused locally without a request.
     acquired = oa.acquire_oa("10.1234/limited", tmp_path, config)
-    assert isinstance(acquired, SourceSuccess)
-    assert acquired.source == "EuropePMC"
-    assert acquired.path.read_bytes() == pdf
+    assert isinstance(acquired, SourceFailure)
     content_attempt = next(
-        item for item in acquired.attempts if item.source == "OpenAlexContent"
+        item
+        for item in acquired.attempts
+        if item.source == "OpenAlexContent" and item.status == "failed"
     )
     assert content_attempt.reason == "rate_limited"
     assert content_attempt.rate_limit["required"] == 100
@@ -762,6 +766,8 @@ def test_openalex_content_authentication_reaches_real_http_adapter(
             result._content = json.dumps(
                 {"id": "https://openalex.org/W42", "open_access": {"is_oa": True}}
             ).encode()
+        elif parsed.hostname == "pmc.ncbi.nlm.nih.gov":
+            result._content = b'{"records": []}'
         else:
             assert parsed.hostname == "content.openalex.org"
             assert parsed.path == "/works/W42.pdf"
@@ -799,7 +805,8 @@ def test_openalex_content_authentication_reaches_real_http_adapter(
         acquired = try_openalex_content_api("10.1234/content", path, config)
         assert acquired["source"] == "OpenAlexContent"
         assert path.read_bytes() == pdf
-    assert visited[-2:] == ["api.openalex.org", "content.openalex.org"]
+    assert visited[-1] == "content.openalex.org"
+    assert visited.count("api.openalex.org") == 1
 
 
 def test_oa_metadata_limit_survives_source_aggregation_and_job_persistence(
@@ -881,7 +888,9 @@ def test_content_failure_diagnostics_keep_public_url_without_credentials(
     failure = oa.acquire_oa("10.1234/content", tmp_path, {"openalex_api_key": key})
     assert isinstance(failure, SourceFailure)
     content_attempt = next(
-        item for item in failure.attempts if item.source == "OpenAlexContent"
+        item
+        for item in failure.attempts
+        if item.source == "OpenAlexContent" and item.status == "failed"
     )
     assert content_attempt.reason == "blocked"
     assert (

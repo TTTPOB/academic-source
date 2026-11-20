@@ -45,6 +45,7 @@ class Attempt(BaseModel):
     rate_limit: dict[str, Any] = Field(default_factory=dict)
     # Wall-clock duration of this attempt; absent on records written before it existed.
     seconds: float | None = None
+    # status="preprint": the download worked but is a preprint, kept as a last resort.
     # How many candidate locations a metadata service returned: positive for
     # status="located", 0 for "no_open_copy". Older records say "discovered" for both.
     candidates: int | None = None

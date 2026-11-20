@@ -173,3 +173,94 @@ def test_failure_keeps_held_preprints_for_the_caller(monkeypatch, tmp_path):
     result = oa.acquire_oa(DOI, tmp_path, {})
     assert isinstance(result, SourceFailure)
     assert result.preprints == [held]
+
+
+def stamped_pdf(text="The copyright holder for this preprint (which was not certified"):
+    import pymupdf
+
+    with pymupdf.open() as document:
+        page = document.new_page()
+        page.insert_text((72, 72), "A study of something")
+        page.insert_text((72, 100), text)
+        return document.tobytes()
+
+
+def test_first_page_stamp_marks_a_preprint(tmp_path):
+    from academic_source.infrastructure.documents import looks_like_preprint
+
+    stamped = tmp_path / "stamped.pdf"
+    stamped.write_bytes(stamped_pdf())
+    arxiv = tmp_path / "arxiv.pdf"
+    arxiv.write_bytes(stamped_pdf("arXiv:1706.03762v7  [cs.CL]  2 Aug 2023"))
+    plain = tmp_path / "plain.pdf"
+    plain.write_bytes(pdf_bytes())
+    assert looks_like_preprint(stamped) and looks_like_preprint(arxiv)
+    assert not looks_like_preprint(plain)
+
+
+def test_unlabelled_preprint_download_waits_for_a_published_copy(monkeypatch, tmp_path):
+    content = "https://content.openalex.org/works/W1.pdf"
+    monkeypatch.setattr(
+        oa,
+        "discover",
+        _discover(Candidate(content, "OpenAlexContent"), Candidate(PUBLISHED, "PMC")),
+    )
+    monkeypatch.setattr(
+        oa,
+        "fetch",
+        lambda url, *a, **k: Response(
+            url, body=stamped_pdf() if url == content else pdf_bytes()
+        ),
+    )
+    result = oa.acquire_oa(DOI, tmp_path, {})
+    assert isinstance(result, SourceSuccess) and result.url == PUBLISHED
+    assert [a.status for a in result.attempts][-2:] == ["preprint", "succeeded"]
+
+
+def test_held_preprint_download_is_used_last_with_a_warning(monkeypatch, tmp_path):
+    content = "https://content.openalex.org/works/W1.pdf"
+    order = []
+    monkeypatch.setattr(
+        oa, "discover", _discover(Candidate(content, "OpenAlexContent"))
+    )
+
+    def fetch(url, *a, **k):
+        order.append(url)
+        return Response(url, body=stamped_pdf())
+
+    monkeypatch.setattr(oa, "fetch", fetch)
+    monkeypatch.setattr(
+        sources,
+        "_plan",
+        lambda *args: [("Publisher", lambda *a: order.append("Publisher") or None)],
+    )
+    monkeypatch.setattr(
+        sources, "call_legacy", lambda label, fn, *args: (fn(), oa.NotFound())[1]
+    )
+    result = sources.LegacySources().acquire(
+        DOI, AcquisitionRequest(identifiers=[DOI]), tmp_path, {}
+    )
+    assert isinstance(result, SourceSuccess) and result.url == content
+    assert order == [content, "Publisher"]
+    assert result.warnings == [oa.PREPRINT_WARNING]
+
+
+def test_preprint_doi_tries_the_preprint_first(monkeypatch, tmp_path):
+    visited = []
+    monkeypatch.setattr(
+        oa,
+        "discover",
+        _discover(
+            Candidate(PUBLISHED, "Unpaywall"),
+            Candidate(PREPRINT, "Unpaywall", preprint=True),
+        ),
+    )
+
+    def fetch(url, *a, **k):
+        visited.append(url)
+        return Response(url, body=stamped_pdf())
+
+    monkeypatch.setattr(oa, "fetch", fetch)
+    result = oa.acquire_oa("10.1101/2022.04.19.488821", tmp_path, {})
+    assert isinstance(result, SourceSuccess) and result.url == PREPRINT
+    assert visited == [PREPRINT] and not result.warnings
