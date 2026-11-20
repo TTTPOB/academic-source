@@ -58,7 +58,7 @@ scansci_pdf.upstream_errors 集中定义 DiscoveryError、UpstreamError 和 Rate
 
 `queue.ahead` 在读取时由内存中的提交顺序算出，不写入任务记录。
 
-每次来源尝试（OA 元数据查询、候选下载、CDP 重试、各出版商和其他渠道）在 `Attempt.seconds` 记录耗时，并由 `academic_source.sources` 日志器写一行 INFO：
+每次来源尝试（OA 元数据查询、候选下载、各出版商和其他渠道）在 `Attempt.seconds` 记录耗时，并由 `academic_source.sources` 日志器写一行 INFO：
 
 ```text
 attempt identifier=10.1126/science.aad8559 source=EuropePMC status=failed reason=network_error candidates=- seconds=30.412

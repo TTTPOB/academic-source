@@ -35,7 +35,6 @@
 | FrontiersDirect | [`try_frontiers_direct` · publishers.py:488](<../src/scansci_pdf/sources/publishers.py#L488-L522>) | 普通 HTTP：绕过闸门 | `Session.get` → PDF 校验和写盘。 | `http_ungated` |
 | BMCDirect | [`try_bmc_direct` · publishers.py:529](<../src/scansci_pdf/sources/publishers.py#L529-L567>) | 普通 HTTP：绕过闸门 | 候选逐个 `Session.get` → PDF 校验和写盘。 | `http_ungated` |
 | arXiv | `_arxiv_source` → [`download_arxiv_pdf` · arxiv.py:21](<../src/scansci_pdf/sources/arxiv.py#L21-L45>) | 普通 HTTP：有闸门 | `fetch(stream=True)` 下载 → 校验和写盘。 | `http` |
-| OACDP | [`_browser_candidate` · oa.py:272](<../src/academic_source/sources/oa.py#L272-L321>) | 应用侧浏览器 | `create_tab` → `navigate_tab` / `get_snapshot` → `fetch_pdf_in_tab` → `close_tab`；仅在 `browser_backend=cdp` 且 HTTP 候选遭拦截时重试。 | `browser` |
 
 ## 出版商浏览器入口
 
@@ -77,4 +76,4 @@
 
 ## OA 快路径（按阶段分流）
 
-[`acquire_oa`](<../src/academic_source/sources/oa.py#L324-L398>)先用 [`discover` / `_metadata`](<../src/academic_source/sources/oa.py#L69-L159>)发出有闸门的元数据请求，再用 [`_http_candidate`](<../src/academic_source/sources/oa.py#L188-L269>)验证候选 PDF。OpenAlexContent 的候选来自 OpenAlex 元数据。仅在 CDP 模式下才把受拦截的候选交给 `OACDP`，最多重试两个。
+[`acquire_oa`](<../src/academic_source/sources/oa.py#L306-L410>)先用 [`discover` / `_metadata`](<../src/academic_source/sources/oa.py#L79-L193>)发出有闸门的元数据请求，再用 [`_http_candidate`](<../src/academic_source/sources/oa.py#L222-L303>)验证候选 PDF。OpenAlexContent 的候选来自 OpenAlex 元数据。快路径只用 HTTP，不开浏览器；被拦截的候选留给后面的出版商来源处理。
