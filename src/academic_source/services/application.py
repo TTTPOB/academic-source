@@ -388,7 +388,7 @@ class Application:
         key_data = {
             # 2: preprints are held back; about a fifth of earlier results were
             # preprints stored for a published DOI.
-            "pdf_version": 2,
+            "pdf_version": 3,
             "identifier": identifier.lower(),
             "policy": request.policy,
             "config": self._cache_config(config),

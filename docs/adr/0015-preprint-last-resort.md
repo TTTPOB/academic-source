@@ -28,7 +28,7 @@ Unpaywall 和 OpenAlex 的每个位置都标了 `version`：`publishedVersion`�
 5. 快路径失败后，照常走出版商、灰色和机构来源，这些来源下载到的预印本同样先放到一边。**全部失败后**才用预印本：优先用已经下载好的那份，没有再试放在一边的地址。
 6. 用预印本时，结果的 `warnings` 写明：「Only a preprint could be fetched: this PDF is the version submitted before peer review, not the published article.」
 7. 请求的标识本身就是预印本时（bioRxiv/medRxiv 的日期或纯数字后缀、10.64898、Research Square、SSRN、Preprints.org、ChemRxiv、OSF、arXiv），预印本候选排在最前，直接使用。10.1101 也是冷泉港期刊（如 `10.1101/gr.…`、`10.1101/gad.…`）的前缀，所以只按后缀格式认定 bioRxiv/medRxiv。
-8. 正文结果的缓存版本加 1。已缓存的 229 篇在下次请求时重新获取，其中的预印本会被正式版替换（拿得到的话）。
+8. 正文结果的缓存版本加 1（加入下载后检查时又加了 1）。已缓存的论文在下次请求时重新获取，其中的预印本会被正式版替换（拿得到的话）。
 
 ## 理由与替代方案
 
