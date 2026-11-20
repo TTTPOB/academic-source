@@ -22,7 +22,8 @@ EFETCH = b"""<PubmedArticleSet>
 def fake_eutils(monkeypatch, calls, fail=False):
     def send(_adapter, request, **kwargs):
         url = urlsplit(request.url)
-        calls.append((url.path.rsplit("/", 1)[-1], parse_qs(url.query)))
+        assert request.method == "POST" and not url.query
+        calls.append((url.path.rsplit("/", 1)[-1], parse_qs(request.body)))
         result = requests.Response()
         result.request = request
         result.url = request.url

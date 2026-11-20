@@ -24,18 +24,25 @@ def pubmed_abstracts(dois: list[str], config: dict[str, Any]) -> dict[str, str]:
         batch = unique[start : start + _BATCH]
         try:
             found.update(_batch(batch, config))
-        except (UpstreamError, requests.RequestException, ValueError, ElementTree.ParseError):
+        except (
+            UpstreamError,
+            requests.RequestException,
+            ValueError,
+            ElementTree.ParseError,
+        ):
             # Abstracts are optional; the caller already has its records.
             continue
     return found
 
 
 def _get(path: str, params: dict[str, Any], config: dict[str, Any]) -> bytes:
+    # POST: a hundred DOIs make a query string longer than E-utilities accepts.
     response = request_response(
         _EUTILS + path,
         config,
         session=_get_session(config),
-        params={**params, "tool": "academic-source"},
+        method="POST",
+        data={**params, "tool": "academic-source"},
         source="pubmed",
         operation="lookup",
     )
@@ -59,7 +66,11 @@ def _batch(dois: list[str], config: dict[str, Any]) -> dict[str, str]:
     if not ids:
         return {}
     root = ElementTree.fromstring(
-        _get("efetch.fcgi", {"db": "pubmed", "id": ",".join(ids), "retmode": "xml"}, config)
+        _get(
+            "efetch.fcgi",
+            {"db": "pubmed", "id": ",".join(ids), "retmode": "xml"},
+            config,
+        )
     )
     wanted = set(dois)
     found = {}

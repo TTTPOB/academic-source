@@ -321,6 +321,7 @@ def request_response(
     session: requests.Session,
     method: str = "GET",
     params: dict[str, Any] | None = None,
+    data: dict[str, Any] | None = None,
     headers: dict[str, str] | None = None,
     timeout: Timeout | None = None,
     proxies: dict[str, str] | None = None,
@@ -335,7 +336,7 @@ def request_response(
     timeout = timeout if timeout is not None else request_timeout(config)
     gate_redirects = bool(config.get("_parallel_http") and allow_redirects)
     send = partial(
-        session.request, method, url, params=params, headers=headers,
+        session.request, method, url, params=params, data=data, headers=headers,
         timeout=timeout, proxies=proxies,
         allow_redirects=allow_redirects and not gate_redirects, stream=stream,
     )
