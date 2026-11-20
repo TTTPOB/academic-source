@@ -113,7 +113,7 @@ A JSON array, best match first:
 
 ```text
 doi, title, authors[], year, publication_date, type, journal
-cited_by_count, is_oa, oa_url, is_retracted
+cited_by_count, is_oa, oa_url, is_retracted, abstract
 ```
 
 ```bash
@@ -128,5 +128,5 @@ Entries without a DOI cannot be fetched.
 id_type           doi | arxiv
 doi               the identifier looked up
 metadata_status   found, or a failure status
-title, authors[], year, type
+title, authors[], year, type, journal, abstract
 ```

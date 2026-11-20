@@ -71,6 +71,9 @@ def test_explicit_doi_metadata_preserves_identity_and_directed_relations(transpo
 
     def upstream(request):
         url = urlsplit(request.url)
+        if url.hostname == "api.openalex.org":
+            # No abstract anywhere: the record stays as Crossref gave it.
+            return response(request, {}, status=404)
         assert url.hostname == "api.crossref.org"
         assert unquote(url.path) == f"/works/{doi}"
         return response(
@@ -265,6 +268,8 @@ def test_arxiv_doi_is_looked_up_as_a_doi(transport):
 def test_http_mcp_metadata_share_metadata_and_failure_statuses(tmp_path, transport):
     def upstream(request):
         assert request.method == "GET"
+        if urlsplit(request.url).hostname == "api.openalex.org":
+            return response(request, {}, status=404)
         assert urlsplit(request.url).hostname == "api.crossref.org"
         assert unquote(urlsplit(request.url).path) == "/works/10.1234/known"
         return response(
@@ -720,3 +725,39 @@ def test_title_limit_is_persisted_and_projected_while_direct_doi_still_succeeds(
         assert "rate_limit" not in http.json()["results"][1]
         assert projected == job_data(persisted)["results"][0]
         assert key not in http.text
+
+
+def test_metadata_abstract_comes_from_crossref_or_else_openalex(transport):
+    def crossref(abstract=None):
+        message = {"DOI": "10.1234/a", "title": ["T"], "container-title": ["Cell"]}
+        if abstract:
+            message["abstract"] = abstract
+        return {"message": message}
+
+    calls = []
+
+    def with_crossref_abstract(request):
+        calls.append(urlsplit(request.url).hostname)
+        return response(
+            request,
+            crossref(
+                "<jats:title>Abstract</jats:title><jats:p>Cells &amp; genes.</jats:p>"
+            ),
+        )
+
+    transport(with_crossref_abstract)
+    result = discovery.get_metadata("doi", {}, doi="10.1234/a")
+    assert result["abstract"] == "Cells & genes."
+    assert result["journal"] == "Cell"
+    assert calls == ["api.crossref.org"]
+
+    long_words = {f"word{i}": [i] for i in range(200)}
+
+    def from_openalex(request):
+        if urlsplit(request.url).hostname == "api.openalex.org":
+            return response(request, {"abstract_inverted_index": long_words})
+        return response(request, crossref())
+
+    transport(from_openalex)
+    abstract = discovery.get_metadata("doi", {}, doi="10.1234/a")["abstract"]
+    assert abstract.split() == [f"word{i}" for i in range(200)]

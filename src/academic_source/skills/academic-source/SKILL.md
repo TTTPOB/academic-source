@@ -28,13 +28,34 @@ asource metadata --arxiv 2401.01234
 ```
 
 `search` returns a JSON array; each entry has `doi`, `title`, `authors`, `year`,
-`journal`, `cited_by_count`, `is_oa`, and `type`. Narrow results with
+`publication_date`, `journal`, `cited_by_count`, `is_oa`, `type` and the full
+`abstract` when OpenAlex has one. `metadata` also returns the abstract when
+Crossref or OpenAlex has it. Narrow results with
 `--journal` (ISSN or exact name), `--year`, `--type`, `--oa`,
 `--min-citations`, `--author` and `--in title`; anything else goes into
 `--filter` as an OpenAlex filter expression. Run `asource search --help` for the
 syntax and examples. If a journal name is ambiguous, the error lists candidates
 with ISSNs; retry with the right ISSN. If `search` fails with an upstream error
 such as HTTP 504, retry once, then report the failure.
+
+`--limit` accepts up to 1000; above 100 the server fetches several pages, so
+write large results to a file (`> results.json`) rather than reading them inline.
+To list everything a journal published in a period, use one wide date window
+instead of many narrow ones:
+
+```bash
+asource search --journal 0092-8674 --type article --limit 1000 \
+  --filter from_publication_date:2026-07-01,to_publication_date:2026-11-30 > cell.json
+```
+
+Two quirks of OpenAlex data matter when screening by journal and date:
+
+- For some journals (Cell, for example) `publication_date` is only the month:
+  every paper is dated the 1st. A window starting on the 2nd of a month misses
+  that month entirely. Use windows aligned to whole months and check exact
+  online dates elsewhere if they matter.
+- News, editorials and comments are often typed `article`. For Nature, research
+  papers have DOIs starting `10.1038/s41586`; `10.1038/d41586` is news.
 
 ## Fetch full text
 

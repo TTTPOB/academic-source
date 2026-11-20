@@ -168,7 +168,7 @@ def test_candidate_window_is_bounded_and_does_not_promise_to_fill_limit(transpor
     )
     assert len(discovery.search("paper", limit=100)) == 1
     assert parse_qs(urlsplit(seen[0].url).query)["per_page"] == ["100"]
-    for limit in (0, 101):
+    for limit in (0, 1001):
         with pytest.raises(ValueError, match="limit"):
             paper_search.search_papers("paper", limit=limit)
     with pytest.raises(ValueError, match="Sort"):
@@ -343,7 +343,7 @@ def test_http_mcp_search_share_type_projection_validation_and_errors(
         mcp = mcp_call(client, "search", {"query": "papers", "limit": 1})
         assert mcp["structuredContent"]["result"] == http.json()
         assert client.get("/api/v1/search", params={"query": " "}).status_code == 400
-        invalid = mcp_call(client, "search", {"query": "papers", "limit": 101})
+        invalid = mcp_call(client, "search", {"query": "papers", "limit": 1001})
         assert invalid["isError"] is True
 
         transport(lambda request: response(request, {"results": []}))
@@ -404,3 +404,35 @@ def test_http_mcp_daily_limit_is_actionable_and_rejects_repeated_search_before_n
         assert key not in failed.text + str(mcp)
         assert "private raw body" not in failed.text + str(mcp)
     assert parse_qs(urlsplit(sent[0].url).query)["api_key"] == [key]
+
+
+def test_large_limits_follow_the_cursor_and_keep_full_abstracts(transport):
+    seen = []
+    words = {f"w{i}": [i] for i in range(300)}
+
+    def upstream(request):
+        params = parse_qs(urlsplit(request.url).query)
+        seen.append(params["cursor"][0])
+        page = int(params["cursor"][0].removeprefix("c") or 0) if seen[-1] != "*" else 0
+        works = [
+            {
+                "doi": f"10.1/{page}-{i}",
+                "title": f"P{page}-{i}",
+                "abstract_inverted_index": words,
+            }
+            for i in range(100)
+        ]
+        next_cursor = f"c{page + 1}" if page < 2 else None
+        return response(
+            request, {"results": works, "meta": {"next_cursor": next_cursor}}
+        )
+
+    transport(upstream)
+    results = paper_search.search_papers("paper", limit=250)
+    assert len(results) == 250
+    assert seen == ["*", "c1", "c2"]
+    assert results[0]["abstract"].split() == [f"w{i}" for i in range(300)]
+
+    seen.clear()
+    assert len(paper_search.search_papers("paper", limit=1000)) == 300
+    assert seen == ["*", "c1", "c2"]

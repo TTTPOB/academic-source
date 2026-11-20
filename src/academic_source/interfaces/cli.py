@@ -99,7 +99,10 @@ Filter fields: https://docs.openalex.org/api-entities/works/filter-works""",
         help="keywords; may be omitted if a filter is given",
     )
     search.add_argument(
-        "--limit", type=int, default=10, help="number of results, 1-100 (default 10)"
+        "--limit",
+        type=int,
+        default=10,
+        help="number of results, 1-1000 (default 10); above 100 the server fetches several pages",
     )
     search.add_argument(
         "--journal",

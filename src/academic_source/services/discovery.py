@@ -96,11 +96,31 @@ def _doi_metadata(doi: str, config: dict[str, Any]) -> dict[str, Any]:
             "metadata_status": "unavailable",
             "metadata_error": "Crossref returned an invalid or mismatched DOI record",
         }
-    return {
-        **result,
-        "metadata_status": "found",
-        **_crossref_fields(message),
-    }
+    fields = _crossref_fields(message)
+    if "abstract" not in fields and (abstract := _openalex_abstract(doi, config)):
+        fields["abstract"] = abstract
+    return {**result, "metadata_status": "found", **fields}
+
+
+def _openalex_abstract(doi: str, config: dict[str, Any]) -> str:
+    """Crossref often lacks the abstract; OpenAlex has one for many more works."""
+    from scansci_pdf.search import _reconstruct_abstract
+    from scansci_pdf.upstream_client import openalex_params
+
+    try:
+        work = get_json(
+            f"https://api.openalex.org/works/doi:{quote(doi, safe='')}",
+            config,
+            source="openalex",
+            operation="lookup",
+            params=openalex_params(config, {"select": "abstract_inverted_index"}),
+        )
+    except UpstreamError:
+        # The abstract is optional; Crossref already answered.
+        return ""
+    if not isinstance(work, dict):
+        return ""
+    return _reconstruct_abstract(work.get("abstract_inverted_index"))
 
 
 def _metadata_arxiv_id(value: str) -> str:
@@ -252,10 +272,17 @@ def _crossref_fields(message: dict[str, Any]) -> dict[str, Any]:
         for update in message.get(direction) or []
         if update.get("DOI") and update.get("type")
     ]
+    journals = message.get("container-title") or []
+    abstract = message.get("abstract") or ""
+    # Crossref abstracts are JATS fragments; keep the text, drop the "Abstract" label.
+    abstract = " ".join(unescape(re.sub(r"<[^>]+>", " ", abstract)).split())
+    abstract = re.sub(r"^Abstract\s+", "", abstract)
     fields = {
         "title": title,
         "authors": authors,
         "year": year,
+        "journal": journals[0] if journals else None,
+        "abstract": abstract,
         "type": message.get("type"),
         "relations": relations,
         "review_type": (message.get("review") or {}).get("type"),

@@ -15,8 +15,8 @@ from .network import _get_session
 from .upstream_client import openalex_params, request_response
 from .upstream_errors import UpstreamError
 
-_MAX_LIMIT = 100
-_MAX_CANDIDATES = 100  # OpenAlex's per-page maximum; never paginate to fill a limit.
+_MAX_LIMIT = 1000
+_PAGE_SIZE = 100  # OpenAlex's per-page maximum; larger limits page with a cursor.
 _OPENALEX_NON_PAPER_TYPES = {
     "book",
     "book-chapter",
@@ -132,7 +132,7 @@ def _reconstruct_abstract(inverted_index: dict | None) -> str:
         if isinstance(position, int)
     ]
     word_positions.sort()
-    return " ".join(word for _, word in word_positions)[:500]
+    return " ".join(word for _, word in word_positions)
 
 
 def _normalized_title(title: str) -> str:
@@ -337,7 +337,7 @@ def search_papers(
 ) -> list[dict[str, Any]]:
     """Search one bounded OpenAlex works page, then deduplicate by DOI."""
     if not 1 <= limit <= _MAX_LIMIT:
-        raise ValueError("Search limit must be between 1 and 100")
+        raise ValueError(f"Search limit must be between 1 and {_MAX_LIMIT}")
     if in_ not in _SEARCH_KEYS:
         raise ValueError("Search scope must be all, title, or abstract")
 
@@ -347,7 +347,7 @@ def search_papers(
     types = [value.strip() for value in (type or "").split(",") if value.strip()]
     author = (author or "").strip()
     raw_filter = filter if filter and filter.strip() else ""
-    params: dict[str, Any] = {"per_page": min(_MAX_CANDIDATES, max(30, limit * 3))}
+    params: dict[str, Any] = {"per_page": min(_PAGE_SIZE, max(30, limit * 3))}
     if query:
         params[_SEARCH_KEYS[in_]] = query
     if sort or not query:
@@ -419,8 +419,9 @@ def search_papers(
     if raw_filter:
         filters.append(raw_filter)
     params["filter"] = ",".join(filters)
+    works = _search_pages(params, limit, config)
     results = _paper_results(
-        _openalex_get("works", params, config)["results"],
+        works,
         limit,
         exclude_non_papers=exclude_non_papers,
         exclude_retracted=exclude_retracted,
@@ -428,6 +429,22 @@ def search_papers(
     if results and author_match:
         results[0]["_author_match"] = author_match
     return results
+
+
+def _search_pages(
+    params: dict[str, Any], limit: int, config: dict[str, Any] | None
+) -> list[dict]:
+    """One request up to a page; beyond that, follow OpenAlex's cursor."""
+    if limit <= _PAGE_SIZE:
+        return _openalex_get("works", params, config)["results"]
+    works: list[dict] = []
+    cursor = "*"
+    # A little slack for the few records dropped locally (paratext, duplicates).
+    while cursor and len(works) < limit + _PAGE_SIZE // 10:
+        page = _openalex_get("works", {**params, "cursor": cursor}, config)
+        works.extend(page["results"])
+        cursor = (page.get("meta") or {}).get("next_cursor") if page["results"] else None
+    return works
 
 
 def search_by_title(
