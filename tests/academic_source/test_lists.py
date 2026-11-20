@@ -85,7 +85,7 @@ def test_empty_and_malformed_uploads_fail_before_job_submission(tmp_path):
         parse_list(store, upload_id="x", text="10.1234/known")
 
 
-def test_discovery_validates_before_search_and_keeps_public_abstract(monkeypatch):
+def test_discovery_keeps_public_abstract(monkeypatch):
     from scansci_pdf import search as legacy_search
 
     def fixture_search(query, limit, *, config=None):
@@ -100,12 +100,9 @@ def test_discovery_validates_before_search_and_keeps_public_abstract(monkeypatch
         ]
 
     monkeypatch.setattr(legacy_search, "search_papers", fixture_search)
-    assert search(" papers ", limit=2) == [
+    assert search("papers", limit=2) == [
         {"title": "Paper", "abstract": "Useful", "url": "https://example.org/work"}
     ]
-    for query, limit in (("", 1), ("papers", 0), ("papers", 101)):
-        with pytest.raises(ValueError):
-            search(query, limit)
     assert (
         normalize_identifier("https://arxiv.org/pdf/math-ph/9901001v4.pdf")
         == "arxiv:math-ph/9901001v4"

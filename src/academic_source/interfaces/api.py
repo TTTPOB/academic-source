@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict
 
 from academic_source.domain import AcquisitionRequest
 from academic_source.interfaces.presentation import job_data
-from scansci_pdf.upstream_errors import DiscoveryError
+from scansci_pdf.upstream_errors import DiscoveryError, UpstreamError
 
 if TYPE_CHECKING:
     from academic_source.services.application import Application
@@ -37,13 +37,43 @@ def create_router(application: Application) -> APIRouter:
         return {"status": "ok", "application": "academic-source"}
 
     @api.get("/search")
-    def search(query: str, limit: int = 10) -> list[dict[str, Any]]:
+    def search(
+        query: str = "",
+        limit: int = 10,
+        *,
+        journal: str | None = None,
+        year: str | None = None,
+        type: str | None = None,
+        oa: bool = False,
+        min_citations: int | None = None,
+        author: str | None = None,
+        sort: str | None = None,
+        in_: Annotated[Literal["all", "title", "abstract"], Query(alias="in")] = "all",
+        filter: str | None = None,
+    ) -> list[dict[str, Any]]:
         try:
-            return application.search(query, limit)
+            return application.search(
+                query,
+                limit,
+                journal=journal,
+                year=year,
+                type=type,
+                oa=oa,
+                min_citations=min_citations,
+                author=author,
+                sort=sort,
+                in_=in_,
+                filter=filter,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except DiscoveryError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
+            status = (
+                400
+                if isinstance(exc, UpstreamError) and exc.status_code == 400
+                else 502
+            )
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
 
     @api.post("/metadata")
     def get_metadata(payload: MetadataInput) -> dict[str, Any]:

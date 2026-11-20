@@ -2,7 +2,7 @@
 
 import re
 from html import unescape
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict, Unpack
 from urllib.parse import quote, urlsplit
 from xml.etree import ElementTree
 
@@ -266,13 +266,25 @@ def _crossref_fields(message: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+class SearchFilters(TypedDict, total=False):
+    journal: str | None
+    year: str | None
+    type: str | None
+    oa: bool
+    min_citations: int | None
+    author: str | None
+    sort: str | None
+    in_: Literal["all", "title", "abstract"]
+    filter: str | None
+
+
 def search(
-    query: str, limit: int = 10, *, config: dict[str, Any] | None = None
+    query: str = "",
+    limit: int = 10,
+    *,
+    config: dict[str, Any] | None = None,
+    **filters: Unpack[SearchFilters],
 ) -> list[dict[str, Any]]:
-    if not query.strip():
-        raise ValueError("Search query must not be empty")
-    if not 1 <= limit <= 100:
-        raise ValueError("Search limit must be between 1 and 100")
     from scansci_pdf.search import search_papers
 
     fields = (
@@ -289,6 +301,7 @@ def search(
         "type",
         "is_retracted",
         "publication_date",
+        "journal",
     )
     return [
         {
@@ -296,5 +309,5 @@ def search(
             for key in fields
             if key in item and item[key] not in (None, "", [], {})
         }
-        for item in search_papers(query.strip(), limit=limit, config=config)
+        for item in search_papers(query, limit=limit, config=config, **filters)
     ]

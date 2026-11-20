@@ -142,11 +142,11 @@ def test_search_dates_missing_metadata_and_single_sided_years(transport):
     assert found[0]["publication_date"] is None
     assert found[1]["year"] == 2025
     params = parse_qs(urlsplit(seen[-1].url).query)
-    assert params["filter"] == ["from_publication_date:2020-01-01"]
+    assert "from_publication_date:2020-01-01" in params["filter"][0].split(",")
     assert params["sort"] == ["publication_date:desc"]
     paper_search.search_papers("online paper", year_to=2023, sort="cited_by_count")
     params = parse_qs(urlsplit(seen[-1].url).query)
-    assert params["filter"] == ["to_publication_date:2023-12-31"]
+    assert "to_publication_date:2023-12-31" in params["filter"][0].split(",")
     assert params["sort"] == ["cited_by_count:desc"]
     public = discovery.search("online paper")
     assert "year" not in public[0] and "publication_date" not in public[0]

@@ -12,7 +12,7 @@ import time
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypedDict, Unpack
 
 import httpx
 
@@ -45,8 +45,47 @@ def _json(response: httpx.Response) -> Any:
     return response.json()
 
 
-def search(client: httpx.Client, query: str, limit: int) -> Any:
-    return _json(client.get("api/v1/search", params={"query": query, "limit": limit}))
+SearchFilters = TypedDict(
+    "SearchFilters",
+    {
+        "journal": str | None,
+        "year": str | None,
+        "type": str | None,
+        "oa": bool,
+        "min_citations": int | None,
+        "author": str | None,
+        "sort": str | None,
+        "in": Literal["all", "title", "abstract"],
+        "filter": str | None,
+    },
+    total=False,
+)
+
+
+def search(
+    client: httpx.Client,
+    query: str = "",
+    limit: int = 10,
+    **filters: Unpack[SearchFilters],
+) -> Any:
+    """Search OpenAlex works. Pass the reserved keyword as **{"in": "title"}."""
+    params: dict[str, Any] = {"limit": limit}
+    if query:
+        params["query"] = query
+    for key, value in filters.items():
+        if key not in SearchFilters.__annotations__:
+            raise TypeError(f"Unknown search option: {key}")
+        if value is not None:
+            params[key] = value
+    response = client.get("api/v1/search", params=params)
+    if response.status_code == 400:
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        if isinstance(body, dict) and isinstance(body.get("detail"), str):
+            raise ValueError(body["detail"])
+    return _json(response)
 
 
 def metadata(client: httpx.Client, *, doi: str | None, arxiv: str | None) -> Any:

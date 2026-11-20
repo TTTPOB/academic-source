@@ -5,10 +5,11 @@ from __future__ import annotations
 import sys
 from contextlib import asynccontextmanager, nullcontext, redirect_stdout
 from functools import partial
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 
 from anyio import to_thread
 from mcp.server.fastmcp import Context, FastMCP
+from pydantic import Field
 
 from academic_source.domain import AcquisitionRequest
 from academic_source.interfaces.presentation import DownloadFactory, job_data
@@ -78,9 +79,47 @@ def create_mcp(application: Application, *, stdio: bool = False) -> FastMCP:
         return partial(application.downloads.issue, base_url=base_url)
 
     @mcp.tool()
-    async def search(query: str, limit: int = 10) -> list[dict[str, Any]]:
-        """Search OpenAlex for papers, excluding explicit non-paper types and retracted works."""
-        return await to_thread.run_sync(partial(application.search, query, limit))
+    async def search(
+        query: str = "",
+        limit: int = 10,
+        *,
+        journal: str | None = None,
+        year: str | None = None,
+        type: str | None = None,
+        oa: bool = False,
+        min_citations: int | None = None,
+        author: str | None = None,
+        sort: str | None = None,
+        in_: Annotated[
+            Literal["all", "title", "abstract"], Field(validation_alias="in")
+        ] = "all",
+        filter: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Search OpenAlex works by keywords and/or filters.
+
+        Journal takes an ISSN or exact source title; year takes YYYY, YYYY-YYYY,
+        YYYY- or -YYYY. Type takes comma-separated work types (OR). Author takes a
+        name, OpenAlex author ID or ORCID. In=abstract searches titles and abstracts.
+        Sort by cited_by_count or publication_date, optionally :asc or :desc.
+        Defaults to relevance with a query and newest first without one.
+        Filter is a raw OpenAlex filter expression ANDed with the other filters.
+        """
+        return await to_thread.run_sync(
+            partial(
+                application.search,
+                query,
+                limit,
+                journal=journal,
+                year=year,
+                type=type,
+                oa=oa,
+                min_citations=min_citations,
+                author=author,
+                sort=sort,
+                in_=in_,
+                filter=filter,
+            )
+        )
 
     @mcp.tool()
     async def get_metadata(

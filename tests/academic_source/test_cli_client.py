@@ -237,7 +237,9 @@ def test_setup_installs_the_bundled_skill(tmp_path, capsys):
 def test_search_and_metadata_go_to_the_server(server, monkeypatch, capsys):
     url, _ = server
     monkeypatch.setattr(
-        Application, "search", lambda self, query, limit: [{"q": query, "n": limit}]
+        Application,
+        "search",
+        lambda self, query, limit, **filters: [{"q": query, "n": limit}],
     )
     monkeypatch.setattr(
         Application,

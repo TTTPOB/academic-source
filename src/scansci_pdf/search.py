@@ -6,38 +6,56 @@ import re
 import unicodedata
 from datetime import date
 from difflib import SequenceMatcher
-from typing import Any
+from typing import Any, Literal
+
+import requests
 
 from .identifiers import normalize_doi
-from .upstream_client import get_json, openalex_params
+from .network import _get_session
+from .upstream_client import openalex_params, request_response
 from .upstream_errors import UpstreamError
 
 _MAX_LIMIT = 100
 _MAX_CANDIDATES = 100  # OpenAlex's per-page maximum; never paginate to fill a limit.
-_NON_PAPER_TYPES = {
-    "peer-review",
-    "component",
-    "supplementary-materials",
-    "paratext",
-    "reference-entry",
-    "dataset",
-    "erratum",
-    "correction",
-    "retraction",
-    "conference-abstract",
+_OPENALEX_NON_PAPER_TYPES = {
     "book",
     "book-chapter",
-    "book-section",
+    "conference-abstract",
+    "dataset",
+    "erratum",
+    "paratext",
+    "peer-review",
+    "reference-entry",
+    "retraction",
+    "standard",
+    "supplementary-materials",
+}
+# Legacy/raw labels are not accepted by the OpenAlex work type filter.
+_NON_PAPER_TYPES = _OPENALEX_NON_PAPER_TYPES | {
     "book-part",
+    "book-section",
     "book-series",
     "book-set",
-    "reference-book",
-    "monograph",
+    "component",
+    "correction",
     "edited-book",
-    "proceedings",
-    "standard",
     "grant",
+    "monograph",
+    "proceedings",
+    "reference-book",
 }
+SearchScope = Literal["all", "title", "abstract"]
+_SEARCH_KEYS = {
+    "all": "search",
+    "title": "search.title",
+    "abstract": "search.title_and_abstract",
+}
+_ISSN = re.compile(r"[0-9]{4}-[0-9]{3}[0-9X]", re.IGNORECASE)
+_AUTHOR_ID = re.compile(r"(?:https?://openalex\.org/)?(A[0-9]+)", re.IGNORECASE)
+_ORCID = re.compile(
+    r"(?:https?://orcid\.org/)?([0-9]{4}-[0-9]{4}-[0-9]{4}-[0-9]{3}[0-9X])",
+    re.IGNORECASE,
+)
 _PARATEXT_TITLES = {
     "foreword",
     "manuscript submission guideline",
@@ -53,17 +71,54 @@ def _openalex_get(
     entity: str,
     params: dict[str, Any],
     config: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    data = get_json(
-        f"https://api.openalex.org/{entity}",
-        config,
-        source="openalex",
-        operation="search" if "search" in params else "list",
-        params=openalex_params(config or {}, params),
+) -> dict[str, Any]:
+    config = config if config is not None else {}
+    raw_fields = _filter_fields(params.get("filter", ""))
+    is_search = any(key in params for key in _SEARCH_KEYS.values()) or any(
+        field.endswith((".search", ".search.exact")) for field in raw_fields
     )
+    try:
+        response = request_response(
+            f"https://api.openalex.org/{entity}",
+            config,
+            session=_get_session(config),
+            source="openalex",
+            operation="search" if is_search else "list",
+            params=openalex_params(config, params),
+        )
+    except requests.RequestException:
+        raise UpstreamError(
+            "openalex", "OpenAlex: request failed (network error)"
+        ) from None
+    with response:
+        status = response.status_code
+        if status >= 400:
+            message = f"OpenAlex: request failed (HTTP {status})"
+            if status == 400:
+                try:
+                    body = response.json()
+                except ValueError:
+                    body = None
+                if isinstance(body, dict) and isinstance(body.get("message"), str):
+                    message = body["message"] or message
+            raise UpstreamError("openalex", message, status_code=status)
+        try:
+            data = response.json()
+        except ValueError:
+            raise UpstreamError("openalex", "OpenAlex: returned invalid JSON") from None
     if not isinstance(data, dict) or not isinstance(data.get("results"), list):
         raise UpstreamError("openalex", "OpenAlex returned an invalid results payload")
-    return data["results"]
+    return data
+
+
+def _filter_fields(expression: str) -> set[str]:
+    # Inspect field names only. The full expression is passed through untouched.
+    return {
+        name.strip().lower().replace("-", "_")
+        for clause in expression.split(",")
+        for name, colon, _ in [clause.partition(":")]
+        if colon
+    }
 
 
 def _reconstruct_abstract(inverted_index: dict | None) -> str:
@@ -103,6 +158,8 @@ def _parse_openalex_works(works: list[dict]) -> list[dict[str, Any]]:
             year = int(year) if isinstance(year, str) and year.isdigit() else None
         oa = work.get("open_access") or {}
         best_oa = work.get("best_oa_location") or {}
+        source = (work.get("primary_location") or {}).get("source") or {}
+        journal = source.get("display_name")
         results.append(
             {
                 "title": work.get("title") or "",
@@ -125,18 +182,24 @@ def _parse_openalex_works(works: list[dict]) -> list[dict[str, Any]]:
                 "source": "openalex",
                 "type": work.get("type"),
                 "is_retracted": work.get("is_retracted"),
+                **({"journal": journal} if journal else {}),
             }
         )
     return results
 
 
-def _paper_results(works: list[dict], limit: int) -> list[dict[str, Any]]:
+def _paper_results(
+    works: list[dict], limit: int, *, exclude_non_papers: bool, exclude_retracted: bool
+) -> list[dict[str, Any]]:
     results = []
     seen = set()
     for item in _parse_openalex_works(works):
-        if item["type"] in _NON_PAPER_TYPES or item["is_retracted"] is True:
+        if exclude_retracted and item["is_retracted"] is True:
             continue
-        if _normalized_title(item["title"]) in _PARATEXT_TITLES:
+        if exclude_non_papers and (
+            item["type"] in _NON_PAPER_TYPES
+            or _normalized_title(item["title"]) in _PARATEXT_TITLES
+        ):
             continue
         doi_key = item["doi"].casefold()
         if doi_key in seen:
@@ -148,43 +211,85 @@ def _paper_results(works: list[dict], limit: int) -> list[dict[str, Any]]:
     return results
 
 
-def _work_params(
-    limit: int,
-    year_from: int | None,
-    year_to: int | None,
-    sort: str | None,
-) -> dict[str, Any]:
-    if not 1 <= limit <= _MAX_LIMIT:
-        raise ValueError("Search limit must be between 1 and 100")
-    if year_from is not None and year_to is not None and year_from > year_to:
-        raise ValueError("year_from must not exceed year_to")
-    params: dict[str, Any] = {"per_page": min(_MAX_CANDIDATES, max(30, limit * 3))}
-    filters = []
-    if year_from is not None:
-        filters.append(f"from_publication_date:{year_from:04d}-01-01")
-    if year_to is not None:
-        filters.append(f"to_publication_date:{year_to:04d}-12-31")
-    if filters:
-        params["filter"] = ",".join(filters)
-    if sort:
-        key, _, direction = sort.partition(":")
-        direction = direction or "desc"
-        if key not in {"cited_by_count", "publication_date"} or direction not in {
-            "asc",
-            "desc",
-        }:
-            raise ValueError(
-                "Sort must be cited_by_count or publication_date, optionally :asc or :desc"
-            )
-        params["sort"] = f"{key}:{direction}"
-    return params
+def _year_bounds(year: str) -> tuple[int | None, int | None]:
+    if re.fullmatch(r"[0-9]{4}", year):
+        return int(year), int(year)
+    match = re.fullmatch(r"([0-9]{4})?-([0-9]{4})?", year)
+    if not match or not any(match.groups()):
+        raise ValueError("Year must be YYYY, YYYY-YYYY, YYYY-, or -YYYY")
+    return int(match[1]) if match[1] else None, int(match[2]) if match[2] else None
+
+
+def _sort_param(sort: str) -> str:
+    key, _, direction = sort.partition(":")
+    direction = direction or "desc"
+    if key not in {"cited_by_count", "publication_date"} or direction not in {
+        "asc",
+        "desc",
+    }:
+        raise ValueError(
+            "Sort must be cited_by_count or publication_date, optionally :asc or :desc"
+        )
+    return f"{key}:{direction}"
+
+
+def _journal_filter(journal: str, config: dict[str, Any] | None) -> str:
+    if _ISSN.fullmatch(journal):
+        return f"primary_location.source.issn:{journal.upper()}"
+
+    name = journal.strip().casefold()
+    candidates: list[dict[str, Any]] = []
+    matches: dict[str, dict[str, Any]] = {}
+    named: dict[str, dict[str, Any]] = {}
+    # One relevance-ranked page: an exact title match ranks near the top, and
+    # paging through every partial match (e.g. 300 for "Nature") costs a search each.
+    page = _openalex_get(
+        "sources",
+        {
+            "search": journal,
+            "per_page": 100,
+            "select": "id,display_name,alternate_titles,abbreviated_title,issn_l",
+        },
+        config,
+    )
+    for source in page["results"]:
+        if len(candidates) < 10:
+            candidates.append(source)
+        titles = (
+            source.get("display_name"),
+            source.get("abbreviated_title"),
+            *(source.get("alternate_titles") or []),
+        )
+        if any(title and title.strip().casefold() == name for title in titles):
+            matches[source["id"]] = source
+            if (source.get("display_name") or "").strip().casefold() == name:
+                named[source["id"]] = source
+    # A journal's own name beats another journal's alternate title:
+    # "Cell" is Cell, even though Developmental Cell lists "Cell" as an alias.
+    for chosen in (named, matches):
+        if len(chosen) == 1:
+            source_id = next(iter(chosen)).rsplit("/", 1)[-1]
+            return f"primary_location.source.id:{source_id}"
+    suggestions = list(matches.values()) or candidates
+    listed = "; ".join(
+        f"{source.get('display_name') or '(unnamed)'} "
+        f"(ISSN-L: {source.get('issn_l') or 'unavailable'})"
+        for source in suggestions[:10]
+    )
+    problem = "is ambiguous" if matches else "has no exact source match"
+    raise ValueError(
+        f"Journal {journal!r} {problem}. Retry with an ISSN. "
+        f"Candidates: {listed or 'none'}"
+    )
 
 
 def _lookup_author_id(
     name: str,
     config: dict[str, Any] | None = None,
 ) -> tuple[str | None, str, int, int]:
-    candidates = _openalex_get("authors", {"search": name, "per_page": 10}, config)
+    candidates = _openalex_get("authors", {"search": name, "per_page": 10}, config)[
+        "results"
+    ]
     if not candidates:
         return None, "", 0, 0
     parts = name.casefold().split()
@@ -221,33 +326,105 @@ def search_papers(
     *,
     author: str | None = None,
     author_id: str | None = None,
+    journal: str | None = None,
+    year: str | None = None,
+    type: str | None = None,
+    oa: bool = False,
+    min_citations: int | None = None,
+    in_: SearchScope = "all",
+    filter: str | None = None,
     config: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Search one bounded OpenAlex page, filter non-papers, then apply limit.
+    """Search one bounded OpenAlex works page, then deduplicate by DOI."""
+    if not 1 <= limit <= _MAX_LIMIT:
+        raise ValueError("Search limit must be between 1 and 100")
+    if in_ not in _SEARCH_KEYS:
+        raise ValueError("Search scope must be all, title, or abstract")
 
-    Default order is OpenAlex relevance; explicit date/citation sort stays upstream.
-    Author searches retain the existing name-to-profile matching behavior.
-    """
-    params = _work_params(limit, year_from, year_to, sort)
+    query = query.strip()
+    journal = (journal or "").strip()
+    year = (year or "").strip()
+    types = [value.strip() for value in (type or "").split(",") if value.strip()]
+    author = (author or "").strip()
+    raw_filter = filter if filter and filter.strip() else ""
+    params: dict[str, Any] = {"per_page": min(_MAX_CANDIDATES, max(30, limit * 3))}
+    if query:
+        params[_SEARCH_KEYS[in_]] = query
+    if sort or not query:
+        # Without keywords, newest first is useful for browsing a filtered list.
+        params["sort"] = _sort_param(sort) if sort else "publication_date:desc"
+
+    filters = []
+    if year:
+        if year_from is not None or year_to is not None:
+            raise ValueError("Year cannot be combined with year_from or year_to")
+        year_from, year_to = _year_bounds(year)
+    if any(
+        bound is not None and not 1 <= bound <= 9999 for bound in (year_from, year_to)
+    ):
+        raise ValueError("Year must be between 0001 and 9999")
+    if year_from is not None and year_to is not None and year_from > year_to:
+        raise ValueError("The starting year must not exceed the ending year")
+    if year_from is not None:
+        filters.append(f"from_publication_date:{year_from:04d}-01-01")
+    if year_to is not None:
+        filters.append(f"to_publication_date:{year_to:04d}-12-31")
+    if types:
+        if any(
+            not re.fullmatch(r"[a-z0-9-]+", value, re.IGNORECASE) for value in types
+        ):
+            raise ValueError(
+                "Type must be a comma-separated list of OpenAlex work types"
+            )
+        filters.append("type:" + "|".join(types))
+    if oa:
+        filters.append("open_access.is_oa:true")
+    if min_citations is not None:
+        if min_citations < 0:
+            raise ValueError("Minimum citations must be non-negative")
+        filters.append(f"cited_by_count:>{min_citations - 1}")
+    if not (query or filters or journal or author or author_id or raw_filter):
+        raise ValueError("Search requires a query or at least one filter")
+
     author_match = None
-    if author and not author_id:
-        author_id, name, works, cited = _lookup_author_id(author, config)
-        if not author_id:
-            return []
-        author_match = {
-            "name": name,
-            "id": author_id,
-            "works_count": works,
-            "cited_by_count": cited,
-        }
     if author_id:
-        author_filter = f"authorships.author.id:{author_id}"
-        params["filter"] = ",".join(filter(None, [params.get("filter"), author_filter]))
-    elif query.strip():
-        params["search"] = query.strip()
-    else:
-        return []
-    results = _paper_results(_openalex_get("works", params, config), limit)
+        filters.append(f"authorships.author.id:{author_id}")
+    elif author:
+        if match := _AUTHOR_ID.fullmatch(author):
+            filters.append(f"authorships.author.id:{match[1].upper()}")
+        elif match := _ORCID.fullmatch(author):
+            filters.append(f"author.orcid:{match[1].upper()}")
+        else:
+            author_id, name, works, cited = _lookup_author_id(author, config)
+            if not author_id:
+                return []
+            filters.append(f"authorships.author.id:{author_id}")
+            author_match = {
+                "name": name,
+                "id": author_id,
+                "works_count": works,
+                "cited_by_count": cited,
+            }
+    if journal:
+        filters.append(_journal_filter(journal, config))
+
+    raw_fields = _filter_fields(raw_filter)
+    exclude_non_papers = not types and "type" not in raw_fields
+    exclude_retracted = "is_retracted" not in raw_fields
+    if exclude_non_papers:
+        # OpenAlex combines repeated negations with AND, not the + syntax.
+        filters.extend(f"type:!{kind}" for kind in sorted(_OPENALEX_NON_PAPER_TYPES))
+    if exclude_retracted:
+        filters.append("is_retracted:false")
+    if raw_filter:
+        filters.append(raw_filter)
+    params["filter"] = ",".join(filters)
+    results = _paper_results(
+        _openalex_get("works", params, config)["results"],
+        limit,
+        exclude_non_papers=exclude_non_papers,
+        exclude_retracted=exclude_retracted,
+    )
     if results and author_match:
         results[0]["_author_match"] = author_match
     return results
@@ -259,7 +436,7 @@ def search_by_title(
     """Return a sufficiently similar, unambiguous OpenAlex title match with a DOI."""
     if not title or len(title.strip()) < 10:
         return None
-    works = _openalex_get("works", {"search": title, "per_page": 5}, config)
+    works = _openalex_get("works", {"search": title, "per_page": 5}, config)["results"]
     normalized = _normalized_title(title)
     matches = []
     for item in _parse_openalex_works(works):

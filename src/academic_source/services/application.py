@@ -119,8 +119,10 @@ class Application:
                 "use --server to connect to the running service"
             ) from exc
 
-    def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
-        return discovery.search(query, limit, config=self._config())
+    def search(
+        self, query: str = "", limit: int = 10, **filters: Any
+    ) -> list[dict[str, Any]]:
+        return discovery.search(query, limit, config=self._config(), **filters)
 
     def get_metadata(
         self,
