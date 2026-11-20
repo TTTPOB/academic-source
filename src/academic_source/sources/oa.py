@@ -15,7 +15,12 @@ import requests
 
 from scansci_pdf.network import fetch, polite_delay
 from scansci_pdf.pdf_utils import claim_download_url
-from scansci_pdf.pmc_cloud import europepmc_pdf_url, find_article, lookup_pmcid
+from scansci_pdf.pmc_cloud import (
+    CloudArticle,
+    europepmc_pdf_url,
+    find_article,
+    lookup_pmcid,
+)
 from scansci_pdf.upstream_client import openalex_params
 from scansci_pdf.upstream_errors import RateLimited as UpstreamRateLimited
 
@@ -42,6 +47,7 @@ from .oa_candidates import (
     expand_candidate,
     is_preprint_doi,
     openalex_candidates,
+    pmcid_from_location,
     unpaywall_candidates,
 )
 
@@ -161,7 +167,7 @@ def discover(doi: str, config: dict[str, Any]) -> Iterator[Discovery]:
             doi, partial(metadata_fetch, headers={"Accept": "application/json"})
         )
         if pmcid:
-            article = find_article(pmcid, metadata_fetch)
+            article = _pmc_article(pmcid, config)
             pdf = article.pdf if article else None
     except UpstreamRateLimited as exc:
         error = RateLimited.from_upstream(exc)
@@ -303,6 +309,35 @@ def _http_candidate(
             response.close()
 
 
+def _pmc_article(pmcid: str, config: dict[str, Any]) -> CloudArticle | None:
+    """List a PMCID in the bucket once per acquisition; errors are not remembered."""
+    listed = config.setdefault("_pmc_articles", {})
+    if pmcid not in listed:
+        listed[pmcid] = find_article(
+            pmcid, partial(fetch, config=_metadata_config(config))
+        )
+    return listed[pmcid]
+
+
+def _expand(candidate: Candidate, config: dict[str, Any]) -> list[Candidate]:
+    """A PMC location from Unpaywall or OpenAlex is tried from the bucket first.
+
+    The bucket holds the same PDF as Europe PMC's getPdf and is typically twice
+    as fast; author manuscripts are not in it, and getPdf still covers them.
+    """
+    expanded = expand_candidate(candidate)
+    pmcid = pmcid_from_location(candidate.url)
+    if not pmcid or candidate.source in {"PMC", "EuropePMC"}:
+        return expanded
+    try:
+        article = _pmc_article(pmcid, config)
+    except (requests.RequestException, UpstreamRateLimited, ParseError, ValueError):
+        return expanded
+    if not article or not article.pdf:
+        return expanded
+    return [Candidate(article.pdf.url, "PMC", candidate.landing_url), *expanded]
+
+
 def acquire_oa(
     doi: str,
     work_dir: Path,
@@ -348,46 +383,43 @@ def acquire_oa(
                 open_access=step.open_access,
             )
             attempts.append(observe(doi, attempt, started))
-        queue = [
-            (item, 0)
-            for candidate in step.candidates
-            for item in expand_candidate(candidate)
-        ]
+        # Expanded lazily: a PMC location costs a bucket listing only when reached.
+        queue = [(candidate, 0) for candidate in step.candidates]
         if not hold_preprints:
             queue.sort(key=lambda entry: not entry[0].preprint)
-        for candidate, depth in queue:
-            if urlsplit(candidate.url).scheme not in {"http", "https"}:
-                continue
-            if hold_preprints and candidate.preprint:
-                if candidate not in preprints:
-                    preprints.append(candidate)
-                continue
-            if not claim_download_url(candidate.url, config):
-                continue
-            path = work_dir / f"oa-{len(attempts)}.pdf"
-            started = time.monotonic()
-            result, links = _http_candidate(candidate, path, config)
-            if (
-                hold_preprints
-                and isinstance(result, SourceSuccess)
-                and looks_like_preprint(result.path)
-            ):
-                # An unlabelled copy that is a preprint waits like a preprint location.
-                attempt = Attempt(source=candidate.source, status="preprint")
-                attempts.append(observe(doi, attempt, started))
-                held = held or result
-                continue
-            record(candidate.source, result, started)
-            if isinstance(result, SourceSuccess):
-                result.attempts = attempts
-                return result
-            # Follow declared PDF links once, not an unbounded HTML crawl.
-            if depth == 0:
-                queue.extend(
-                    (replace(item, preprint=item.preprint or candidate.preprint), 1)
-                    for link in links[:3]
-                    for item in expand_candidate(link)
-                )
+        for raw, depth in queue:
+            for candidate in _expand(raw, config):
+                if urlsplit(candidate.url).scheme not in {"http", "https"}:
+                    continue
+                if hold_preprints and candidate.preprint:
+                    if candidate not in preprints:
+                        preprints.append(candidate)
+                    continue
+                if not claim_download_url(candidate.url, config):
+                    continue
+                path = work_dir / f"oa-{len(attempts)}.pdf"
+                started = time.monotonic()
+                result, links = _http_candidate(candidate, path, config)
+                if (
+                    hold_preprints
+                    and isinstance(result, SourceSuccess)
+                    and looks_like_preprint(result.path)
+                ):
+                    # An unlabelled copy that is a preprint waits like a preprint location.
+                    attempt = Attempt(source=candidate.source, status="preprint")
+                    attempts.append(observe(doi, attempt, started))
+                    held = held or result
+                    continue
+                record(candidate.source, result, started)
+                if isinstance(result, SourceSuccess):
+                    result.attempts = attempts
+                    return result
+                # Follow declared PDF links once, not an unbounded HTML crawl.
+                if depth == 0:
+                    queue.extend(
+                        (replace(link, preprint=link.preprint or candidate.preprint), 1)
+                        for link in links[:3]
+                    )
     # Conservative: one service alone is not enough, and any location overrides both.
     closed = (
         located == 0

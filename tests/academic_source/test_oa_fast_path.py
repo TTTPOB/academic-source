@@ -44,10 +44,13 @@ class Response(requests.Response):
         super().close()
 
 
-def bucket_listing(key):
+def bucket_listing(*keys):
+    contents = "".join(
+        f"<Contents><Key>{key}</Key><Size>1500</Size></Contents>" for key in keys
+    )
     return (
         '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
-        f"<Contents><Key>{key}</Key><Size>1500</Size></Contents></ListBucketResult>"
+        f"{contents}</ListBucketResult>"
     ).encode()
 
 
@@ -57,8 +60,9 @@ def pdf_bytes():
         return document.tobytes()
 
 
-def test_pmc_without_pdf_field_downloads_immediately_and_stops_metadata(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize("in_bucket", [True, False])
+def test_pmc_location_tries_the_bucket_then_getpdf_and_stops_metadata(
+    monkeypatch, tmp_path, in_bucket
 ):
     visited = []
     responses = []
@@ -76,7 +80,15 @@ def test_pmc_without_pdf_field_downloads_immediately_and_stops_metadata(
                     }
                 },
             )
-        elif url == "https://europepmc.org/api/getPdf?pmcid=PMC134036":
+        elif "pmc-oa-opendata.s3.amazonaws.com/?" in url:
+            keys = ["PMC134036.1/PMC134036.1.xml"]
+            if in_bucket:
+                keys.append("PMC134036.1/PMC134036.1.pdf")
+            response = Response(url, body=bucket_listing(*keys))
+        elif url in (
+            "https://pmc-oa-opendata.s3.amazonaws.com/PMC134036.1/PMC134036.1.pdf",
+            "https://europepmc.org/api/getPdf?pmcid=PMC134036",
+        ):
             response = Response(url, body=pdf_bytes(), mime="application/pdf")
         else:
             pytest.fail(f"Unnecessary query/download: {url}")
@@ -88,8 +100,9 @@ def test_pmc_without_pdf_field_downloads_immediately_and_stops_metadata(
         "10.1128/MCB.22.19.6759-6766.2002", tmp_path, {"email": "reader@university.edu"}
     )
     assert isinstance(result, SourceSuccess)
-    assert result.source == "EuropePMC"
-    assert len(visited) == 2
+    assert result.source == ("PMC" if in_bucket else "EuropePMC")
+    # Unpaywall, the bucket listing, then one download; no further metadata.
+    assert len(visited) == 3
     assert all(response.closed for response in responses)
 
 
