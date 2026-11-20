@@ -7,6 +7,7 @@ from threading import Event
 
 import pymupdf
 import pytest
+import requests
 
 from academic_source import sources
 from academic_source.domain import AcquisitionRequest, Attempt, Job
@@ -27,8 +28,11 @@ def offline_upstreams(monkeypatch):
     monkeypatch.setattr(service_log, "handlers", [])
 
 
-class Response:
+class Response(requests.Response):
     def __init__(self, url, *, body=b"", payload=None, status=200):
+        super().__init__()
+        self._content = b""
+        self._content_consumed = True
         self.url = url
         self.status_code = status
         self.body = body

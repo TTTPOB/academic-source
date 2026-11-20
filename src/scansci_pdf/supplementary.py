@@ -278,7 +278,7 @@ def fetch_supplementary(
     with requests.Session() as session:
         session.trust_env = False
         session.headers["User-Agent"] = _user_agent()
-        pmc = _fetch_europepmc(doi, out, session, config, timeout)
+        pmc = _fetch_pmc(doi, out, session, config, timeout)
         if pmc.saved:
             return pmc
         if strategy is None:
@@ -299,7 +299,7 @@ def fetch_supplementary(
                     result.route = "Elsevier API"
                 break
     if not result.saved:
-        # Europe PMC's failures explain the outcome only when the publisher
+        # PMC's failures explain the outcome only when the publisher
         # route did not produce the files either.
         result.pages_read += pmc.pages_read
         result.pages_unread += pmc.pages_unread
@@ -308,16 +308,16 @@ def fetch_supplementary(
     return result
 
 
-def _fetch_europepmc(
+def _fetch_pmc(
     doi: str,
     out: Path,
     session: requests.Session,
     config: dict,
     timeout: int,
 ) -> SupplementaryResult:
-    from .supplementary_europepmc import fetch_europepmc_supplementary
+    from .supplementary_pmc import fetch_pmc_supplementary
 
-    return fetch_europepmc_supplementary(
+    return fetch_pmc_supplementary(
         doi,
         out,
         lambda url: _request(url, session, config, timeout),

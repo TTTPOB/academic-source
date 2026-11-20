@@ -5,14 +5,17 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
+from xml.etree.ElementTree import ParseError
 
 import requests
 
 from scansci_pdf.network import fetch, polite_delay
 from scansci_pdf.pdf_utils import claim_download_url
+from scansci_pdf.pmc_cloud import europepmc_pdf_url, find_article, lookup_pmcid
 from scansci_pdf.upstream_client import openalex_params
 from scansci_pdf.upstream_errors import RateLimited as UpstreamRateLimited
 
@@ -36,10 +39,8 @@ from .models import (
 )
 from .oa_candidates import (
     Candidate,
-    europepmc_candidates,
     expand_candidate,
     openalex_candidates,
-    pmc_candidates,
     unpaywall_candidates,
 )
 from .registry import PROVIDERS
@@ -66,6 +67,15 @@ class Discovery:
     open_access: bool | None = None
 
 
+def _metadata_http_error(status: int) -> SourceError:
+    if status == 404:
+        return NotFound(message="DOI not indexed by this service")
+    message = f"Metadata HTTP {status}"
+    if status == 429:
+        return RateLimited(message=message, action="retry_later")
+    return NetworkError(status, message=message, action="retry_later")
+
+
 def _metadata(url: str, config: dict[str, Any]) -> tuple[dict, SourceError | None]:
     response = None
     try:
@@ -73,13 +83,8 @@ def _metadata(url: str, config: dict[str, Any]) -> tuple[dict, SourceError | Non
             url, _metadata_config(config), headers={"Accept": "application/json"}
         )
         status = response.status_code
-        if status == 404:
-            return {}, NotFound(message="DOI not indexed by this service")
         if status >= 400:
-            message = f"Metadata HTTP {status}"
-            if status == 429:
-                return {}, RateLimited(message=message, action="retry_later")
-            return {}, NetworkError(status, message=message, action="retry_later")
+            return {}, _metadata_http_error(status)
         return response.json(), None
     except UpstreamRateLimited as exc:
         return {}, RateLimited.from_upstream(exc)
@@ -143,19 +148,42 @@ def discover(doi: str, config: dict[str, Any]) -> Iterator[Discovery]:
         verdict if isinstance(verdict, bool) else None,
     )
 
-    params = urlencode(
-        {"query": f"DOI:{doi}", "format": "json", "pageSize": 5, "resultType": "core"}
-    )
-    payload, error = _metadata(
-        f"https://www.ebi.ac.uk/europepmc/webservices/rest/search?{params}", config
-    )
-    yield Discovery("EuropePMC", europepmc_candidates(payload), error)
-
-    params = urlencode({"ids": doi, "format": "json"})
-    payload, error = _metadata(
-        f"https://www.ncbi.nlm.nih.gov/pmc/utils/idconv/v1.0/?{params}", config
-    )
-    yield Discovery("PMC", pmc_candidates(payload), error)
+    metadata_fetch = partial(fetch, config=_metadata_config(config))
+    pmcid = None
+    pdf = None
+    error = None
+    try:
+        pmcid = lookup_pmcid(
+            doi, partial(metadata_fetch, headers={"Accept": "application/json"})
+        )
+        if pmcid:
+            article = find_article(pmcid, metadata_fetch)
+            pdf = article.pdf if article else None
+    except UpstreamRateLimited as exc:
+        error = RateLimited.from_upstream(exc)
+    except requests.HTTPError as exc:
+        if exc.response is None:
+            error = NetworkError(
+                message="PMC metadata request failed", action="retry_later"
+            )
+        else:
+            error = _metadata_http_error(exc.response.status_code)
+    except (
+        requests.RequestException,
+        TimeoutError,
+        ConnectionError,
+        ParseError,
+    ) as exc:
+        error = NetworkError(
+            message=f"Metadata request: {type(exc).__name__}", action="retry_later"
+        )
+    yield Discovery("PMC", [Candidate(pdf.url, "PMC")] if pdf else [], error)
+    # Author manuscripts and temporary bucket failures can still use getPdf.
+    if pmcid or error is None:
+        yield Discovery(
+            "EuropePMC",
+            [Candidate(europepmc_pdf_url(pmcid), "EuropePMC")] if pmcid else [],
+        )
 
 
 def _html_candidates(html: str, base_url: str, source: str) -> list[Candidate]:
@@ -347,7 +375,7 @@ def acquire_oa(
     verdicts: dict[str, bool] = {}
     discovery = discover(doi, config)
     while True:
-        # Resuming the generator runs exactly one service's metadata query.
+        # Resuming discovery may query metadata for the next candidates.
         started = time.monotonic()
         step = next(discovery, None)
         if step is None:

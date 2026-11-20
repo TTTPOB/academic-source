@@ -120,8 +120,8 @@ def test_cached_supplementary_markdown_is_independent_of_main_pdf(monkeypatch, a
         calls.append("fetch")
         return supp.SupplementaryResult(
             pages_read=1,
-            source="Europe PMC",
-            route="Europe PMC",
+            source="PMC",
+            route="PMC",
             pmcid="PMC123",
             saved=[save_one(output_dir)],
         )
@@ -151,9 +151,9 @@ def test_cached_supplementary_markdown_is_independent_of_main_pdf(monkeypatch, a
     main, main_md, supplementary, supp_md = combined.artifacts
     assert main_md.provenance.derived_from == main.id
     assert supplementary.id == only.artifacts[0].id
-    assert supplementary.note.endswith("Obtained from Europe PMC (PMC123)")
+    assert supplementary.note.endswith("Obtained from PMC (PMC123)")
     assert supp_md.provenance.derived_from == supplementary.id
-    assert supp_md.provenance.source == "Europe PMC"
+    assert supp_md.provenance.source == "PMC"
     assert supp_md.note == "Converted from supplementary file: paper_SI1.pdf"
     again = run(doi, supplementary_only=True, markdown=True)
     assert again.cached and again.artifacts == [supplementary, supp_md]

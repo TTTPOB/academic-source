@@ -24,25 +24,31 @@ def offline_upstreams(monkeypatch):
     isolate_upstreams(monkeypatch)
 
 
-class Response:
+class Response(requests.Response):
     def __init__(self, url, *, body=b"", payload=None, status=200, mime="text/html"):
+        super().__init__()
         self.url = url
         self.status_code = status
-        self.body = body
+        self._content = body
+        self._content_consumed = True
         self.payload = payload or {}
         self.encoding = "utf-8"
-        self.headers = {"content-type": mime}
+        self.headers["Content-Type"] = mime
         self.closed = False
 
     def json(self):
         return self.payload
 
-    def iter_content(self, chunk_size):
-        for start in range(0, len(self.body), chunk_size):
-            yield self.body[start : start + chunk_size]
-
     def close(self):
         self.closed = True
+        super().close()
+
+
+def bucket_listing(key):
+    return (
+        '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+        f"<Contents><Key>{key}</Key><Size>1500</Size></Contents></ListBucketResult>"
+    ).encode()
 
 
 def pdf_bytes():
@@ -87,64 +93,58 @@ def test_pmc_without_pdf_field_downloads_immediately_and_stops_metadata(
     assert all(response.closed for response in responses)
 
 
-def test_core_query_finds_pmc_before_render_and_id_conversion(monkeypatch, tmp_path):
+@pytest.mark.parametrize("bucket_status", [200, 503])
+def test_getpdf_falls_back_when_bucket_has_no_pdf(monkeypatch, tmp_path, bucket_status):
+    doi = "10.1234/manuscript"
     visited = []
 
     def fetch(url, config, **kwargs):
         visited.append(url)
-        if "webservices/rest/search" in url:
-            assert parse_qs(urlsplit(url).query)["resultType"] == ["core"]
-            return Response(
-                url,
-                payload={
-                    "resultList": {
-                        "result": [
-                            {
-                                "pmcid": "PMC134036",
-                                "isOpenAccess": "N",
-                                "fullTextUrlList": {
-                                    "fullTextUrl": [
-                                        {
-                                            "url": "https://europepmc.org/articles/PMC134036?pdf=render",
-                                            "documentStyle": "pdf",
-                                            "availability": "FreePDF",
-                                        }
-                                    ]
-                                },
-                            }
-                        ]
-                    }
-                },
-            )
-        if "api/getPdf" in url:
-            return Response(url, body=pdf_bytes())
         if "api.openalex.org/works/doi:" in url:
             return Response(url)
-        pytest.fail(f"Unexpected query/download before Europe PMC success: {url}")
+        if "pmc.ncbi.nlm.nih.gov/tools/idconv/" in url:
+            return Response(
+                url, payload={"records": [{"doi": doi, "pmcid": "PMC134036"}]}
+            )
+        if "pmc-oa-opendata.s3.amazonaws.com/?" in url:
+            return Response(
+                url,
+                status=bucket_status,
+                body=bucket_listing("PMC134036.1/PMC134036.1.xml"),
+            )
+        assert url == "https://europepmc.org/api/getPdf?pmcid=PMC134036"
+        return Response(url, body=pdf_bytes())
 
     monkeypatch.setattr(oa, "fetch", fetch)
-    result = oa.acquire_oa("10.1128/MCB.22.19.6759-6766.2002", tmp_path, {})
+    result = oa.acquire_oa(doi, tmp_path, {})
     assert isinstance(result, SourceSuccess)
-    assert len(visited) == 3
-    assert [attempt.source for attempt in result.attempts] == [
-        "Unpaywall",
-        "OpenAlexOA",
-        "EuropePMC",
-        "EuropePMC",
+    assert result.source == "EuropePMC"
+    assert [urlsplit(url).hostname for url in visited] == [
+        "api.openalex.org",
+        "pmc.ncbi.nlm.nih.gov",
+        "pmc-oa-opendata.s3.amazonaws.com",
+        "europepmc.org",
     ]
-    assert visited[-1] == "https://europepmc.org/api/getPdf?pmcid=PMC134036"
+    assert [(attempt.source, attempt.status) for attempt in result.attempts[2:]] == [
+        ("PMC", "no_open_copy" if bucket_status == 200 else "failed"),
+        ("EuropePMC", "located"),
+        ("EuropePMC", "succeeded"),
+    ]
 
 
-def test_progressive_metadata_chain_reaches_pmc_after_invalid_openalex_pdf(
+def test_progressive_metadata_chain_downloads_bucket_pdf_after_invalid_openalex_pdf(
     monkeypatch, tmp_path
 ):
     doi = "10.1234/paper"
     visited = []
     responses = []
+    key = "PMC134036.2/PMC134036.2.pdf"
+    pdf_url = f"https://pmc-oa-opendata.s3.amazonaws.com/{key}"
 
     def fetch(url, config, **kwargs):
         visited.append(url)
         parsed = urlsplit(url)
+        assert config["read_timeout"] == (60 if kwargs.get("stream") else 7)
         if parsed.netloc == "api.unpaywall.org":
             assert parsed.path == "/v2/10.1234%2Fpaper"
             assert parse_qs(parsed.query) == {"email": ["reader@university.edu"]}
@@ -156,41 +156,56 @@ def test_progressive_metadata_chain_reaches_pmc_after_invalid_openalex_pdf(
             )
         elif url == "https://repo.org/broken":
             response = Response(url, body=b"%PDF-1.7\ntruncated")
-        elif parsed.netloc == "www.ebi.ac.uk":
+        elif parsed.netloc == "pmc.ncbi.nlm.nih.gov":
+            assert parsed.path == "/tools/idconv/api/v1/articles/"
+            assert kwargs["headers"] == {"Accept": "application/json"}
             assert parse_qs(parsed.query) == {
-                "query": [f"DOI:{doi}"],
+                "ids": [doi],
                 "format": ["json"],
-                "pageSize": ["5"],
-                "resultType": ["core"],
+                "tool": ["academic-source"],
             }
-            response = Response(url, payload={"resultList": {"result": []}})
-        elif parsed.netloc == "www.ncbi.nlm.nih.gov":
-            assert parse_qs(parsed.query) == {"ids": [doi], "format": ["json"]}
-            response = Response(url, payload={"records": [{"pmcid": "PMC134036"}]})
+            response = Response(
+                url, payload={"records": [{"doi": doi, "pmcid": "PMC134036"}]}
+            )
+        elif parsed.netloc == "pmc-oa-opendata.s3.amazonaws.com" and parsed.path == "/":
+            assert parse_qs(parsed.query) == {
+                "list-type": ["2"],
+                "prefix": ["PMC134036."],
+            }
+            response = Response(url, body=bucket_listing(key))
         else:
-            assert url == "https://europepmc.org/api/getPdf?pmcid=PMC134036"
-            response = Response(url, body=pdf_bytes())
+            assert url == pdf_url
+            response = Response(url, body=pdf_bytes(), mime="binary/octet-stream")
         responses.append(response)
         return response
 
     monkeypatch.setattr(oa, "fetch", fetch)
-    result = oa.acquire_oa(doi, tmp_path, {"email": "reader@university.edu"})
+    result = oa.acquire_oa(
+        doi,
+        tmp_path,
+        {
+            "email": "reader@university.edu",
+            "read_timeout": 60,
+            "oa_metadata_read_timeout": 7,
+        },
+    )
     assert isinstance(result, SourceSuccess)
+    assert result.source == "PMC"
+    assert result.url == pdf_url
     assert [urlsplit(url).netloc for url in visited] == [
         "api.unpaywall.org",
         "api.openalex.org",
         "repo.org",
-        "www.ebi.ac.uk",
-        "www.ncbi.nlm.nih.gov",
-        "europepmc.org",
+        "pmc.ncbi.nlm.nih.gov",
+        "pmc-oa-opendata.s3.amazonaws.com",
+        "pmc-oa-opendata.s3.amazonaws.com",
     ]
     assert [attempt.source for attempt in result.attempts] == [
         "Unpaywall",
         "OpenAlexOA",
         "OpenAlexOA",
-        "EuropePMC",
         "PMC",
-        "EuropePMC",
+        "PMC",
     ]
     assert result.attempts[2].reason == "invalid_pdf"
     assert all(response.closed for response in responses)
@@ -536,12 +551,11 @@ def test_openalex_content_reuses_metadata_without_another_query(monkeypatch, tmp
     assert len(visited) == 2
 
 
-@pytest.mark.parametrize("source", ["Unpaywall", "OpenAlexOA", "EuropePMC"])
+@pytest.mark.parametrize("source", ["Unpaywall", "OpenAlexOA"])
 def test_cdp_navigates_metadata_landing_and_reads_real_article_snapshot(
     monkeypatch, tmp_path, source
 ):
     from academic_source.sources.oa_candidates import (
-        europepmc_candidates,
         openalex_candidates,
         unpaywall_candidates,
     )
@@ -551,36 +565,11 @@ def test_cdp_navigates_metadata_landing_and_reads_real_article_snapshot(
     pdf = "https://repository.example/download?token=article-only"
     if source == "Unpaywall":
         candidates = unpaywall_candidates(
-            {
-                "best_oa_location": {
-                    "url_for_pdf": None,
-                    "url_for_landing_page": landing,
-                }
-            }
-        )
-    elif source == "OpenAlexOA":
-        candidates = openalex_candidates(
-            {"locations": [{"is_oa": True, "landing_page_url": landing}]}
+            {"best_oa_location": {"url_for_landing_page": landing}}
         )
     else:
-        candidates = europepmc_candidates(
-            {
-                "resultList": {
-                    "result": [
-                        {
-                            "fullTextUrlList": {
-                                "fullTextUrl": [
-                                    {
-                                        "url": landing,
-                                        "documentStyle": "html",
-                                        "availability": "Free",
-                                    }
-                                ]
-                            }
-                        }
-                    ]
-                }
-            }
+        candidates = openalex_candidates(
+            {"locations": [{"is_oa": True, "landing_page_url": landing}]}
         )
 
     navigated = []
@@ -701,8 +690,11 @@ def test_search_budget_exhaustion_allows_free_lookup_and_other_oa_sources(
                     "id": "https://openalex.org/W42",
                     "open_access": {"is_oa": True},
                 }
-        elif parsed.hostname == "www.ebi.ac.uk":
-            payload = {"resultList": {"result": [{"pmcid": "PMC134036"}]}}
+        elif parsed.hostname == "pmc.ncbi.nlm.nih.gov":
+            payload = {"records": [{"doi": "10.1234/limited", "pmcid": "PMC134036"}]}
+        elif parsed.hostname == "pmc-oa-opendata.s3.amazonaws.com":
+            result._content = bucket_listing("PMC134036.1/PMC134036.1.xml")
+            return result
         else:
             assert parsed.hostname == "europepmc.org"
             result._content = pdf
@@ -727,7 +719,8 @@ def test_search_budget_exhaustion_allows_free_lookup_and_other_oa_sources(
     assert [urlsplit(url).hostname for url in visited] == [
         "api.openalex.org",
         "api.openalex.org",
-        "www.ebi.ac.uk",
+        "pmc.ncbi.nlm.nih.gov",
+        "pmc-oa-opendata.s3.amazonaws.com",
         "europepmc.org",
     ]
 
@@ -848,7 +841,7 @@ def test_oa_metadata_limit_survives_source_aggregation_and_job_persistence(
         assert failed.rate_limit["source"] == "openalex"
         assert failed.rate_limit["kind"] == "unknown"
         assert failed.action == "retry_later"
-        assert visited == ["api.openalex.org", "www.ebi.ac.uk", "www.ncbi.nlm.nih.gov"]
+        assert visited == ["api.openalex.org", "pmc.ncbi.nlm.nih.gov"]
         persisted = application.job(job.id)
         assert persisted.results[0].rate_limit == failed.rate_limit
         projected = job_data(persisted)["results"][0]

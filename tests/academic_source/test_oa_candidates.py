@@ -4,7 +4,6 @@ import pytest
 
 from academic_source.sources.oa_candidates import (
     Candidate,
-    europepmc_candidates,
     expand_candidate,
     openalex_candidates,
     pmcid_from_location,
@@ -19,27 +18,18 @@ from academic_source.sources.oa_candidates import (
         "https://www.ncbi.nlm.nih.gov/pmc/articles/134036",
         "https://www.ncbi.nlm.nih.gov/pmc/articles/PMC134036/pdf/",
         "https://pmc.ncbi.nlm.nih.gov/articles/pMc134036/",
+        "https://europepmc.org/articles/PMC134036",
         "https://europepmc.org/articles/PMC134036?pdf=render",
+        "https://pmc.ncbi.nlm.nih.gov/articles/PMC134036/pdf/article.pdf",
         "https://europepmc.org/ARTICLE/pmc/134036",
         "https://europepmc.org/api/getPdf?PMCID=pmc134036",
     ],
 )
-def test_pmc_variants_resolve_to_website_pdf_endpoint(value):
+def test_pmc_variants_resolve_only_to_website_pdf_endpoint(value):
     assert pmcid_from_location(value) == "PMC134036"
-    assert expand_candidate(Candidate(value, "Metadata"))[0].url == (
-        "https://europepmc.org/api/getPdf?pmcid=PMC134036"
-    )
-
-
-def test_ncbi_aliases_share_canonical_candidate_and_keep_query():
-    old = expand_candidate(
-        Candidate("https://www.ncbi.nlm.nih.gov/pmc/articles/134036?pdf=render", "OA")
-    )
-    new = expand_candidate(
-        Candidate("https://pmc.ncbi.nlm.nih.gov/articles/pmc134036/?pdf=render", "OA")
-    )
-    assert [item.url for item in old] == [item.url for item in new]
-    assert old[-1].url.endswith("/PMC134036/?pdf=render")
+    assert expand_candidate(Candidate(value, "Metadata")) == [
+        Candidate("https://europepmc.org/api/getPdf?pmcid=PMC134036", "EuropePMC")
+    ]
 
 
 def test_unpaywall_preserves_pdf_and_landing_even_without_pdf_suffix():
@@ -99,43 +89,3 @@ def test_openalex_repository_locations_retain_pmc_and_versioned_arxiv():
         "https://arxiv.org/abs/2401.01234v2",
     ]
     assert candidates[1].landing_url == candidates[2].url
-
-
-def test_europepmc_retains_pmcid_without_fulltext_urls():
-    candidates = europepmc_candidates(
-        {"resultList": {"result": [{"pmcid": "PMC134036", "isOpenAccess": "N"}]}}
-    )
-    assert candidates == [Candidate("PMC134036", "EuropePMC")]
-    assert expand_candidate(candidates[0])[0].url == (
-        "https://europepmc.org/api/getPdf?pmcid=PMC134036"
-    )
-
-
-def test_europepmc_free_pdf_does_not_require_cc_or_pdf_suffix():
-    payload = {
-        "resultList": {
-            "result": [
-                {
-                    "isOpenAccess": "N",
-                    "fullTextUrlList": {
-                        "fullTextUrl": [
-                            {
-                                "url": "https://repo.org/api/getFile?id=42",
-                                "documentStyle": "pdf",
-                                "availability": "FreePDF",
-                            },
-                            {
-                                "url": "https://repo.org/landing",
-                                "documentStyle": "html",
-                                "availability": "Free",
-                            },
-                        ]
-                    },
-                }
-            ]
-        }
-    }
-    assert [item.url for item in europepmc_candidates(payload)] == [
-        "https://repo.org/api/getFile?id=42",
-        "https://repo.org/landing",
-    ]

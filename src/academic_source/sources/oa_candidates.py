@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from scansci_pdf.pmc_cloud import europepmc_pdf_url
 from scansci_pdf.upstream_client import openalex_content_url
 
 
@@ -49,36 +50,9 @@ def pmcid_from_location(value: str) -> str | None:
 
 
 def expand_candidate(candidate: Candidate) -> list[Candidate]:
-    """Try the website PDF endpoint before a repository landing/viewer URL."""
+    """Use getPdf for PMC locations instead of HTML viewers or landing pages."""
     pmcid = pmcid_from_location(candidate.url)
-    if not pmcid:
-        return [candidate]
-    direct = Candidate(
-        f"https://europepmc.org/api/getPdf?pmcid={pmcid}",
-        "EuropePMC",
-        f"https://europepmc.org/articles/{pmcid}",
-    )
-    if candidate.url.upper().startswith("PMC"):
-        landing = f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/"
-        return [
-            direct,
-            Candidate(direct.landing_url, candidate.source, direct.landing_url),
-            Candidate(landing + "pdf/", candidate.source, landing),
-        ]
-    parsed = urlsplit(candidate.url)
-    if (parsed.hostname or "").lower().endswith("ncbi.nlm.nih.gov"):
-        match = re.search(r"/(?:pmc/)?articles/(?:PMC)?\d+", parsed.path, re.IGNORECASE)
-        if match:
-            path = f"/articles/{pmcid}/" + parsed.path[match.end() :].lstrip("/")
-            canonical = parsed._replace(
-                scheme="https", netloc="pmc.ncbi.nlm.nih.gov", path=path, fragment=""
-            ).geturl()
-            candidate = Candidate(
-                canonical,
-                candidate.source,
-                f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/",
-            )
-    return [direct, candidate]
+    return [Candidate(europepmc_pdf_url(pmcid), "EuropePMC")] if pmcid else [candidate]
 
 
 def _location(pdf: Any, landing: Any, source: str) -> list[Candidate]:
@@ -138,35 +112,3 @@ def openalex_candidates(payload: dict[str, Any], api_key: str = "") -> list[Cand
             )
         )
     return candidates
-
-
-def europepmc_candidates(payload: dict[str, Any]) -> list[Candidate]:
-    candidates = []
-    for item in payload.get("resultList", {}).get("result", []):
-        if item.get("pmcid"):
-            candidates.append(Candidate(item["pmcid"], "EuropePMC"))
-        entries = item.get("fullTextUrlList", {}).get("fullTextUrl", [])
-        if isinstance(entries, dict):
-            entries = [entries]
-        for entry in entries:
-            url = entry.get("url") or ""
-            # Free to read is not a CC license; explicit FreePDF still works with isOpenAccess=N.
-            if url and (
-                str(entry.get("documentStyle", "")).lower() == "pdf"
-                or str(entry.get("availability", "")).lower()
-                in {"free", "freepdf", "open access"}
-                or pmcid_from_location(url)
-            ):
-                landing = (
-                    url if str(entry.get("documentStyle", "")).lower() == "html" else ""
-                )
-                candidates.append(Candidate(url, "EuropePMC", landing))
-    return candidates
-
-
-def pmc_candidates(payload: dict[str, Any]) -> list[Candidate]:
-    return [
-        Candidate(item["pmcid"], "PMC")
-        for item in payload.get("records", [])
-        if item.get("pmcid")
-    ]

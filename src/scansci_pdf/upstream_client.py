@@ -33,7 +33,11 @@ _HOST_CONCURRENCY = {
     "europepmc.org": 3,
     "www.ebi.ac.uk": 3,
     "arxiv.org": 2,
+    # NCBI's PMC Cloud bucket on S3; one article's files download in parallel.
+    "pmc-oa-opendata.s3.amazonaws.com": 6,
 }
+# Minimum seconds between request starts; hosts not listed wait 0.5 s.
+_HOST_INTERVAL = {"pmc-oa-opendata.s3.amazonaws.com": 0.0}
 
 
 @dataclass
@@ -199,7 +203,7 @@ def _policy(source: str, host: str, config: dict[str, Any]) -> tuple[float, int]
     if source in explicit and not parallel:
         return explicit[source]
     custom = config.get("host_concurrency", {})
-    interval = explicit.get(source, (0.5, 0))[0]
+    interval = explicit.get(source, (_HOST_INTERVAL.get(host, 0.5), 0))[0]
     if isinstance(custom, dict):
         if source in custom:
             return interval, int(custom[source])

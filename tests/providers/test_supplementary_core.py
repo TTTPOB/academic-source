@@ -60,7 +60,7 @@ def publisher(monkeypatch):
     strategy = BasePublisherStrategy()
     strategy.article_url_template = START
     monkeypatch.setattr(StrategyRegistry, "get_for_doi", lambda doi: strategy)
-    monkeypatch.setattr(supp, "_fetch_europepmc", lambda *_: supp.SupplementaryResult())
+    monkeypatch.setattr(supp, "_fetch_pmc", lambda *_: supp.SupplementaryResult())
     return strategy
 
 
@@ -184,15 +184,13 @@ def test_versioned_tab_is_read_after_redirect(tmp_path, monkeypatch, publisher):
 
 
 @pytest.mark.parametrize("pmc_saved", [False, True])
-def test_europepmc_runs_first_and_skips_publisher_when_it_delivers(
+def test_pmc_runs_first_and_skips_publisher_when_it_delivers(
     tmp_path, monkeypatch, pmc_saved
 ):
     calls = []
-    xml = "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC123/fullTextXML"
-    item = supp.SupplementaryItem(
-        "https://www.ebi.ac.uk/europepmc/webservices/rest/PMC123/supplementaryFiles",
-        "Data S1",
-    )
+    base = "https://pmc-oa-opendata.s3.amazonaws.com/PMC123.1"
+    xml = f"{base}/PMC123.1.xml"
+    item = supp.SupplementaryItem(f"{base}/pmc.zip", "Data S1")
     publisher_file = "https://publisher.example/supp_publisher.zip"
     responses = {
         START: Response(
@@ -206,35 +204,33 @@ def test_europepmc_runs_first_and_skips_publisher_when_it_delivers(
         return responses[url]
 
     def fetch_pmc(doi, out, session, config, timeout):
-        calls.append("Europe PMC")
+        calls.append("PMC")
         if not pmc_saved:
             return supp.SupplementaryResult(
-                pages_read=1, unsaved=[supp.UnsavedSupplementary(item, "HTTP 503")]
+                route_warnings=["PMC Cloud file listing unavailable"],
             )
         path = out / "pmc.zip"
         path.write_bytes(b"PK file")
         return supp.SupplementaryResult(
             pages_read=1,
             saved=[supp.SavedSupplementary(path, item, xml)],
-            source="Europe PMC",
-            route="Europe PMC",
+            source="PMC",
+            route="PMC",
             pmcid="PMC123",
         )
 
     monkeypatch.setattr(supp.requests.Session, "get", get)
-    monkeypatch.setattr(supp, "_fetch_europepmc", fetch_pmc)
+    monkeypatch.setattr(supp, "_fetch_pmc", fetch_pmc)
     result = supp.fetch_supplementary("10.1/paper", tmp_path)
     (saved,) = result.saved
     if pmc_saved:
-        assert calls == ["Europe PMC"]
-        assert (
-            result.route == result.source == "Europe PMC" and result.pmcid == "PMC123"
-        )
+        assert calls == ["PMC"]
+        assert result.route == result.source == "PMC" and result.pmcid == "PMC123"
         assert saved.page_url == xml
     else:
-        assert calls == ["Europe PMC", START, publisher_file]
+        assert calls == ["PMC", START, publisher_file]
         assert saved.item.label == "Publisher supplement"
-        # The publisher delivered, so Europe PMC's failure is not reported.
+        # The publisher delivered, so PMC's failure is not reported.
         assert result.unsaved == [] and result.route_warnings == []
 
 
@@ -950,7 +946,7 @@ def test_elsevier_full_text_without_attachments_skips_the_website(
         return Response(url, text="<full-text-retrieval-response/>")
 
     monkeypatch.setattr(supp.requests.Session, "get", get)
-    monkeypatch.setattr(supp, "_fetch_europepmc", lambda *_: supp.SupplementaryResult())
+    monkeypatch.setattr(supp, "_fetch_pmc", lambda *_: supp.SupplementaryResult())
     result = supp.fetch_supplementary(
         "10.1016/paper", tmp_path, {}, run_browser=lambda *_: pytest.fail("no browser")
     )

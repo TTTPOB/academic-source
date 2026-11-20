@@ -160,7 +160,7 @@ def add_supplementary(
                 item.description,
                 f"Original file: {item.filename}" if item.filename else "",
                 f"Source page: {page_url}" if page_url else "",
-                f"Obtained from Europe PMC ({fetched.pmcid})" if fetched.pmcid else "",
+                f"Obtained from PMC ({fetched.pmcid})" if fetched.pmcid else "",
             )
             if part
         )

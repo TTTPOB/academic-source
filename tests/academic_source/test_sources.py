@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import json
 from importlib import import_module
+from urllib.parse import urlsplit
 
 import pymupdf
 import pytest
+import requests
 
 from academic_source.domain import AcquisitionRequest
 from academic_source.sources import LegacySources
-from academic_source.sources.models import SourceFailure
+from academic_source.sources.errors import NotFound
+from academic_source.sources.legacy import call_legacy
+from academic_source.sources.models import SourceFailure, SourceSuccess
+from academic_source.sources.registry import PROVIDERS
+from tests.academic_source.helpers import isolate_upstreams, paper_bytes
 
 
 def _pdf(path):
@@ -86,6 +93,78 @@ def test_explicit_arxiv_version_reaches_download_url(monkeypatch, tmp_path):
     )
     assert requested == ["https://arxiv.org/pdf/2401.01234v2.pdf"]
     assert result.source == "arXiv"
+
+
+@pytest.mark.parametrize(
+    ("label", "has_pdf", "expected_source"),
+    [
+        ("PMC", True, "PMC(PMC42)"),
+        ("PMC", False, None),
+        ("EuropePMC", False, "EuropePMC"),
+    ],
+)
+def test_pmc_legacy_providers_use_cloud_and_getpdf(
+    monkeypatch, tmp_path, label, has_pdf, expected_source
+):
+    isolate_upstreams(monkeypatch)
+    doi = "10.1234/paper"
+    filename = "PMC42.2.pdf" if has_pdf else "PMC42.2.xml"
+    key = f"PMC42.2/{filename}"
+    bucket_url = "https://pmc-oa-opendata.s3.amazonaws.com"
+    lookup_url = (
+        "https://pmc.ncbi.nlm.nih.gov/tools/idconv/api/v1/articles/"
+        "?ids=10.1234%2Fpaper&format=json&tool=academic-source"
+    )
+    listing_url = f"{bucket_url}/?list-type=2&prefix=PMC42."
+    pdf_url = (
+        f"{bucket_url}/{key}"
+        if label == "PMC"
+        else "https://europepmc.org/api/getPdf?pmcid=PMC42"
+    )
+    pdf = paper_bytes().replace(b"%%EOF", b"\n" * 2000 + b"%%EOF")
+    visited = []
+
+    def send(_adapter, request, **kwargs):
+        url = request.url
+        visited.append(url)
+        response = requests.Response()
+        response.url = url
+        response.request = request
+        response.status_code = 200
+        response._content_consumed = True
+        if url == lookup_url:
+            response._content = json.dumps(
+                {"records": [{"doi": doi, "pmcid": "PMC42"}]}
+            ).encode()
+        elif url == listing_url:
+            response._content = (
+                '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+                f"<Contents><Key>{key}</Key><Size>{len(pdf)}</Size></Contents></ListBucketResult>"
+            ).encode()
+        else:
+            assert url == pdf_url and urlsplit(url).path.endswith((".pdf", "/getPdf"))
+            assert kwargs["stream"] is True
+            response.headers["Content-Type"] = "application/octet-stream"
+            response._content = pdf
+        return response
+
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", send)
+    path = tmp_path / "paper.pdf"
+    outcome = call_legacy(
+        label, PROVIDERS[label].resolve(), doi, path, {"polite_delay": 0}
+    )
+    assert visited == [
+        lookup_url,
+        *([listing_url] if label == "PMC" else []),
+        *([pdf_url] if expected_source else []),
+    ]
+    if expected_source is None:
+        assert isinstance(outcome, NotFound)
+        assert not path.exists()
+    else:
+        assert isinstance(outcome, SourceSuccess)
+        assert outcome.source == expected_source
+        assert path.read_bytes() == pdf
 
 
 def _get(tmp_path, policy, config):
