@@ -1,4 +1,4 @@
-"""Paper search and title matching through OpenAlex."""
+"""Paper search and OpenAlex title matching."""
 
 from __future__ import annotations
 
@@ -44,6 +44,7 @@ _NON_PAPER_TYPES = _OPENALEX_NON_PAPER_TYPES | {
     "proceedings",
     "reference-book",
 }
+SearchBackend = Literal["openalex", "crossref", "pubmed"]
 SearchScope = Literal["all", "title", "abstract"]
 _SEARCH_KEYS = {
     "all": "search",
@@ -236,7 +237,20 @@ def _sort_param(sort: str) -> str:
 def _journal_filter(journal: str, config: dict[str, Any] | None) -> str:
     if _ISSN.fullmatch(journal):
         return f"primary_location.source.issn:{journal.upper()}"
+    source_id = _journal_source(journal, config)["id"].rsplit("/", 1)[-1]
+    return f"primary_location.source.id:{source_id}"
 
+
+def _journal_issn(journal: str, config: dict[str, Any] | None) -> str:
+    if _ISSN.fullmatch(journal):
+        return journal.upper()
+    issn = _journal_source(journal, config).get("issn_l")
+    if not issn:
+        raise ValueError(f"Journal {journal!r} has no ISSN-L. Retry with an ISSN.")
+    return issn
+
+
+def _journal_source(journal: str, config: dict[str, Any] | None) -> dict[str, Any]:
     name = journal.strip().casefold()
     candidates: list[dict[str, Any]] = []
     matches: dict[str, dict[str, Any]] = {}
@@ -268,8 +282,7 @@ def _journal_filter(journal: str, config: dict[str, Any] | None) -> str:
     # "Cell" is Cell, even though Developmental Cell lists "Cell" as an alias.
     for chosen in (named, matches):
         if len(chosen) == 1:
-            source_id = next(iter(chosen)).rsplit("/", 1)[-1]
-            return f"primary_location.source.id:{source_id}"
+            return next(iter(chosen.values()))
     suggestions = list(matches.values()) or candidates
     listed = "; ".join(
         f"{source.get('display_name') or '(unnamed)'} "
@@ -324,6 +337,7 @@ def search_papers(
     year_to: int | None = None,
     sort: str | None = None,
     *,
+    backend: SearchBackend = "openalex",
     author: str | None = None,
     author_id: str | None = None,
     journal: str | None = None,
@@ -335,9 +349,37 @@ def search_papers(
     filter: str | None = None,
     config: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Search one bounded OpenAlex works page, then deduplicate by DOI."""
+    """Search the selected backend without combining discovery results."""
     if not 1 <= limit <= _MAX_LIMIT:
         raise ValueError(f"Search limit must be between 1 and {_MAX_LIMIT}")
+    if backend not in ("openalex", "crossref", "pubmed"):
+        raise ValueError("Search backend must be openalex, crossref, or pubmed")
+    if backend != "openalex":
+        if oa:
+            raise ValueError(f"Search backend {backend} does not support oa")
+        if min_citations is not None:
+            raise ValueError(f"Search backend {backend} does not support min_citations")
+        if in_ != "all":
+            raise ValueError(
+                f"Search backend {backend} does not support in (search scope)"
+            )
+        if author_id:
+            raise ValueError(
+                f"Search backend {backend} does not support OpenAlex author_id"
+            )
+        if sort and sort not in (
+            "publication_date",
+            "publication_date:asc",
+            "publication_date:desc",
+        ):
+            raise ValueError(
+                f"Search backend {backend} only supports publication_date sorting"
+            )
+        if backend == "pubmed" and sort == "publication_date:asc":
+            raise ValueError(
+                "Search backend pubmed only supports descending publication_date sorting"
+            )
+
     if in_ not in _SEARCH_KEYS:
         raise ValueError("Search scope must be all, title, or abstract")
 
@@ -347,14 +389,7 @@ def search_papers(
     types = [value.strip() for value in (type or "").split(",") if value.strip()]
     author = (author or "").strip()
     raw_filter = filter if filter and filter.strip() else ""
-    params: dict[str, Any] = {"per_page": min(_PAGE_SIZE, max(30, limit * 3))}
-    if query:
-        params[_SEARCH_KEYS[in_]] = query
-    if sort or not query:
-        # Without keywords, newest first is useful for browsing a filtered list.
-        params["sort"] = _sort_param(sort) if sort else "publication_date:desc"
-
-    filters = []
+    openalex_sort = _sort_param(sort) if backend == "openalex" and sort else None
     if year:
         if year_from is not None or year_to is not None:
             raise ValueError("Year cannot be combined with year_from or year_to")
@@ -365,6 +400,41 @@ def search_papers(
         raise ValueError("Year must be between 0001 and 9999")
     if year_from is not None and year_to is not None and year_from > year_to:
         raise ValueError("The starting year must not exceed the ending year")
+    if backend != "openalex":
+        from .crossref import crossref_search
+        from .pubmed import pubmed_search
+
+        if (
+            not any((query, journal, types, author, raw_filter))
+            and year_from is None
+            and year_to is None
+        ):
+            raise ValueError("Search requires a query or at least one filter")
+        search_backend = crossref_search if backend == "crossref" else pubmed_search
+        results = search_backend(
+            query,
+            limit,
+            issn=_journal_issn(journal, config) if journal else "",
+            year_from=year_from,
+            year_to=year_to,
+            types=types,
+            author=author,
+            sort=sort,
+            raw_filter=raw_filter,
+            config=config or {},
+        )
+        if backend == "crossref":
+            _fill_abstracts(results, config or {})
+        return results
+
+    params: dict[str, Any] = {"per_page": min(_PAGE_SIZE, max(30, limit * 3))}
+    if query:
+        params[_SEARCH_KEYS[in_]] = query
+    if openalex_sort or not query:
+        # Without keywords, newest first is useful for browsing a filtered list.
+        params["sort"] = openalex_sort or "publication_date:desc"
+
+    filters = []
     if year_from is not None:
         filters.append(f"from_publication_date:{year_from:04d}-01-01")
     if year_to is not None:
@@ -433,16 +503,16 @@ def search_papers(
 
 
 def _fill_abstracts(results: list[dict[str, Any]], config: dict[str, Any]) -> None:
-    """OpenAlex lacks abstracts for many publishers; PubMed has most biomedical ones."""
+    """Fill absent abstracts from PubMed by DOI, preserving existing abstracts."""
     from .pubmed import pubmed_abstracts
 
-    missing = [item["doi"] for item in results if not item["abstract"]]
+    missing = [item for item in results if item.get("doi") and not item.get("abstract")]
     if not missing:
         return
-    found = pubmed_abstracts(missing, config)
-    for item in results:
-        if not item["abstract"]:
-            item["abstract"] = found.get(item["doi"].lower(), "")
+    found = pubmed_abstracts([item["doi"] for item in missing], config)
+    for item in missing:
+        if abstract := found.get(item["doi"].lower()):
+            item["abstract"] = abstract
 
 
 def _search_pages(
@@ -457,7 +527,9 @@ def _search_pages(
     while cursor and len(works) < limit + _PAGE_SIZE // 10:
         page = _openalex_get("works", {**params, "cursor": cursor}, config)
         works.extend(page["results"])
-        cursor = (page.get("meta") or {}).get("next_cursor") if page["results"] else None
+        cursor = (
+            (page.get("meta") or {}).get("next_cursor") if page["results"] else None
+        )
     return works
 
 

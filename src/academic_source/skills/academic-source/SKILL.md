@@ -27,29 +27,117 @@ asource metadata --doi 10.1126/science.aad8559
 asource metadata --arxiv 2401.01234
 ```
 
-`search` returns a JSON array; each entry has `doi`, `title`, `authors`, `year`,
-`publication_date`, `journal`, `cited_by_count`, `is_oa`, `type` and the full
-`abstract` (from OpenAlex, or PubMed when OpenAlex has none; papers outside
-biomedicine may still lack one). `metadata` also returns the abstract.
-Narrow results with
-`--journal` (ISSN or exact name), `--year`, `--type`, `--oa`,
-`--min-citations`, `--author` and `--in title`; anything else goes into
-`--filter` as an OpenAlex filter expression. Run `asource search --help` for the
-syntax and examples. If a journal name is ambiguous, the error lists candidates
-with ISSNs; retry with the right ISSN. If `search` fails with an upstream error
-such as HTTP 504, retry once, then report the failure.
+`search` returns a JSON array. Each entry carries `source` (the backend that
+found it), the bibliographic fields that backend has, and the full abstract when
+one exists. Missing abstracts are filled by DOI from PubMed, so papers outside
+biomedicine may still lack one. If a journal name is ambiguous, the error lists
+candidates with ISSNs; retry with one of them. If a request times out upstream,
+retry once, then report the failure.
 
-`--limit` accepts up to 1000; above 100 the server fetches several pages, so
-write large results to a file (`> results.json`) rather than reading them inline.
-To list everything a journal published in a period, use one wide date window
-instead of many narrow ones:
+Each call searches one backend, chosen with `--backend`:
+
+| Backend | Use it for |
+|---|---|
+| `openalex` (default) | Topic searches, citation counts, open-access filters |
+| `crossref` | Everything publishers have registered a DOI for, including papers posted today |
+| `pubmed` | Biomedicine; also finds papers that have no DOI or that Crossref lacks |
+
+All backends accept `--journal` (ISSN or exact name), `--year`, `--author`,
+`--type` and `--sort publication_date`. Write `--type` in the backend's own
+vocabulary: `article` (OpenAlex), `journal-article` (Crossref),
+`'Journal Article'` (PubMed). `--oa`, `--min-citations`, `--in` and
+`--sort cited_by_count` work only on OpenAlex. Only OpenAlex leaves out non-paper
+items and retractions by default; with the other two, screen titles and types
+yourself.
+
+`--filter` is passed to the selected backend unchanged, so its syntax depends on
+the backend. The sections below give forms that have been tested.
+
+`--limit` accepts up to 1000. Write large results to a file rather than reading
+them inline. To list a journal's papers, use one wide date window instead of
+many narrow ones.
+
+### OpenAlex
 
 ```bash
+asource search 'CRISPR' --filter 'authorships.countries:cn,language:en'
 asource search --journal 0092-8674 --limit 1000 \
-  --filter from_publication_date:2026-07-01,to_publication_date:2026-11-30 > cell.json
+  --filter 'from_publication_date:2026-07-01,to_publication_date:2026-11-30' > cell.json
 ```
 
-Quirks of OpenAlex data that matter when screening by journal and date:
+In `--filter`, a comma means AND, `|` means OR within one field, `!` negates.
+Field list: https://docs.openalex.org/api-entities/works/filter-works
+
+### Crossref
+
+```bash
+asource search --backend crossref --journal 0028-0836 --limit 1000 \
+  --filter 'from-online-pub-date:2026-10-19,until-online-pub-date:2026-11-06' > nature.json
+asource search --backend crossref --filter 'issn:0028-0836,issn:0036-8075,from-online-pub-date:2026-11-19'
+asource search --backend crossref 'residual learning' --author 'Kaiming He'
+```
+
+- `--filter` is `name:value` pairs separated by commas. Different names
+  combine with AND; a repeated name means OR (the second example lists both
+  journals).
+- Dates take `YYYY`, `YYYY-MM` or `YYYY-MM-DD`, and both ends are included. An
+  upper bound of `2025-12` includes all of December.
+- Choose the date field by question:
+  - `from-online-pub-date` / `until-online-pub-date`: the publisher's online
+    date. Records without an online date never match; there is no fallback to
+    the print date.
+  - `from-pub-date` / `until-pub-date`: the earliest publication date (what
+    `--year` uses).
+  - `from-created-date` / `until-created-date`: when Crossref first received the
+    record.
+- Other useful filters: `type:journal-article`, `prefix:10.1038`,
+  `has-abstract:true`. Type names: https://api.crossref.org/types
+- An unknown filter name or type fails with an error that lists the valid
+  values.
+- `journal-article` also covers news and editorials (Nature news DOIs start
+  `10.1038/d41586`).
+- Keyword ranking is loose: an exact title can rank second behind a loosely
+  related item. Check titles; for a known DOI use `asource metadata --doi`.
+  `--author` is a text match on author names, not an identity.
+
+### PubMed
+
+```bash
+asource search --backend pubmed --journal 0036-8075 --limit 1000 \
+  --filter '2026/11/01:2026/11/20[epdat]' > science.json
+asource search --backend pubmed \
+  'diabetes[tiab] AND (exercise[tiab] OR walking[tiab]) NOT Review[pt]'
+asource search --backend pubmed 'doudna ja[au] AND 2025[dp] NOT preprint[pt]'
+```
+
+- The query and `--filter` are PubMed search expressions, joined with AND. Use
+  uppercase `AND`, `OR`, `NOT` and parentheses.
+- Put `NOT` in the query, not in `--filter`. `--filter 'NOT preprint[pt]'`
+  becomes `... AND (NOT preprint[pt])`, which PubMed rejects.
+- Useful tags: `[tiab]` title or abstract, `[ti]` title, `[au]` author as
+  `doudna ja`, `[1au]` first author, `[mh]` MeSH term, `[pt]` publication type,
+  `[issn]` journal ISSN, `[doi]` DOI. Use `[issn]` rather than `[ta]`:
+  `Nature[ta]` also matches other journals.
+- Words without a tag are expanded through PubMed's term mapping (synonyms,
+  MeSH headings). `diabetes` finds about 40% more records than
+  `diabetes[tiab]`. Tag the words when you want them literally.
+- Dates are `YYYY/MM/DD`, `YYYY/MM` or `YYYY`; a range is `start:end`. Pick the
+  tag by question: `[epdat]` online publication (use it for recently posted
+  papers), `[dp]` publication date (what `--year` uses), `[crdt]` when PubMed
+  created the record.
+- Mistakes that fail with an error showing PubMed's `querytranslation`:
+  unbalanced parentheses, a dangling `AND`, a quoted phrase PubMed cannot find.
+  A misspelled tag does not fail: `lamin[xyz]` silently becomes `lamin`. If
+  results look too broad, check the tag spelling.
+- PubMed also indexes bioRxiv and medRxiv preprints; add `NOT preprint[pt]` to
+  leave them out.
+- Results come newest first; `:asc` is not supported. With keywords or
+  `--author`, results come in PubMed's own order.
+- Every result has `pmid`; some have no `doi`.
+
+### OpenAlex data quirks
+
+These matter when screening by journal and date:
 
 - For some journals (Cell, for example) `publication_date` is only the month:
   every paper is dated the 1st. A window starting on the 2nd of a month misses
@@ -63,8 +151,9 @@ Quirks of OpenAlex data that matter when screening by journal and date:
   Leave `--type` out when listing a journal and screen titles instead.
 - The list can be incomplete. Papers posted in the last day or two may not be
   indexed yet, and a few papers are missing for weeks or carry no journal, so
-  a journal filter cannot find them. When the list must be complete, cross-check
-  it against Crossref or PubMed and say which papers came from there.
+  a journal filter cannot find them. When the list must be complete, run a
+  separate search with `--backend crossref` or `--backend pubmed` and keep track
+  of which backend found each paper.
 
 ## Fetch full text
 

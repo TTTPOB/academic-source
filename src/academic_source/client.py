@@ -17,6 +17,7 @@ from typing import Any, Literal, TypedDict, Unpack
 import httpx
 
 _ACTIVE = ("queued", "running")
+SearchBackend = Literal["openalex", "crossref", "pubmed"]
 
 
 def open_client(server: str, api_key_file: str | Path | None = None) -> httpx.Client:
@@ -48,6 +49,7 @@ def _json(response: httpx.Response) -> Any:
 SearchFilters = TypedDict(
     "SearchFilters",
     {
+        "backend": SearchBackend | None,
         "journal": str | None,
         "year": str | None,
         "type": str | None,
@@ -68,7 +70,7 @@ def search(
     limit: int = 10,
     **filters: Unpack[SearchFilters],
 ) -> Any:
-    """Search OpenAlex works. Pass the reserved keyword as **{"in": "title"}."""
+    """Search one backend (OpenAlex by default); use **{"in": "title"} for scope."""
     params: dict[str, Any] = {"limit": limit}
     if query:
         params["query"] = query

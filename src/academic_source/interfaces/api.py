@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 
 from academic_source.domain import AcquisitionRequest
 from academic_source.interfaces.presentation import job_data
+from scansci_pdf.search import SearchBackend
 from scansci_pdf.upstream_errors import DiscoveryError, UpstreamError
 
 if TYPE_CHECKING:
@@ -41,6 +42,7 @@ def create_router(application: Application) -> APIRouter:
         query: str = "",
         limit: int = 10,
         *,
+        backend: SearchBackend = "openalex",
         journal: str | None = None,
         year: str | None = None,
         type: str | None = None,
@@ -55,6 +57,7 @@ def create_router(application: Application) -> APIRouter:
             return application.search(
                 query,
                 limit,
+                backend=backend,
                 journal=journal,
                 year=year,
                 type=type,

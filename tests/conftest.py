@@ -10,7 +10,7 @@ import os
 
 os.environ.setdefault("SCANSCI_PROGRESS_BAR", "0")  # pytest 不得弹出 GUI
 
-import pytest  # noqa: E402
+import pytest
 
 
 @pytest.fixture(autouse=True)

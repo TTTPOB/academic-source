@@ -6,12 +6,14 @@ from typing import Any, Literal, TypedDict, Unpack
 from urllib.parse import quote, urlsplit
 from xml.etree import ElementTree
 
+from scansci_pdf.crossref import crossref_abstract
 from scansci_pdf.identifiers import (
     ARXIV_RE,
     OLD_ARXIV_RE,
     normalize_arxiv_id,
     normalize_doi,
 )
+from scansci_pdf.search import SearchBackend
 from scansci_pdf.upstream_client import get_json, get_text
 from scansci_pdf.upstream_errors import RateLimited, UpstreamError
 
@@ -279,10 +281,7 @@ def _crossref_fields(message: dict[str, Any]) -> dict[str, Any]:
         if update.get("DOI") and update.get("type")
     ]
     journals = message.get("container-title") or []
-    abstract = message.get("abstract") or ""
-    # Crossref abstracts are JATS fragments; keep the text, drop the "Abstract" label.
-    abstract = " ".join(unescape(re.sub(r"<[^>]+>", " ", abstract)).split())
-    abstract = re.sub(r"^Abstract\s+", "", abstract)
+    abstract = crossref_abstract(message.get("abstract") or "")
     fields = {
         "title": title,
         "authors": authors,
@@ -300,6 +299,7 @@ def _crossref_fields(message: dict[str, Any]) -> dict[str, Any]:
 
 
 class SearchFilters(TypedDict, total=False):
+    backend: SearchBackend
     journal: str | None
     year: str | None
     type: str | None
@@ -322,6 +322,7 @@ def search(
 
     fields = (
         "doi",
+        "pmid",
         "title",
         "authors",
         "year",

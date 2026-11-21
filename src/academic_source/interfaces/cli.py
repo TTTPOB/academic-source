@@ -74,23 +74,25 @@ def _parser() -> argparse.ArgumentParser:
     supp.set_defaults(policy="fastest", supplementary=False, bibtex=False)
     search = commands.add_parser(
         "search",
-        help="Search OpenAlex for papers by keywords and filters",
+        help="Search OpenAlex, Crossref, or PubMed by keywords and filters",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
-Options combine with AND. Non-paper items (datasets, errata, peer reviews...)
-and retracted works are left out unless you filter on type or is_retracted.
+Options combine with AND. Only OpenAlex leaves out non-paper items and
+retractions by default; --type or an is_retracted filter turns that off.
 
---filter syntax: comma = AND; | = OR within one field (up to 100 values);
-! = NOT; > and < compare numbers.
+--filter takes the selected backend's native syntax. Examples:
+  asource search --backend openalex 'CRISPR' --filter 'authorships.countries:cn,language:en'
+  asource search --backend crossref --journal 0028-0836 --filter 'from-online-pub-date:2026-10-01,type:journal-article'
+  asource search --backend pubmed --journal 0036-8075 --filter '2026/10/01:2026/11/20[epdat]'
+  asource search --backend pubmed 'doudna ja[au] AND 2025[dp] NOT preprint[pt]'
 
-Examples:
-  asource search 'graph neural networks' --in title
-  asource search --journal 0028-0836 --year 2020-2024 --oa
-  asource search 'solar cells' --type article,review --min-citations 50
-  asource search --author 0000-0001-9161-999X --sort cited_by_count
-  asource search 'CRISPR' --filter 'authorships.countries:cn,language:en'
+PubMed: put NOT in the query; --filter is ANDed, and "AND (NOT ...)" is rejected.
+A misspelled PubMed tag is ignored without an error.
 
-Filter fields: https://docs.openalex.org/api-entities/works/filter-works""",
+Filter fields:
+  OpenAlex  https://docs.openalex.org/api-entities/works/filter-works
+  Crossref  https://www.crossref.org/documentation/retrieve-metadata/rest-api/rest-api-filters/
+  PubMed    https://pubmed.ncbi.nlm.nih.gov/help/#search-tags""",
     )
     search.add_argument(
         "query",
@@ -99,48 +101,58 @@ Filter fields: https://docs.openalex.org/api-entities/works/filter-works""",
         help="keywords; may be omitted if a filter is given",
     )
     search.add_argument(
+        "--backend",
+        choices=["openalex", "crossref", "pubmed"],
+        help="which service to search (default: openalex)",
+    )
+    search.add_argument(
         "--limit",
         type=int,
         default=10,
-        help="number of results, 1-1000 (default 10); above 100 the server fetches several pages",
+        help="number of results, 1-1000 (default 10)",
     )
     search.add_argument(
         "--journal",
         help="journal ISSN or exact name; an ambiguous name lists candidates with ISSNs",
     )
     search.add_argument(
-        "--year", help="publication year: 2021, 2020-2024, 2020- or -2024"
+        "--year",
+        help="publication year: 2021, 2020-2024, 2020- or -2024; uses the backend's publication date",
     )
     search.add_argument(
         "--type",
-        help="OpenAlex work types, comma-separated, any of them (article,review)",
+        help="backend-native publication types, comma-separated (OR)",
     )
-    search.add_argument("--oa", action="store_true", help="only open access papers")
+    search.add_argument(
+        "--oa", action="store_true", help="only open access papers (OpenAlex only)"
+    )
     search.add_argument(
         "--min-citations",
         "--min_citations",
         type=int,
         metavar="N",
-        help="only papers cited at least N times",
+        help="only papers cited at least N times (OpenAlex only)",
     )
-    search.add_argument("--author", help="author name, OpenAlex author ID or ORCID")
+    search.add_argument(
+        "--author", help="author name; OpenAlex also accepts its author IDs or ORCID"
+    )
     search.add_argument(
         "--sort",
-        help="cited_by_count or publication_date, optionally :asc (default :desc); "
-        "without it, results are by relevance, or newest first when there are no keywords",
+        help="publication_date, or cited_by_count on OpenAlex; newest first by default, "
+        "add :asc for oldest first (not on PubMed)",
     )
     search.add_argument(
         "--in",
         dest="in_",
         choices=["all", "title", "abstract"],
         default="all",
-        help="where keywords must appear: all = title, abstract and full text (default); "
+        help="keyword scope (OpenAlex only): all = title, abstract and full text (default); "
         "abstract = title or abstract",
     )
     search.add_argument(
         "--filter",
         metavar="EXPR",
-        help="raw OpenAlex filter expression, ANDed with the options above",
+        help="native filter expression, passed unchanged and ANDed with other conditions",
     )
     metadata = commands.add_parser("metadata", help="Look up one DOI or arXiv ID")
     identity = metadata.add_mutually_exclusive_group(required=True)
@@ -199,6 +211,7 @@ def _acquisition_input(args: argparse.Namespace) -> tuple[str | None, Path | Non
 
 def _search_filters(args: argparse.Namespace) -> remote.SearchFilters:
     return {
+        "backend": args.backend,
         "journal": args.journal,
         "year": args.year,
         "type": args.type,
@@ -252,6 +265,8 @@ def _local(args: argparse.Namespace) -> Any:
         if args.command == "search":
             filters = dict(_search_filters(args))
             filters["in_"] = filters.pop("in")
+            if filters["backend"] is None:
+                filters.pop("backend")
             return application.search(args.query, args.limit, **filters)
         if args.command == "metadata":
             return application.get_metadata(

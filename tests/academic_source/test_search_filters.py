@@ -78,7 +78,8 @@ def test_http_mcp_client_and_cli_send_same_filters(
         json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
     ).json()["result"]["tools"]
     schema = next(tool["inputSchema"] for tool in listing if tool["name"] == "search")
-    assert schema["properties"].keys() == options.keys()
+    assert schema["properties"].keys() == options.keys() | {"backend"}
+    assert schema["properties"]["backend"]["default"] == "openalex"
     assert "query" not in schema.get("required", [])
     assert remote.search(server, **options) == found
     monkeypatch.setattr(remote, "open_client", lambda *_args: nullcontext(server))

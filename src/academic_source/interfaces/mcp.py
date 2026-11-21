@@ -13,6 +13,7 @@ from pydantic import Field
 
 from academic_source.domain import AcquisitionRequest
 from academic_source.interfaces.presentation import DownloadFactory, job_data
+from scansci_pdf.search import SearchBackend
 
 if TYPE_CHECKING:
     from academic_source.services.application import Application
@@ -83,6 +84,7 @@ def create_mcp(application: Application, *, stdio: bool = False) -> FastMCP:
         query: str = "",
         limit: int = 10,
         *,
+        backend: SearchBackend = "openalex",
         journal: str | None = None,
         year: str | None = None,
         type: str | None = None,
@@ -95,20 +97,23 @@ def create_mcp(application: Application, *, stdio: bool = False) -> FastMCP:
         ] = "all",
         filter: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Search OpenAlex works by keywords and/or filters.
+        """Search one backend: openalex (default), crossref, or pubmed.
 
         Journal takes an ISSN or exact source title; year takes YYYY, YYYY-YYYY,
-        YYYY- or -YYYY. Type takes comma-separated work types (OR). Author takes a
-        name, OpenAlex author ID or ORCID. In=abstract searches titles and abstracts.
-        Sort by cited_by_count or publication_date, optionally :asc or :desc.
-        Defaults to relevance with a query and newest first without one.
-        Filter is a raw OpenAlex filter expression ANDed with the other filters.
+        YYYY- or -YYYY. Type takes comma-separated types (OR) in the backend's
+        vocabulary. Author takes a name; OpenAlex also accepts its IDs or ORCID.
+        Only OpenAlex supports oa, min_citations, in, and sort=cited_by_count.
+        All support sort=publication_date; PubMed supports descending order only.
+        Filter is a native expression ANDed with the other filters and passed through:
+        OpenAlex: language:en; Crossref: from-online-pub-date:2026-10-01;
+        PubMed: 2026/10/01:2026/11/20[epdat]. For PubMed, put NOT in the query.
         """
         return await to_thread.run_sync(
             partial(
                 application.search,
                 query,
                 limit,
+                backend=backend,
                 journal=journal,
                 year=year,
                 type=type,

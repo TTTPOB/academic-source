@@ -88,34 +88,53 @@ curl -H @- \
 
 ## 检索与元数据
 
-搜索只走 OpenAlex。命令行 `asource search`、HTTP `GET /api/v1/search`、MCP `search` 接受同一组参数，各条件之间是 AND（[ADR 0014](docs/adr/0014-search-filters.md)）：
+命令行 `asource search`、HTTP `GET /api/v1/search`、MCP `search` 和 Python 客户端 `search` 接受同一组参数，各条件之间是 AND。一次只查一个后端；需要合并时，由调用方处理（[ADR 0020](docs/adr/0020-search-backends.md)）。
 
 | 参数 | 含义 |
 |---|---|
 | `query` | 关键词；给了任一筛选条件时可以省略 |
-| `limit` | 返回条数，1–1000，默认 10；超过 100 时服务端连续取多页 |
-| `journal` | 期刊 ISSN 或准确名称；名称有歧义时报错并列出候选的 ISSN |
-| `year` | `2021`、`2020-2024`、`2020-` 或 `-2024` |
-| `type` | OpenAlex 类型，逗号分隔，满足其一即可，如 `article,review` |
-| `oa` | 只要开放获取的论文 |
-| `min_citations` | 被引次数至少为 N |
-| `author` | 作者名、OpenAlex 作者 ID 或 ORCID |
-| `sort` | `cited_by_count` 或 `publication_date`，可加 `:asc`，默认 `:desc`；不给时有关键词按相关度，没有关键词按日期从新到旧 |
-| `in` | 关键词匹配范围：`all`（标题、摘要和全文，默认）、`title`、`abstract`（标题或摘要） |
-| `filter` | 原样转发给 OpenAlex 的 [filter 表达式](https://docs.openalex.org/api-entities/works/filter-works)，例如 `authorships.countries:cn,language:en` |
+| `backend` | `openalex`（默认）、`crossref` 或 `pubmed`，命令行用 `--backend` |
+| `limit` | 返回条数，1–1000，默认 10 |
+| `journal` | 期刊 ISSN 或准确名称；统一用 OpenAlex 解析刊名，有歧义时列出候选的 ISSN-L |
+| `year` | `2021`、`2020-2024`、`2020-` 或 `-2024`；Crossref 按 `issued`，PubMed 按 `[dp]` |
+| `type` | 所选后端的类型名，逗号分隔，满足其一即可，如 OpenAlex 的 `article,review`、Crossref 的 `journal-article`、PubMed 的 `Journal Article` |
+| `oa` | 只要开放获取的论文（仅 OpenAlex） |
+| `min_citations` | 被引次数至少为 N（仅 OpenAlex） |
+| `author` | 作者名；OpenAlex 也接受其作者 ID 或 ORCID |
+| `sort` | `publication_date` 默认降序；OpenAlex 和 Crossref 可加 `:asc`，Crossref 按 `issued` 排序；只有 OpenAlex 支持 `cited_by_count` |
+| `in` | 关键词匹配范围（仅 OpenAlex）：`all`（标题、摘要和全文，默认）、`title`、`abstract`（标题或摘要） |
+| `filter` | 原样转发所选后端的原生表达式，不转换或检查语法 |
 
-OpenAlex 拒绝 `filter` 时，它的错误说明会原样返回：HTTP 400、MCP 工具错误或命令行非零退出。
+按在线发表日期查 Crossref 或 PubMed 时，用 `filter` 指定原生日期字段。三个后端的写法不同：
 
-默认排除审稿报告、补充材料、数据集、书籍、勘误和撤稿通知、会议摘要等非论文条目，以及已撤稿的论文；指定了 `type` 时不再排除类型，`filter` 里出现 `is_retracted` 时不再排除撤稿论文。`limit` 不超过 100 时只向 OpenAlex 取一页；更大时按 OpenAlex 的游标连续取页，直到够数或没有更多结果。不带 DOI 的条目和重复条目会被去掉，所以结果可能少于 `limit`。每条结果带完整摘要：先用 OpenAlex 的，没有的按 DOI 批量从 PubMed 补；PubMed 只收生物医学论文，其他领域可能仍缺。
+```bash
+asource search --backend openalex --filter 'authorships.countries:cn,language:en'
+asource search --backend crossref --filter 'from-online-pub-date:2026-10-01,type:journal-article'
+asource search --backend pubmed --filter '2026/10/01:2026/11/20[epdat]'
+```
+
+后端拒绝 `filter` 时，原样传回它的错误说明：HTTP 400、MCP 工具错误、命令行非零退出或 Python `ValueError`。PubMed 对括号不配对、悬空的 `AND`、找不到的引号短语只给告警，asource 把这些告警当作错误返回，并附上 PubMed 实际执行的 `querytranslation`；拼错的字段标签 PubMed 不报告任何问题，会被当成普通关键词，asource 也识别不了。
+
+几处后端差异：
+
+- Crossref 的在线日期 `online-pub-date` 缺值的记录不会命中，不回退到印刷日期。
+- PubMed 的 `filter` 以 `AND (...)` 接在后面，`NOT` 排除要写在 `query` 里。
+- PubMed 收录 bioRxiv、medRxiv 等预印本，用 `NOT preprint[pt]` 排除。
+- PubMed 只能按日期从新到旧排序；有关键词或作者时用 PubMed 自己的顺序。
+
+各后端字段的详细写法和实测过的示例见 [skill](src/academic_source/skills/academic-source/SKILL.md)。
+
+
+只有 OpenAlex 默认排除非论文类型和撤稿；指定 `type` 或在 `filter` 里指定 `is_retracted` 会取消相应的排除规则。OpenAlex 有关键词时默认按相关度，否则按日期从新到旧。不带 DOI 的 OpenAlex 条目会被去掉；PubMed 结果带 `pmid`，没有 DOI 的也保留。OpenAlex 和 Crossref 缺摘要时按 DOI 批量从 PubMed 补；PubMed 只收生物医学论文，其他领域可能仍缺。
 
 按期刊和日期筛选时注意 OpenAlex 数据的几个特点：
 
 - 有些期刊（例如 Cell）的 `publication_date` 只精确到月，一律记为当月 1 日，日期窗口应按整月划分。
 - `publication_date` 一般是在线首发日，可能比 PubMed 记的日期早几周。
 - 新闻、社论等常被标成 `article`，需要按标题或 DOI 前缀另行剔除；反过来，部分研究论文被标成 `review`，用 `type=article` 筛选会漏掉它们。
-- 结果可能不全：最近一两天上线的文章可能还没入库；个别文章上线几周后仍未收录，或者收录了但没有期刊归属，按期刊查不到。需要完整清单时，用 Crossref 或 PubMed 核对。原因和取舍见 [ADR 0019](docs/adr/0019-no-supplementary-discovery-source.md)。
+- 结果可能不全：最近一两天上线的文章可能还没入库；个别文章上线几周后仍未收录，或者收录了但没有期刊归属，按期刊查不到。需要完整清单时，用 `--backend crossref` 或 `--backend pubmed` 核对。原因和取舍见 [ADR 0019](docs/adr/0019-no-supplementary-discovery-source.md)。
 
-结果保留已有书目信息，以及可用的 OpenAlex `type`、`is_retracted` 和 ISO `publication_date`；缺失字段省略，false/0 仍保留。不承诺上游类型准确、覆盖所有编辑材料或消除短词/基因名称歧义。真实无命中返回 `[]`；OpenAlex 网络、HTTP 或 JSON 错误通过 HTTP 502 或 MCP 工具错误返回，不伪装无命中。
+结果为 JSON 数组，每条记录的 `source` 标明后端。书目信息、完整摘要、引用数和类型等字段有值才返回，`false` 和 `0` 保留。无命中返回 `[]`；上游网络或响应格式错误通过 HTTP 502 或 MCP 工具错误返回。
 
 HTTP `POST /api/v1/metadata` 与 MCP `get_metadata(id_type="doi", doi="...")` / `get_metadata(id_type="arxiv", arxiv_id="...")` 按必填的 `id_type` 选择元数据来源：`doi` 查询 **Crossref**（Crossref 没有摘要时，依次从 OpenAlex、PubMed 补），`arxiv` 查询 **arXiv 原生 API**。请求示例：
 
@@ -142,7 +161,7 @@ arXiv 的响应 `arxiv_id` 不带 `arxiv:` 前缀，并保留请求版本（如 
 
 ### 上游限流与恢复
 
-搜索、标题匹配、OpenAlex 精确 DOI 查询和 Content 下载共用进程内准入控制；Crossref 单条元数据请求最多 5 次/秒、并发 1，arXiv 原生 API 请求间隔至少 3 秒、并发 1。控制复用现有网络会话、代理和超时配置。应用的多把 Bearer 服务密钥不会给客户端分配独立的上游额度。
+搜索、标题匹配、OpenAlex 精确 DOI 查询和 Content 下载共用进程内准入控制；Crossref 检索与元数据查询共用准入控制，默认最多 5 次/秒、并发 1，arXiv 原生 API 请求间隔至少 3 秒、并发 1。控制复用现有网络会话、代理和超时配置。应用的多把 Bearer 服务密钥不会给客户端分配独立的上游额度。
 
 上游 429 或已知冷却会返回明确限流结果，不自动重试，也不等待日预算重置：
 
@@ -152,7 +171,7 @@ arXiv 的响应 `arxiv_id` 不带 `arxiv:` 前缀，并保留请求版本（如 
 
 `rate_limit` 包含 `source`、`kind`（`daily_budget/request_rate/unknown`），以及有证据时的 UTC `retry_at`、`remaining`、`required`；不返回上游 URL、密钥或原始错误正文。OpenAlex 的日预算按实际上游身份共享，search、list 和 Content 消耗同一预算；免费精确查询在无可用计费额度时仍可使用，但也受请求速率限制。
 
-可在私有服务配置的 `source_config.openalex_api_key` 设置 OpenAlex 账户密钥。该密钥通过 `api_key` 用于检索、精确查询与 Content 下载；`source_config.email` 是联系邮箱，两者用途不同。预算不足时等待 `retry_at`，减少重复计费操作，或使用合法的更高账户额度。
+可在私有服务配置的 `source_config.openalex_api_key` 设置 OpenAlex 账户密钥。该密钥通过 `api_key` 用于检索、精确查询与 Content 下载；`source_config.email` 是联系邮箱，Crossref 检索把它作为 `mailto` 发送以进入 polite pool。预算不足时等待 `retry_at`，减少重复计费操作，或使用合法的更高账户额度。
 
 ## 命令行客户端
 
