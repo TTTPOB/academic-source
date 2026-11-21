@@ -70,3 +70,18 @@
 - **PubMed 拼错的字段标签识别不了**。`lamin[xyz]` 返回 HTTP 200，诊断字段全为空，`querytranslation` 和直接搜 `lamin` 一样。不维护本地标签表就无法把它和合法的改写（如 `[issn]` 译成 `[Journal]`）区分开，所以不处理，在帮助信息和 skill 里提示。
 - **PubMed 的 `NOT` 只能写在 `query` 里**。`filter` 以 `AND (...)` 接在后面，`filter` 写 `NOT preprint[pt]` 会变成 `AND (NOT preprint[pt])`，PubMed 对此报 `NOT` 告警，按第 9 条返回 400。
 - PubMed 收录 bioRxiv、medRxiv 等预印本，`doudna ja[au] AND 2025[dp]` 的前几条都是预印本。文档建议用 `NOT preprint[pt]` 排除，不设默认排除，与第 5 条一致。
+
+### skill 里检索写法的依据
+
+skill 推荐的日期字段和写法来自 2026-11-21 直连 Crossref 与 PubMed 的实测（命中数为当日快照）：
+
+- **Crossref 查最近上线用 `online-pub-date`，且它不回退**。Nature 10-19 至 11-06 窗口，`online-pub-date` 286 条、`pub-date`（即 `issued`）286 条、`print-pub-date` 192 条、`created-date` 287 条、`index-date` 11,635 条（含元数据更新，不能用来找新文章）。10.1038/150737a0 只有 1942 年的印刷日期，`online-pub-date` 窗口放宽到 1900–2100 仍为 0。
+- **Crossref 不完整日期按整段算**：上界 `2025-12` 包含整个 12 月（Nature 611 条），写 `2025-12-01` 只多 1 天（358 条）。同名 filter 重复是 OR（`issn:0028-0836,issn:0036-8075` 等于两刊之和），不同名是 AND。
+- **Crossref 关键词相关度不可靠**：精确题名检索，目标排第 2，第 1 是蝴蝶识别的预印本。`query.container-title=Nature` 命中 906,999 条，约是 `issn:0028-0836` 的两倍，所以期刊一律用 ISSN。`type:journal-article` 包含 Nature 新闻（`10.1038/d41586…`）。
+- **PubMed 查最近上线用 `[epdat]`**。提前在线的 PMID 43063909，电子出版日期 11-12，入库 11-20：11-12 的 `[epdat]` 和 `[dp]` 命中，`[ppdat]`、`[edat]`、`[crdt]`、`[mhda]` 都不命中。`[crdt]` 表示 PubMed 建记录的日期，适合追踪新入库的题录，不代表出版社上线日。
+- **PubMed 期刊用 `[issn]`**：`Nature[ta]` 143,949 条，混入 Nat Ment Health 等刊；`0028-0836[issn]` 143,755 条。
+- **PubMed 不加标签会扩展检索词**：`diabetes` 1,154,962 条，`diabetes[tiab]` 820,296 条。
+- **PubMed 只能取回前 9,999 条**：`retstart=9999` 时 HTTP 200，但 `esearchresult.ERROR` 报 `retstart cannot be larger than 9998`。`limit` 上限 1000，碰不到。
+- **PubMed 出版类型可以重叠，研究论文往往只标 `Journal Article`**（如 PMID 43019420）。`NOT (News[pt] OR Comment[pt] OR Editorial[pt])` 只能去掉已打标签的条目，不保证剩下的都是研究论文。
+
+字段文档：[Crossref filters](https://www.crossref.org/documentation/retrieve-metadata/rest-api/rest-api-filters/)、[Crossref types](https://api.crossref.org/types)、[PubMed User Guide](https://pubmed.ncbi.nlm.nih.gov/help/)、[E-utilities ESearch](https://www.ncbi.nlm.nih.gov/books/NBK25499/#chapter4.ESearch)。
