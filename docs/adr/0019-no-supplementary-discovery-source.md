@@ -1,6 +1,6 @@
 # ADR 0019：检索暂不加补充来源，只说明 OpenAlex 可能漏收
 
-- 状态：Accepted
+- 状态：Accepted（第 1 条被 [ADR 0020](0020-search-backends.md) 取代）
 - 实施情况：已实现，只改了 README 和 agent skill 的说明，代码不变。漏收的原因与各候选来源的表现是 2026-11-21 实测的，见「理由与替代方案」。
 
 ## 背景

@@ -45,4 +45,5 @@
 | [0016：OA 快路径只用 HTTP，删除浏览器重试](0016-no-browser-in-oa-fast-path.md) | Accepted | 已实现 |
 | [0017：检索返回完整摘要并支持多页，缺的摘要从 PubMed 补](0017-full-abstracts-and-paging.md) | Accepted | 已实现 |
 | [0018：Unpaywall 和 OpenAlex 给出的 PMC 位置先从 PMC Cloud 取](0018-pmc-locations-bucket-first.md) | Accepted | 已实现 |
-| [0019：检索暂不加补充来源，只说明 OpenAlex 可能漏收](0019-no-supplementary-discovery-source.md) | Accepted | 已实现 |
+| [0019：检索暂不加补充来源，只说明 OpenAlex 可能漏收](0019-no-supplementary-discovery-source.md) | Accepted（第 1 条被 0020 取代） | 已实现 |
+| [0020：检索可选 Crossref 和 PubMed 后端，各后端表达式原样透传](0020-search-backends.md) | Accepted | 未实现 |
