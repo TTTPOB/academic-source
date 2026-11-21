@@ -45,18 +45,26 @@ To list everything a journal published in a period, use one wide date window
 instead of many narrow ones:
 
 ```bash
-asource search --journal 0092-8674 --type article --limit 1000 \
+asource search --journal 0092-8674 --limit 1000 \
   --filter from_publication_date:2026-07-01,to_publication_date:2026-11-30 > cell.json
 ```
 
-Two quirks of OpenAlex data matter when screening by journal and date:
+Quirks of OpenAlex data that matter when screening by journal and date:
 
 - For some journals (Cell, for example) `publication_date` is only the month:
   every paper is dated the 1st. A window starting on the 2nd of a month misses
   that month entirely. Use windows aligned to whole months and check exact
   online dates elsewhere if they matter.
+- `publication_date` is usually the first online date, which can be weeks
+  earlier than the date PubMed gives.
 - News, editorials and comments are often typed `article`. For Nature, research
   papers have DOIs starting `10.1038/s41586`; `10.1038/d41586` is news.
+- Some research papers are typed `review`, so `--type article` drops them.
+  Leave `--type` out when listing a journal and screen titles instead.
+- The list can be incomplete. Papers posted in the last day or two may not be
+  indexed yet, and a few papers are missing for weeks or carry no journal, so
+  a journal filter cannot find them. When the list must be complete, cross-check
+  it against Crossref or PubMed and say which papers came from there.
 
 ## Fetch full text
 
