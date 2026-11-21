@@ -313,6 +313,8 @@ def test_cdp_errors_tabs_and_connections_belong_to_each_worker(tmp_path, monkeyp
     from scansci_pdf import browser_backend, browser_engine
 
     monkeypatch.setattr(browser_backend, "probe_cdp", lambda _config: None)
+    # Chrome is fake, so the test must not depend on Playwright being installed.
+    monkeypatch.setattr(browser_engine, "_check_browser_backend", lambda _config: True)
     # Exercise the real engine and borrowed-session ownership; only Chrome is fake.
     tabs, tabs_closed, sessions_closed, registered = {}, [], [], {}
     reached, release = Event(), Event()

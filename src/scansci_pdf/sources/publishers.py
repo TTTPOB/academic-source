@@ -13,7 +13,6 @@ from typing import Any
 import requests
 
 from ..log import get_logger
-from ..science_transport import _SCIENCE_DOI_PREFIX
 from .crossref import try_crossref
 from .nature import try_nature_direct
 from .openalex import try_openalex_oa
